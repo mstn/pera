@@ -4,5 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+pera-core = { path = "../core" }
 serde = { version = "1.0", features = ["derive"] }
 wit-parser = "0.227.0"

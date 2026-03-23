@@ -666,6 +666,7 @@ dependencies = [
 name = "pera-canonical"
 version = "0.1.0"
 dependencies = [
+ "pera-core",
  "serde",
  "wit-parser 0.227.1",
 ]
