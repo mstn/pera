@@ -1,2 +1,4 @@
 /target
 .pera
+/vendor/*
+!/vendor/.keep

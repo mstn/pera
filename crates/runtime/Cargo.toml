@@ -11,7 +11,7 @@ monty = ["dep:monty"]
 async-trait = "0.1"
 pera-canonical = { path = "../canonical" }
 pera-core = { path = "../core" }
-monty = { git = "https://github.com/pydantic/monty", package = "monty", optional = true }
+monty = { path = "../../vendor/monty/crates/monty", optional = true }
 rusqlite = { version = "0.37.0", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

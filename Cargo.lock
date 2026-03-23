@@ -639,7 +639,6 @@ checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 [[package]]
 name = "monty"
 version = "0.0.8"
-source = "git+https://github.com/pydantic/monty#60538204fd9cd420d1a93042bb52f7168fb9fca2"
 dependencies = [
  "ahash",
  "fancy-regex",
@@ -651,7 +650,6 @@ dependencies = [
  "num-integer",
  "num-traits",
  "postcard",
- "pyo3-build-config",
  "ruff_python_ast",
  "ruff_python_parser",
  "ruff_text_size",
@@ -856,15 +854,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "pyo3-build-config"
-version = "0.28.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8bf94ee265674bf76c09fa430b0e99c26e319c945d96ca0d5a8215f31bf81cf7"
-dependencies = [
- "target-lexicon",
 ]
 
 [[package]]
@@ -1211,12 +1200,6 @@ dependencies = [
  "quote",
  "unicode-ident",
 ]
-
-[[package]]
-name = "target-lexicon"
-version = "0.13.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
 name = "thiserror"
