@@ -669,6 +669,7 @@ dependencies = [
  "clap",
  "pera-core",
  "pera-runtime",
+ "serde",
  "serde_json",
  "serde_yaml",
  "tokio",

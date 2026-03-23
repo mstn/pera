@@ -19,6 +19,7 @@ impl SkillCommand {
     pub async fn execute(&self) -> Result<(), CliError> {
         match &self.command {
             SkillSubcommand::Compile(command) => command.execute(),
+            SkillSubcommand::Upload(command) => command.execute(),
         }
     }
 }
@@ -26,6 +27,7 @@ impl SkillCommand {
 #[derive(Debug, Subcommand)]
 enum SkillSubcommand {
     Compile(CompileSkillCommand),
+    Upload(UploadSkillCommand),
 }
 
 #[derive(Debug, Args)]
@@ -36,6 +38,14 @@ struct CompileSkillCommand {
     profile: Option<String>,
     #[arg(long, default_value = "uvx")]
     uvx: String,
+}
+
+#[derive(Debug, Args)]
+struct UploadSkillCommand {
+    #[arg(long)]
+    compiled_dir: PathBuf,
+    #[arg(long)]
+    root: PathBuf,
 }
 
 impl CompileSkillCommand {
@@ -128,6 +138,51 @@ impl CompileSkillCommand {
     }
 }
 
+impl UploadSkillCommand {
+    fn execute(&self) -> Result<(), CliError> {
+        let compiled_dir = self
+            .compiled_dir
+            .canonicalize()
+            .map_err(|source| CliError::ReadFile {
+                path: self.compiled_dir.clone(),
+                source,
+            })?;
+        let meta_path = compiled_dir.join("meta.json");
+        let meta_source = fs::read_to_string(&meta_path).map_err(|source| CliError::ReadFile {
+            path: meta_path.clone(),
+            source,
+        })?;
+        let meta: CompiledSkillMeta = serde_json::from_str(&meta_source).map_err(|error| {
+            CliError::UnexpectedStateOwned(format!("invalid meta.json in {}: {error}", meta_path.display()))
+        })?;
+
+        let catalog_dir = self
+            .root
+            .join("catalog")
+            .join("skills")
+            .join(&meta.skill_name)
+            .join(&meta.skill_version)
+            .join(&meta.profile_name);
+
+        if catalog_dir.exists() {
+            fs::remove_dir_all(&catalog_dir).map_err(|source| CliError::CopyPath {
+                source_path: compiled_dir.clone(),
+                target_path: catalog_dir.clone(),
+                source,
+            })?;
+        }
+
+        copy_dir_recursive(&compiled_dir, &catalog_dir)?;
+        println!(
+            "Uploaded skill '{}' profile '{}' to {}",
+            meta.skill_name,
+            meta.profile_name,
+            catalog_dir.display()
+        );
+        Ok(())
+    }
+}
+
 fn resolve_manifest_path(skill_dir: &Path) -> Result<PathBuf, CliError> {
     let candidates = [
         skill_dir.join("manifest.yaml"),
@@ -144,6 +199,13 @@ fn resolve_manifest_path(skill_dir: &Path) -> Result<PathBuf, CliError> {
                 skill_dir.display()
             ))
         })
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CompiledSkillMeta {
+    skill_name: String,
+    skill_version: String,
+    profile_name: String,
 }
 
 fn select_profile<'a>(
