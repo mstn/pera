@@ -1,0 +1,26 @@
+schema_version: 1
+
+skill:
+  name: weather-brief
+  version: 0.1.0
+  description: Provide simple weather forecasts and travel advice for planning decisions.
+
+defaults:
+  instructions:
+    source: SKILL.md
+
+profiles:
+  - name: weather-brief-default
+    default: true
+    runtime:
+      kind: wasm-component
+      wasm:
+        wit:
+          path: world.wit
+          world: weather-brief-default
+        artifacts:
+          dir: build/weather-brief-default
+        build:
+          tool: componentize-py
+          module: app
+    capabilities: []

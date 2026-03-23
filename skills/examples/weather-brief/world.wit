@@ -1,0 +1,64 @@
+package miniclaw:weather-brief@0.1.0;
+
+/// Shared weather types used by the weather brief skill.
+interface weather-brief-types {
+  /// Short summary of expected weather conditions.
+  enum weather-condition {
+    clear,
+    cloudy,
+    rain,
+    storm,
+    fog,
+    snow,
+  }
+
+  /// Simple forecast record for a location and date.
+  record weather-report {
+    /// Requested location.
+    location: string,
+    /// Requested day in YYYY-MM-DD or natural language form.
+    day: string,
+    /// Predicted headline condition.
+    condition: weather-condition,
+    /// Approximate temperature in Celsius.
+    temperature-c: s32,
+    /// Wind intensity on a simple 0-10 scale.
+    wind-level: s32,
+    /// Visibility on a simple 0-10 scale.
+    visibility-level: s32,
+    /// Short warnings or considerations for operators.
+    advisories: list<string>,
+  }
+
+  /// Recommendation on whether movement or field activity should proceed.
+  record travel-advice {
+    /// Whether travel is acceptable for the supplied conditions.
+    advisable: bool,
+    /// Explanatory reasons supporting the recommendation.
+    reasons: list<string>,
+  }
+}
+
+/// Independent planning utilities based on weather conditions.
+interface weather-brief-exports {
+  use weather-brief-types.{weather-condition, weather-report, travel-advice};
+
+  /// Return a mocked forecast for a location and day.
+  get-forecast: func(location: string, day: string) -> weather-report;
+
+  /// Decide whether travel or field work is advisable for the supplied
+  /// weather conditions.
+  assess-travel-window: func(
+    condition: weather-condition,
+    wind-level: s32,
+    visibility-level: s32,
+  ) -> travel-advice;
+
+  /// Produce a short operator-friendly summary from a forecast.
+  build-weather-summary: func(location: string, forecast: weather-report) -> string;
+}
+
+/// Default world for the weather brief skill.
+world weather-brief-default {
+  export weather-brief-exports;
+}
