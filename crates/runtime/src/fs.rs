@@ -1,0 +1,277 @@
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+use pera_core::{
+    ActionId, ActionRecord, EventPublisher, ExecutionEvent, ExecutionSession, RunId, RunStore,
+    StoreError,
+};
+
+#[derive(Debug, Clone)]
+pub struct FileSystemLayout {
+    root: PathBuf,
+}
+
+impl FileSystemLayout {
+    pub fn new(root: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        let layout = Self { root: root.into() };
+        layout.ensure_directories()?;
+        Ok(layout)
+    }
+
+    fn ensure_directories(&self) -> Result<(), StoreError> {
+        create_dir_all(self.runs_dir())?;
+        create_dir_all(self.system_actions_dir())?;
+        create_dir_all(self.system_dir())?;
+        Ok(())
+    }
+
+    fn runs_dir(&self) -> PathBuf {
+        self.root.join("runs")
+    }
+
+    fn system_dir(&self) -> PathBuf {
+        self.root.join("system")
+    }
+
+    fn legacy_actions_dir(&self) -> PathBuf {
+        self.root.join("actions")
+    }
+
+    fn system_actions_dir(&self) -> PathBuf {
+        self.system_dir().join("actions")
+    }
+
+    fn legacy_events_dir(&self) -> PathBuf {
+        self.root.join("events")
+    }
+
+    fn run_dir(&self, run_id: RunId) -> PathBuf {
+        self.runs_dir().join(run_id.as_hyphenated())
+    }
+
+    fn run_record_path(&self, run_id: RunId) -> PathBuf {
+        self.run_dir(run_id).join("run.json")
+    }
+
+    fn legacy_run_session_path(&self, run_id: RunId) -> PathBuf {
+        self.run_dir(run_id).join("session.json")
+    }
+
+    fn run_code_path(&self, run_id: RunId) -> PathBuf {
+        self.run_dir(run_id).join("code.py")
+    }
+
+    fn system_action_path(&self, action_id: ActionId) -> PathBuf {
+        self.system_actions_dir()
+            .join(format!("{}.json", action_id.as_hyphenated()))
+    }
+
+    fn legacy_action_path(&self, action_id: ActionId) -> PathBuf {
+        self.legacy_actions_dir()
+            .join(format!("{}.json", action_id.as_hyphenated()))
+    }
+
+    fn run_actions_dir(&self, run_id: RunId) -> PathBuf {
+        self.run_dir(run_id).join("actions")
+    }
+
+    fn run_action_path(&self, run_id: RunId, action_id: ActionId) -> PathBuf {
+        self.run_actions_dir(run_id)
+            .join(format!("{}.json", action_id.as_hyphenated()))
+    }
+
+    fn system_events_path(&self) -> PathBuf {
+        self.system_dir().join("events.jsonl")
+    }
+
+    fn legacy_events_path(&self) -> PathBuf {
+        self.legacy_events_dir().join("events.jsonl")
+    }
+
+    fn run_events_path(&self, run_id: RunId) -> PathBuf {
+        self.run_dir(run_id).join("events.jsonl")
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FileSystemRunStore {
+    layout: FileSystemLayout,
+}
+
+impl FileSystemRunStore {
+    pub fn new(root: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        Ok(Self {
+            layout: FileSystemLayout::new(root)?,
+        })
+    }
+}
+
+impl RunStore for FileSystemRunStore {
+    fn create_run(&mut self, session: ExecutionSession) -> Result<(), StoreError> {
+        let run_dir = self.layout.run_dir(session.id);
+        create_dir_all(&run_dir)?;
+        create_dir_all(self.layout.run_actions_dir(session.id))?;
+        write_json(self.layout.run_record_path(session.id), &session)?;
+        write_string(self.layout.run_code_path(session.id), &session.code.source)?;
+        Ok(())
+    }
+
+    fn save_run(&mut self, session: ExecutionSession) -> Result<(), StoreError> {
+        let run_dir = self.layout.run_dir(session.id);
+        create_dir_all(&run_dir)?;
+        create_dir_all(self.layout.run_actions_dir(session.id))?;
+        write_json(self.layout.run_record_path(session.id), &session)
+    }
+
+    fn load_run(&self, run_id: RunId) -> Result<ExecutionSession, StoreError> {
+        let run_path = self.layout.run_record_path(run_id);
+        if run_path.exists() {
+            read_json(run_path)
+        } else {
+            read_json(self.layout.legacy_run_session_path(run_id))
+        }
+    }
+
+    fn list_runs(&self) -> Result<Vec<RunId>, StoreError> {
+        list_id_entries(self.layout.runs_dir(), RunId::parse_str)
+    }
+
+    fn save_action(&mut self, action: ActionRecord) -> Result<(), StoreError> {
+        write_json(self.layout.system_action_path(action.request.id), &action)?;
+        write_json(
+            self.layout
+                .run_action_path(action.request.run_id, action.request.id),
+            &action,
+        )
+    }
+
+    fn load_action(&self, action_id: ActionId) -> Result<ActionRecord, StoreError> {
+        let action_path = self.layout.system_action_path(action_id);
+        if action_path.exists() {
+            read_json(action_path)
+        } else {
+            read_json(self.layout.legacy_action_path(action_id))
+        }
+    }
+
+    fn list_actions(&self) -> Result<Vec<ActionId>, StoreError> {
+        let dir = if self.layout.system_actions_dir().exists() {
+            self.layout.system_actions_dir()
+        } else {
+            self.layout.legacy_actions_dir()
+        };
+        list_id_entries(dir, ActionId::parse_str)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FileSystemEventLog {
+    layout: FileSystemLayout,
+}
+
+impl FileSystemEventLog {
+    pub fn new(root: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        Ok(Self {
+            layout: FileSystemLayout::new(root)?,
+        })
+    }
+
+    pub fn read_events(&self) -> Result<Vec<ExecutionEvent>, StoreError> {
+        let path = if self.layout.system_events_path().exists() {
+            self.layout.system_events_path()
+        } else {
+            self.layout.legacy_events_path()
+        };
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let content = fs::read_to_string(path).map_err(io_error)?;
+        content
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).map_err(json_error))
+            .collect()
+    }
+}
+
+impl EventPublisher for FileSystemEventLog {
+    fn publish(&mut self, event: ExecutionEvent) -> Result<(), StoreError> {
+        let line = serde_json::to_string(&event).map_err(json_error)?;
+        append_line(self.layout.system_events_path(), &line)?;
+        append_line(self.layout.run_events_path(event.run_id()), &line)
+    }
+}
+
+fn list_id_entries<T, E>(
+    dir: impl AsRef<Path>,
+    parse_id: impl Fn(&str) -> Result<T, E>,
+) -> Result<Vec<T>, StoreError> {
+    let dir = dir.as_ref();
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut values = Vec::new();
+    for entry in fs::read_dir(dir).map_err(io_error)? {
+        let entry = entry.map_err(io_error)?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let raw_id = name
+            .split('.')
+            .next()
+            .ok_or_else(|| StoreError::new(format!("invalid entry name: {name}")))?;
+        let id =
+            parse_id(raw_id).map_err(|_| StoreError::new(format!("invalid id entry '{name}'")))?;
+        values.push(id);
+    }
+    Ok(values)
+}
+
+fn write_json(path: impl AsRef<Path>, value: &impl serde::Serialize) -> Result<(), StoreError> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        create_dir_all(parent)?;
+    }
+    let bytes = serde_json::to_vec_pretty(value).map_err(json_error)?;
+    fs::write(path, bytes).map_err(io_error)
+}
+
+fn read_json<T: serde::de::DeserializeOwned>(path: impl AsRef<Path>) -> Result<T, StoreError> {
+    let bytes = fs::read(path).map_err(io_error)?;
+    serde_json::from_slice(&bytes).map_err(json_error)
+}
+
+fn write_string(path: impl AsRef<Path>, value: &str) -> Result<(), StoreError> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        create_dir_all(parent)?;
+    }
+    fs::write(path, value).map_err(io_error)
+}
+
+fn append_line(path: impl AsRef<Path>, line: &str) -> Result<(), StoreError> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        create_dir_all(parent)?;
+    }
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(io_error)?;
+    writeln!(file, "{line}").map_err(io_error)
+}
+
+fn create_dir_all(path: impl AsRef<Path>) -> Result<(), StoreError> {
+    fs::create_dir_all(path).map_err(io_error)
+}
+
+fn io_error(error: std::io::Error) -> StoreError {
+    StoreError::new(error.to_string())
+}
+
+fn json_error(error: serde_json::Error) -> StoreError {
+    StoreError::new(error.to_string())
+}

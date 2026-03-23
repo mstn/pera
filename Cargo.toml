@@ -1,0 +1,14 @@
+[workspace]
+members = [
+    "crates/core",
+    "crates/runtime",
+    "crates/cli",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.metadata]
+description = "Trusted execution substrate for agent-generated programs."
