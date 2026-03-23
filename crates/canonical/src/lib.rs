@@ -4,9 +4,9 @@ mod python;
 mod wit;
 
 pub use bindings::{
-    ActionDefinition, ActionParam, ActionRegistry, BindingError, CanonicalBindings,
-    CanonicalInvocation, CanonicalValue, ModelAdapter, ModelInvocation, WasmAdapter,
-    WasmInvocation, WasmValue,
+    ActionDefinition, ActionLocator, ActionParam, ActionRegistry, BindingError,
+    CanonicalBindings, CanonicalInvocation, CanonicalValue, CatalogSkill, ModelAdapter,
+    ModelInvocation, SkillCatalog, SkillMetadata, WasmAdapter, WasmInvocation, WasmValue,
 };
 pub use ir::{
     CanonicalEnumCase, CanonicalField, CanonicalFunction, CanonicalFunctionResult,

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
@@ -11,14 +11,50 @@ use crate::ir::{
 };
 use crate::python::python_function_name;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillMetadata {
+    pub skill_name: String,
+    pub python_namespace: String,
+    pub skill_version: Option<String>,
+    pub profile_name: Option<String>,
+    pub world_name: String,
+    pub runtime_kind: Option<String>,
+    pub artifact_ref: Option<String>,
+}
+
+impl SkillMetadata {
+    pub fn new(skill_name: impl Into<String>, world_name: impl Into<String>) -> Self {
+        let skill_name = skill_name.into();
+        Self {
+            python_namespace: python_function_name(&skill_name),
+            skill_name,
+            skill_version: None,
+            profile_name: None,
+            world_name: world_name.into(),
+            runtime_kind: None,
+            artifact_ref: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
-pub struct CanonicalBindings {
+pub struct CatalogSkill {
+    pub metadata: SkillMetadata,
+    pub world: CanonicalWorld,
+}
+
+#[derive(Debug, Clone)]
+pub struct SkillCatalog {
     registry: Arc<ActionRegistry>,
 }
 
-impl CanonicalBindings {
-    pub fn from_world(world: CanonicalWorld) -> Result<Self, BindingError> {
-        let registry = ActionRegistry::from_world(world)?;
+impl SkillCatalog {
+    pub fn from_skill(skill: CatalogSkill) -> Result<Self, BindingError> {
+        Self::from_skills(vec![skill])
+    }
+
+    pub fn from_skills(skills: Vec<CatalogSkill>) -> Result<Self, BindingError> {
+        let registry = ActionRegistry::from_skills(skills)?;
         Ok(Self {
             registry: Arc::new(registry),
         })
@@ -42,77 +78,198 @@ impl CanonicalBindings {
 }
 
 #[derive(Debug, Clone)]
+pub struct CanonicalBindings {
+    catalog: SkillCatalog,
+}
+
+impl CanonicalBindings {
+    pub fn from_world(world: CanonicalWorld) -> Result<Self, BindingError> {
+        let skill_name = world
+            .package
+            .as_ref()
+            .map(|package| package.name.clone())
+            .unwrap_or_else(|| world.name.clone());
+        let metadata = SkillMetadata::new(skill_name, world.name.clone());
+        let catalog = SkillCatalog::from_skill(CatalogSkill { metadata, world })?;
+        Ok(Self { catalog })
+    }
+
+    pub fn action_registry(&self) -> &ActionRegistry {
+        self.catalog.action_registry()
+    }
+
+    pub fn model_adapter(&self) -> ModelAdapter {
+        self.catalog.model_adapter()
+    }
+
+    pub fn wasm_adapter(&self) -> WasmAdapter {
+        self.catalog.wasm_adapter()
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct ActionRegistry {
-    actions_by_canonical_name: BTreeMap<String, ActionDefinition>,
-    actions_by_model_name: BTreeMap<String, String>,
-    types: BTreeMap<String, CanonicalTypeDef>,
+    actions_by_qualified_name: BTreeMap<String, ActionDefinition>,
+    actions_by_qualified_model_name: BTreeMap<String, String>,
+    unique_actions_by_model_name: BTreeMap<String, String>,
+    unique_actions_by_local_name: BTreeMap<String, String>,
+    types_by_skill_and_name: BTreeMap<(String, String), CanonicalTypeDef>,
 }
 
 impl ActionRegistry {
     pub fn from_world(world: CanonicalWorld) -> Result<Self, BindingError> {
-        let exports = world
-            .exports
-            .first()
-            .ok_or_else(|| BindingError::new("canonical world has no exported interface"))?;
+        let skill_name = world
+            .package
+            .as_ref()
+            .map(|package| package.name.clone())
+            .unwrap_or_else(|| world.name.clone());
+        let metadata = SkillMetadata::new(skill_name, world.name.clone());
+        Self::from_skills(vec![CatalogSkill { metadata, world }])
+    }
 
-        let mut types = BTreeMap::new();
-        for ty in &exports.types {
-            types.insert(ty.name.clone(), ty.clone());
-        }
+    pub fn from_skills(skills: Vec<CatalogSkill>) -> Result<Self, BindingError> {
+        let mut actions_by_qualified_name = BTreeMap::new();
+        let mut actions_by_qualified_model_name = BTreeMap::new();
+        let mut unique_actions_by_model_name = BTreeMap::new();
+        let mut unique_actions_by_local_name = BTreeMap::new();
+        let mut duplicate_model_names = BTreeSet::new();
+        let mut duplicate_local_names = BTreeSet::new();
+        let mut types_by_skill_and_name = BTreeMap::new();
 
-        let mut actions_by_canonical_name = BTreeMap::new();
-        let mut actions_by_model_name = BTreeMap::new();
-        for function in &exports.functions {
-            let model_name = python_function_name(&function.name);
-            let action = ActionDefinition {
-                canonical_name: function.name.clone(),
-                model_name: model_name.clone(),
-                docs: function.docs.clone(),
-                params: function
-                    .params
-                    .iter()
-                    .map(|param| ActionParam {
-                        canonical_name: param.name.clone(),
-                        model_name: python_function_name(&param.name),
-                        ty: param.ty.clone(),
-                    })
-                    .collect(),
-                result: function.result.clone(),
-            };
+        for skill in skills {
+            let exports =
+                skill.world.exports.first().ok_or_else(|| {
+                    BindingError::new("canonical world has no exported interface")
+                })?;
 
-            actions_by_model_name.insert(model_name, function.name.clone());
-            actions_by_canonical_name.insert(function.name.clone(), action);
+            for ty in &exports.types {
+                types_by_skill_and_name.insert(
+                    (skill.metadata.skill_name.clone(), ty.name.clone()),
+                    ty.clone(),
+                );
+            }
+
+            for function in &exports.functions {
+                let model_name = python_function_name(&function.name);
+                let qualified_name = format!("{}.{}", skill.metadata.skill_name, function.name);
+                let qualified_model_name =
+                    format!("{}.{}", skill.metadata.python_namespace, model_name);
+
+                let definition = ActionDefinition {
+                    skill: skill.metadata.clone(),
+                    action_name: function.name.clone(),
+                    qualified_name: qualified_name.clone(),
+                    model_name: model_name.clone(),
+                    qualified_model_name: qualified_model_name.clone(),
+                    docs: function.docs.clone(),
+                    params: function
+                        .params
+                        .iter()
+                        .map(|param| ActionParam {
+                            canonical_name: param.name.clone(),
+                            model_name: python_function_name(&param.name),
+                            ty: param.ty.clone(),
+                        })
+                        .collect(),
+                    result: function.result.clone(),
+                };
+
+                if actions_by_qualified_name
+                    .insert(qualified_name.clone(), definition)
+                    .is_some()
+                {
+                    return Err(BindingError::new(format!(
+                        "duplicate qualified action '{qualified_name}'"
+                    )));
+                }
+
+                actions_by_qualified_model_name
+                    .insert(qualified_model_name, qualified_name.clone());
+
+                match unique_actions_by_model_name.get(&model_name) {
+                    Some(existing) if existing != &qualified_name => {
+                        duplicate_model_names.insert(model_name.clone());
+                        unique_actions_by_model_name.remove(&model_name);
+                    }
+                    None if !duplicate_model_names.contains(&model_name) => {
+                        unique_actions_by_model_name
+                            .insert(model_name.clone(), qualified_name.clone());
+                    }
+                    _ => {}
+                }
+
+                match unique_actions_by_local_name.get(&function.name) {
+                    Some(existing) if existing != &qualified_name => {
+                        duplicate_local_names.insert(function.name.clone());
+                        unique_actions_by_local_name.remove(&function.name);
+                    }
+                    None if !duplicate_local_names.contains(&function.name) => {
+                        unique_actions_by_local_name.insert(function.name.clone(), qualified_name);
+                    }
+                    _ => {}
+                }
+            }
         }
 
         Ok(Self {
-            actions_by_canonical_name,
-            actions_by_model_name,
-            types,
+            actions_by_qualified_name,
+            actions_by_qualified_model_name,
+            unique_actions_by_model_name,
+            unique_actions_by_local_name,
+            types_by_skill_and_name,
         })
     }
 
-    pub fn action_by_canonical_name(&self, name: &str) -> Option<&ActionDefinition> {
-        self.actions_by_canonical_name.get(name)
+    pub fn action_by_qualified_name(&self, name: &str) -> Option<&ActionDefinition> {
+        self.actions_by_qualified_name.get(name)
     }
 
-    pub fn action_by_model_name(&self, name: &str) -> Option<&ActionDefinition> {
-        self.actions_by_model_name
-            .get(name)
-            .and_then(|canonical_name| self.actions_by_canonical_name.get(canonical_name))
+    pub fn resolve_action(&self, name: &str) -> Option<&ActionDefinition> {
+        if let Some(action) = self.actions_by_qualified_name.get(name) {
+            return Some(action);
+        }
+
+        if let Some(qualified_name) = self.actions_by_qualified_model_name.get(name) {
+            return self.actions_by_qualified_name.get(qualified_name);
+        }
+
+        if let Some(qualified_name) = self.unique_actions_by_model_name.get(name) {
+            return self.actions_by_qualified_name.get(qualified_name);
+        }
+
+        if let Some(qualified_name) = self.unique_actions_by_local_name.get(name) {
+            return self.actions_by_qualified_name.get(qualified_name);
+        }
+
+        None
     }
 
-    pub fn type_by_name(&self, name: &str) -> Option<&CanonicalTypeDef> {
-        self.types.get(name)
+    pub fn type_by_name_in_skill(&self, skill_name: &str, name: &str) -> Option<&CanonicalTypeDef> {
+        self.types_by_skill_and_name
+            .get(&(skill_name.to_owned(), name.to_owned()))
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct ActionDefinition {
-    pub canonical_name: String,
+    pub skill: SkillMetadata,
+    pub action_name: String,
+    pub qualified_name: String,
     pub model_name: String,
+    pub qualified_model_name: String,
     pub docs: Option<String>,
     pub params: Vec<ActionParam>,
     pub result: CanonicalFunctionResult,
+}
+
+impl ActionDefinition {
+    fn locator(&self) -> ActionLocator {
+        ActionLocator {
+            skill: self.skill.clone(),
+            action_name: self.action_name.clone(),
+            qualified_name: self.qualified_name.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +280,13 @@ pub struct ActionParam {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionLocator {
+    pub skill: SkillMetadata,
+    pub action_name: String,
+    pub qualified_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelInvocation {
     pub function_name: String,
     pub arguments: BTreeMap<String, Value>,
@@ -130,12 +294,13 @@ pub struct ModelInvocation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanonicalInvocation {
-    pub action_name: String,
+    pub locator: ActionLocator,
     pub arguments: BTreeMap<String, CanonicalValue>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WasmInvocation {
+    pub locator: ActionLocator,
     pub export_name: String,
     pub arguments: Vec<WasmValue>,
 }
@@ -182,7 +347,7 @@ impl ModelAdapter {
     ) -> Result<CanonicalInvocation, BindingError> {
         let action = self
             .registry
-            .action_by_model_name(&invocation.function_name)
+            .resolve_action(&invocation.function_name)
             .ok_or_else(|| {
                 BindingError::new(format!(
                     "unknown model action '{}'",
@@ -198,12 +363,17 @@ impl ModelAdapter {
                     param.model_name, invocation.function_name
                 ))
             })?;
-            let canonical = lower_model_value(&self.registry, &param.ty, model_value)?;
+            let canonical = lower_model_value(
+                &self.registry,
+                &action.skill.skill_name,
+                &param.ty,
+                model_value,
+            )?;
             arguments.insert(param.canonical_name.clone(), canonical);
         }
 
         Ok(CanonicalInvocation {
-            action_name: action.canonical_name.clone(),
+            locator: action.locator(),
             arguments,
         })
     }
@@ -215,11 +385,14 @@ impl ModelAdapter {
     ) -> Result<Value, BindingError> {
         let action = self
             .registry
-            .action_by_canonical_name(action_name)
-            .ok_or_else(|| {
-                BindingError::new(format!("unknown canonical action '{action_name}'"))
-            })?;
-        lift_model_result(&self.registry, &action.result, value)
+            .resolve_action(action_name)
+            .ok_or_else(|| BindingError::new(format!("unknown action '{action_name}'")))?;
+        lift_model_result(
+            &self.registry,
+            &action.skill.skill_name,
+            &action.result,
+            value,
+        )
     }
 }
 
@@ -235,11 +408,11 @@ impl WasmAdapter {
     ) -> Result<WasmInvocation, BindingError> {
         let action = self
             .registry
-            .action_by_canonical_name(&invocation.action_name)
+            .action_by_qualified_name(&invocation.locator.qualified_name)
             .ok_or_else(|| {
                 BindingError::new(format!(
                     "unknown canonical action '{}'",
-                    invocation.action_name
+                    invocation.locator.qualified_name
                 ))
             })?;
 
@@ -251,14 +424,20 @@ impl WasmAdapter {
                 .ok_or_else(|| {
                     BindingError::new(format!(
                         "missing canonical argument '{}' for action '{}'",
-                        param.canonical_name, invocation.action_name
+                        param.canonical_name, invocation.locator.qualified_name
                     ))
                 })?;
-            arguments.push(lower_wasm_value(&self.registry, &param.ty, value)?);
+            arguments.push(lower_wasm_value(
+                &self.registry,
+                &action.skill.skill_name,
+                &param.ty,
+                value,
+            )?);
         }
 
         Ok(WasmInvocation {
-            export_name: action.canonical_name.clone(),
+            locator: invocation.locator.clone(),
+            export_name: action.action_name.clone(),
             arguments,
         })
     }
@@ -270,11 +449,14 @@ impl WasmAdapter {
     ) -> Result<CanonicalValue, BindingError> {
         let action = self
             .registry
-            .action_by_canonical_name(action_name)
-            .ok_or_else(|| {
-                BindingError::new(format!("unknown canonical action '{action_name}'"))
-            })?;
-        lift_wasm_result(&self.registry, &action.result, value)
+            .resolve_action(action_name)
+            .ok_or_else(|| BindingError::new(format!("unknown action '{action_name}'")))?;
+        lift_wasm_result(
+            &self.registry,
+            &action.skill.skill_name,
+            &action.result,
+            value,
+        )
     }
 }
 
@@ -301,6 +483,7 @@ impl Error for BindingError {}
 
 fn lower_model_value(
     registry: &ActionRegistry,
+    skill_name: &str,
     ty: &CanonicalTypeRef,
     value: &Value,
 ) -> Result<CanonicalValue, BindingError> {
@@ -347,20 +530,20 @@ fn lower_model_value(
         CanonicalTypeRef::List(inner) => match value {
             Value::List(items) => items
                 .iter()
-                .map(|item| lower_model_value(registry, inner, item))
+                .map(|item| lower_model_value(registry, skill_name, inner, item))
                 .collect::<Result<Vec<_>, _>>()
                 .map(CanonicalValue::List),
             _ => Err(BindingError::new("expected list")),
         },
         CanonicalTypeRef::Option(inner) => match value {
             Value::Null => Ok(CanonicalValue::Null),
-            _ => lower_model_value(registry, inner, value),
+            _ => lower_model_value(registry, skill_name, inner, value),
         },
         CanonicalTypeRef::Tuple(items) => match value {
             Value::List(values) if values.len() == items.len() => items
                 .iter()
                 .zip(values.iter())
-                .map(|(ty, value)| lower_model_value(registry, ty, value))
+                .map(|(ty, value)| lower_model_value(registry, skill_name, ty, value))
                 .collect::<Result<Vec<_>, _>>()
                 .map(CanonicalValue::Tuple),
             _ => Err(BindingError::new("expected tuple-compatible list")),
@@ -368,27 +551,30 @@ fn lower_model_value(
         CanonicalTypeRef::Result { .. } => Err(BindingError::new(
             "model result values are not supported as direct inputs",
         )),
-        CanonicalTypeRef::Named(name) => lower_named_model_value(registry, name, value),
+        CanonicalTypeRef::Named(name) => lower_named_model_value(registry, skill_name, name, value),
     }
 }
 
 fn lower_named_model_value(
     registry: &ActionRegistry,
+    skill_name: &str,
     name: &str,
     value: &Value,
 ) -> Result<CanonicalValue, BindingError> {
     let ty = registry
-        .type_by_name(name)
-        .ok_or_else(|| BindingError::new(format!("unknown canonical type '{name}'")))?;
+        .type_by_name_in_skill(skill_name, name)
+        .ok_or_else(|| {
+            BindingError::new(format!("unknown canonical type '{skill_name}.{name}'"))
+        })?;
 
     match &ty.kind {
-        CanonicalTypeDefKind::Alias(alias) => lower_model_value(registry, alias, value),
+        CanonicalTypeDefKind::Alias(alias) => lower_model_value(registry, skill_name, alias, value),
         CanonicalTypeDefKind::Enum(cases) => match value {
             Value::String(value) if cases.iter().any(|case| case.name == *value) => {
                 Ok(CanonicalValue::EnumCase(value.clone()))
             }
             _ => Err(BindingError::new(format!(
-                "expected enum case for type '{name}'"
+                "expected enum case for type '{skill_name}.{name}'"
             ))),
         },
         CanonicalTypeDefKind::Record(record) => match value {
@@ -398,19 +584,19 @@ fn lower_named_model_value(
                     let model_name = python_function_name(&field.name);
                     let field_value = fields.get(&model_name).ok_or_else(|| {
                         BindingError::new(format!(
-                            "missing field '{}' for record '{}'",
-                            model_name, name
+                            "missing field '{}' for record '{}.{}'",
+                            model_name, skill_name, name
                         ))
                     })?;
                     lowered.insert(
                         field.name.clone(),
-                        lower_model_value(registry, &field.ty, field_value)?,
+                        lower_model_value(registry, skill_name, &field.ty, field_value)?,
                     );
                 }
                 Ok(CanonicalValue::Record(lowered))
             }
             _ => Err(BindingError::new(format!(
-                "expected record value for type '{name}'"
+                "expected record value for type '{skill_name}.{name}'"
             ))),
         },
         CanonicalTypeDefKind::Variant(_) => Err(BindingError::new(
@@ -424,21 +610,24 @@ fn lower_named_model_value(
 
 fn lift_model_result(
     registry: &ActionRegistry,
+    skill_name: &str,
     result: &CanonicalFunctionResult,
     value: &CanonicalValue,
 ) -> Result<Value, BindingError> {
     match result {
         CanonicalFunctionResult::None => Ok(Value::Null),
-        CanonicalFunctionResult::Scalar(ty) => lift_model_value(registry, ty, value),
+        CanonicalFunctionResult::Scalar(ty) => lift_model_value(registry, skill_name, ty, value),
         CanonicalFunctionResult::Named(params) => {
             if params.len() == 1 {
-                lift_model_value(registry, &params[0].ty, value)
+                lift_model_value(registry, skill_name, &params[0].ty, value)
             } else {
                 match value {
                     CanonicalValue::Tuple(items) if items.len() == params.len() => params
                         .iter()
                         .zip(items.iter())
-                        .map(|(param, item)| lift_model_value(registry, &param.ty, item))
+                        .map(|(param, item)| {
+                            lift_model_value(registry, skill_name, &param.ty, item)
+                        })
                         .collect::<Result<Vec<_>, _>>()
                         .map(Value::List),
                     _ => Err(BindingError::new("expected tuple result")),
@@ -450,6 +639,7 @@ fn lift_model_result(
 
 fn lift_model_value(
     registry: &ActionRegistry,
+    skill_name: &str,
     ty: &CanonicalTypeRef,
     value: &CanonicalValue,
 ) -> Result<Value, BindingError> {
@@ -494,20 +684,20 @@ fn lift_model_value(
         CanonicalTypeRef::List(inner) => match value {
             CanonicalValue::List(items) => items
                 .iter()
-                .map(|item| lift_model_value(registry, inner, item))
+                .map(|item| lift_model_value(registry, skill_name, inner, item))
                 .collect::<Result<Vec<_>, _>>()
                 .map(Value::List),
             _ => Err(BindingError::new("expected canonical list")),
         },
         CanonicalTypeRef::Option(inner) => match value {
             CanonicalValue::Null => Ok(Value::Null),
-            _ => lift_model_value(registry, inner, value),
+            _ => lift_model_value(registry, skill_name, inner, value),
         },
         CanonicalTypeRef::Tuple(items) => match value {
             CanonicalValue::Tuple(values) if values.len() == items.len() => items
                 .iter()
                 .zip(values.iter())
-                .map(|(ty, value)| lift_model_value(registry, ty, value))
+                .map(|(ty, value)| lift_model_value(registry, skill_name, ty, value))
                 .collect::<Result<Vec<_>, _>>()
                 .map(Value::List),
             _ => Err(BindingError::new("expected canonical tuple")),
@@ -515,25 +705,28 @@ fn lift_model_value(
         CanonicalTypeRef::Result { .. } => Err(BindingError::new(
             "canonical result values are not supported yet",
         )),
-        CanonicalTypeRef::Named(name) => lift_named_model_value(registry, name, value),
+        CanonicalTypeRef::Named(name) => lift_named_model_value(registry, skill_name, name, value),
     }
 }
 
 fn lift_named_model_value(
     registry: &ActionRegistry,
+    skill_name: &str,
     name: &str,
     value: &CanonicalValue,
 ) -> Result<Value, BindingError> {
     let ty = registry
-        .type_by_name(name)
-        .ok_or_else(|| BindingError::new(format!("unknown canonical type '{name}'")))?;
+        .type_by_name_in_skill(skill_name, name)
+        .ok_or_else(|| {
+            BindingError::new(format!("unknown canonical type '{skill_name}.{name}'"))
+        })?;
 
     match &ty.kind {
-        CanonicalTypeDefKind::Alias(alias) => lift_model_value(registry, alias, value),
+        CanonicalTypeDefKind::Alias(alias) => lift_model_value(registry, skill_name, alias, value),
         CanonicalTypeDefKind::Enum(_) => match value {
             CanonicalValue::EnumCase(value) => Ok(Value::String(value.clone())),
             _ => Err(BindingError::new(format!(
-                "expected canonical enum value for '{name}'"
+                "expected canonical enum value for '{skill_name}.{name}'"
             ))),
         },
         CanonicalTypeDefKind::Record(record) => match value {
@@ -542,19 +735,19 @@ fn lift_named_model_value(
                 for field in &record.fields {
                     let field_value = fields.get(&field.name).ok_or_else(|| {
                         BindingError::new(format!(
-                            "missing canonical field '{}' for record '{}'",
-                            field.name, name
+                            "missing canonical field '{}' for record '{}.{}'",
+                            field.name, skill_name, name
                         ))
                     })?;
                     lifted.insert(
                         python_function_name(&field.name),
-                        lift_model_value(registry, &field.ty, field_value)?,
+                        lift_model_value(registry, skill_name, &field.ty, field_value)?,
                     );
                 }
                 Ok(Value::Map(lifted))
             }
             _ => Err(BindingError::new(format!(
-                "expected canonical record for '{name}'"
+                "expected canonical record for '{skill_name}.{name}'"
             ))),
         },
         CanonicalTypeDefKind::Variant(_) => Err(BindingError::new(
@@ -568,6 +761,7 @@ fn lift_named_model_value(
 
 fn lower_wasm_value(
     registry: &ActionRegistry,
+    skill_name: &str,
     ty: &CanonicalTypeRef,
     value: &CanonicalValue,
 ) -> Result<WasmValue, BindingError> {
@@ -610,21 +804,21 @@ fn lower_wasm_value(
         CanonicalTypeRef::List(inner) => match value {
             CanonicalValue::List(items) => items
                 .iter()
-                .map(|item| lower_wasm_value(registry, inner, item))
+                .map(|item| lower_wasm_value(registry, skill_name, inner, item))
                 .collect::<Result<Vec<_>, _>>()
                 .map(WasmValue::List),
             _ => Err(BindingError::new("expected canonical list")),
         },
         CanonicalTypeRef::Option(inner) => match value {
             CanonicalValue::Null => Ok(WasmValue::Option(Box::new(None))),
-            _ => lower_wasm_value(registry, inner, value)
+            _ => lower_wasm_value(registry, skill_name, inner, value)
                 .map(|value| WasmValue::Option(Box::new(Some(value)))),
         },
         CanonicalTypeRef::Tuple(items) => match value {
             CanonicalValue::Tuple(values) if values.len() == items.len() => items
                 .iter()
                 .zip(values.iter())
-                .map(|(ty, value)| lower_wasm_value(registry, ty, value))
+                .map(|(ty, value)| lower_wasm_value(registry, skill_name, ty, value))
                 .collect::<Result<Vec<_>, _>>()
                 .map(WasmValue::Tuple),
             _ => Err(BindingError::new("expected canonical tuple")),
@@ -632,25 +826,28 @@ fn lower_wasm_value(
         CanonicalTypeRef::Result { .. } => Err(BindingError::new(
             "canonical result types are not supported as direct invocation inputs",
         )),
-        CanonicalTypeRef::Named(name) => lower_named_wasm_value(registry, name, value),
+        CanonicalTypeRef::Named(name) => lower_named_wasm_value(registry, skill_name, name, value),
     }
 }
 
 fn lower_named_wasm_value(
     registry: &ActionRegistry,
+    skill_name: &str,
     name: &str,
     value: &CanonicalValue,
 ) -> Result<WasmValue, BindingError> {
     let ty = registry
-        .type_by_name(name)
-        .ok_or_else(|| BindingError::new(format!("unknown canonical type '{name}'")))?;
+        .type_by_name_in_skill(skill_name, name)
+        .ok_or_else(|| {
+            BindingError::new(format!("unknown canonical type '{skill_name}.{name}'"))
+        })?;
 
     match &ty.kind {
-        CanonicalTypeDefKind::Alias(alias) => lower_wasm_value(registry, alias, value),
+        CanonicalTypeDefKind::Alias(alias) => lower_wasm_value(registry, skill_name, alias, value),
         CanonicalTypeDefKind::Enum(_) => match value {
             CanonicalValue::EnumCase(value) => Ok(WasmValue::EnumCase(value.clone())),
             _ => Err(BindingError::new(format!(
-                "expected canonical enum for '{name}'"
+                "expected canonical enum for '{skill_name}.{name}'"
             ))),
         },
         CanonicalTypeDefKind::Record(record) => match value {
@@ -659,19 +856,19 @@ fn lower_named_wasm_value(
                 for field in &record.fields {
                     let field_value = fields.get(&field.name).ok_or_else(|| {
                         BindingError::new(format!(
-                            "missing canonical field '{}' for '{}'",
-                            field.name, name
+                            "missing canonical field '{}' for '{}.{}'",
+                            field.name, skill_name, name
                         ))
                     })?;
                     lowered.push((
                         field.name.clone(),
-                        lower_wasm_value(registry, &field.ty, field_value)?,
+                        lower_wasm_value(registry, skill_name, &field.ty, field_value)?,
                     ));
                 }
                 Ok(WasmValue::Record(lowered))
             }
             _ => Err(BindingError::new(format!(
-                "expected canonical record for '{name}'"
+                "expected canonical record for '{skill_name}.{name}'"
             ))),
         },
         CanonicalTypeDefKind::Variant(_) => Err(BindingError::new(
@@ -685,21 +882,22 @@ fn lower_named_wasm_value(
 
 fn lift_wasm_result(
     registry: &ActionRegistry,
+    skill_name: &str,
     result: &CanonicalFunctionResult,
     value: &WasmValue,
 ) -> Result<CanonicalValue, BindingError> {
     match result {
         CanonicalFunctionResult::None => Ok(CanonicalValue::Null),
-        CanonicalFunctionResult::Scalar(ty) => lift_wasm_value(registry, ty, value),
+        CanonicalFunctionResult::Scalar(ty) => lift_wasm_value(registry, skill_name, ty, value),
         CanonicalFunctionResult::Named(params) => {
             if params.len() == 1 {
-                lift_wasm_value(registry, &params[0].ty, value)
+                lift_wasm_value(registry, skill_name, &params[0].ty, value)
             } else {
                 match value {
                     WasmValue::Tuple(items) if items.len() == params.len() => params
                         .iter()
                         .zip(items.iter())
-                        .map(|(param, item)| lift_wasm_value(registry, &param.ty, item))
+                        .map(|(param, item)| lift_wasm_value(registry, skill_name, &param.ty, item))
                         .collect::<Result<Vec<_>, _>>()
                         .map(CanonicalValue::Tuple),
                     _ => Err(BindingError::new("expected wasm tuple result")),
@@ -711,6 +909,7 @@ fn lift_wasm_result(
 
 fn lift_wasm_value(
     registry: &ActionRegistry,
+    skill_name: &str,
     ty: &CanonicalTypeRef,
     value: &WasmValue,
 ) -> Result<CanonicalValue, BindingError> {
@@ -753,7 +952,7 @@ fn lift_wasm_value(
         CanonicalTypeRef::List(inner) => match value {
             WasmValue::List(items) => items
                 .iter()
-                .map(|item| lift_wasm_value(registry, inner, item))
+                .map(|item| lift_wasm_value(registry, skill_name, inner, item))
                 .collect::<Result<Vec<_>, _>>()
                 .map(CanonicalValue::List),
             _ => Err(BindingError::new("expected wasm list")),
@@ -762,7 +961,7 @@ fn lift_wasm_value(
             WasmValue::Option(option) => option
                 .as_ref()
                 .as_ref()
-                .map(|value| lift_wasm_value(registry, inner, value))
+                .map(|value| lift_wasm_value(registry, skill_name, inner, value))
                 .transpose()
                 .map(|value| value.unwrap_or(CanonicalValue::Null)),
             _ => Err(BindingError::new("expected wasm option")),
@@ -771,7 +970,7 @@ fn lift_wasm_value(
             WasmValue::Tuple(values) if values.len() == items.len() => items
                 .iter()
                 .zip(values.iter())
-                .map(|(ty, value)| lift_wasm_value(registry, ty, value))
+                .map(|(ty, value)| lift_wasm_value(registry, skill_name, ty, value))
                 .collect::<Result<Vec<_>, _>>()
                 .map(CanonicalValue::Tuple),
             _ => Err(BindingError::new("expected wasm tuple")),
@@ -779,25 +978,28 @@ fn lift_wasm_value(
         CanonicalTypeRef::Result { .. } => Err(BindingError::new(
             "wasm result wrappers are not supported yet",
         )),
-        CanonicalTypeRef::Named(name) => lift_named_wasm_value(registry, name, value),
+        CanonicalTypeRef::Named(name) => lift_named_wasm_value(registry, skill_name, name, value),
     }
 }
 
 fn lift_named_wasm_value(
     registry: &ActionRegistry,
+    skill_name: &str,
     name: &str,
     value: &WasmValue,
 ) -> Result<CanonicalValue, BindingError> {
     let ty = registry
-        .type_by_name(name)
-        .ok_or_else(|| BindingError::new(format!("unknown canonical type '{name}'")))?;
+        .type_by_name_in_skill(skill_name, name)
+        .ok_or_else(|| {
+            BindingError::new(format!("unknown canonical type '{skill_name}.{name}'"))
+        })?;
 
     match &ty.kind {
-        CanonicalTypeDefKind::Alias(alias) => lift_wasm_value(registry, alias, value),
+        CanonicalTypeDefKind::Alias(alias) => lift_wasm_value(registry, skill_name, alias, value),
         CanonicalTypeDefKind::Enum(_) => match value {
             WasmValue::EnumCase(value) => Ok(CanonicalValue::EnumCase(value.clone())),
             _ => Err(BindingError::new(format!(
-                "expected wasm enum for '{name}'"
+                "expected wasm enum for '{skill_name}.{name}'"
             ))),
         },
         CanonicalTypeDefKind::Record(record) => match value {
@@ -807,19 +1009,19 @@ fn lift_named_wasm_value(
                 for field in &record.fields {
                     let field_value = by_name.get(&field.name).ok_or_else(|| {
                         BindingError::new(format!(
-                            "missing wasm field '{}' for '{}'",
-                            field.name, name
+                            "missing wasm field '{}' for '{}.{}'",
+                            field.name, skill_name, name
                         ))
                     })?;
                     lifted.insert(
                         field.name.clone(),
-                        lift_wasm_value(registry, &field.ty, field_value)?,
+                        lift_wasm_value(registry, skill_name, &field.ty, field_value)?,
                     );
                 }
                 Ok(CanonicalValue::Record(lifted))
             }
             _ => Err(BindingError::new(format!(
-                "expected wasm record for '{name}'"
+                "expected wasm record for '{skill_name}.{name}'"
             ))),
         },
         CanonicalTypeDefKind::Variant(_) => Err(BindingError::new(
@@ -837,9 +1039,11 @@ mod tests {
 
     use pera_core::Value;
 
-    use crate::{CanonicalValue, load_canonical_world_from_wit};
+    use crate::{CanonicalValue, CanonicalWorld, load_canonical_world_from_wit};
 
-    use super::{CanonicalBindings, ModelInvocation, WasmValue};
+    use super::{
+        CanonicalBindings, CatalogSkill, ModelInvocation, SkillCatalog, SkillMetadata, WasmValue,
+    };
 
     fn bindings() -> CanonicalBindings {
         let world = load_canonical_world_from_wit(
@@ -865,7 +1069,12 @@ mod tests {
         };
 
         let canonical = adapter.lower_invocation(&invocation).unwrap();
-        assert_eq!(canonical.action_name, "resolve-mission");
+        assert_eq!(canonical.locator.skill.skill_name, "secret-service");
+        assert_eq!(canonical.locator.action_name, "resolve-mission");
+        assert_eq!(
+            canonical.locator.qualified_name,
+            "secret-service.resolve-mission"
+        );
         assert_eq!(
             canonical.arguments.get("mission-id"),
             Some(&CanonicalValue::String("m-1".to_owned()))
@@ -896,6 +1105,7 @@ mod tests {
 
         let canonical = model.lower_invocation(&invocation).unwrap();
         let lowered = wasm.lower_invocation(&canonical).unwrap();
+        assert_eq!(lowered.locator.skill.skill_name, "secret-service");
         assert_eq!(lowered.export_name, "resolve-mission");
         assert_eq!(lowered.arguments.len(), 3);
         assert_eq!(lowered.arguments[0], WasmValue::String("m-1".to_owned()));
@@ -948,7 +1158,9 @@ mod tests {
             ),
         ]));
 
-        let lifted = adapter.lift_result("create-mission", &value).unwrap();
+        let lifted = adapter
+            .lift_result("secret-service.create-mission", &value)
+            .unwrap();
         match lifted {
             Value::Map(fields) => {
                 assert_eq!(
@@ -962,6 +1174,116 @@ mod tests {
                 assert_eq!(fields.get("assigned_agent_id"), Some(&Value::Null));
             }
             _ => panic!("expected record-shaped model value"),
+        }
+    }
+
+    #[test]
+    fn skill_catalog_resolves_both_unique_and_namespaced_model_names() {
+        let secret_world = load_canonical_world_from_wit(
+            "../../skills/examples/secret-service/world.wit",
+            "secret-service-default",
+        )
+        .unwrap();
+        let weather_world = load_canonical_world_from_wit(
+            "../../skills/examples/weather-brief/world.wit",
+            "weather-brief-default",
+        )
+        .unwrap();
+
+        let catalog = SkillCatalog::from_skills(vec![
+            CatalogSkill {
+                metadata: SkillMetadata::new("secret-service", "secret-service-default"),
+                world: secret_world,
+            },
+            CatalogSkill {
+                metadata: SkillMetadata::new("weather-brief", "weather-brief-default"),
+                world: weather_world,
+            },
+        ])
+        .unwrap();
+
+        let registry = catalog.action_registry();
+        assert_eq!(
+            registry
+                .resolve_action("resolve_mission")
+                .map(|action| action.qualified_name.as_str()),
+            Some("secret-service.resolve-mission")
+        );
+        assert_eq!(
+            registry
+                .resolve_action("weather_brief.get_forecast")
+                .map(|action| action.qualified_name.as_str()),
+            Some("weather-brief.get-forecast")
+        );
+        assert_eq!(
+            registry
+                .resolve_action("secret-service.resolve-mission")
+                .map(|action| action.qualified_name.as_str()),
+            Some("secret-service.resolve-mission")
+        );
+    }
+
+    #[test]
+    fn conflicting_unqualified_model_names_require_namespace() {
+        let world_a = test_world("alpha", "alpha-default", "ping");
+        let world_b = test_world("beta", "beta-default", "ping");
+
+        let catalog = SkillCatalog::from_skills(vec![
+            CatalogSkill {
+                metadata: SkillMetadata::new("alpha", "alpha-default"),
+                world: world_a,
+            },
+            CatalogSkill {
+                metadata: SkillMetadata::new("beta", "beta-default"),
+                world: world_b,
+            },
+        ])
+        .unwrap();
+
+        let registry = catalog.action_registry();
+        assert!(registry.resolve_action("ping").is_none());
+        assert_eq!(
+            registry
+                .resolve_action("alpha.ping")
+                .map(|action| action.qualified_name.as_str()),
+            Some("alpha.ping")
+        );
+        assert_eq!(
+            registry
+                .resolve_action("beta.ping")
+                .map(|action| action.qualified_name.as_str()),
+            Some("beta.ping")
+        );
+    }
+
+    fn test_world(skill_name: &str, world_name: &str, action_name: &str) -> CanonicalWorld {
+        CanonicalWorld {
+            package: Some(crate::CanonicalPackageRef {
+                namespace: "tests".to_owned(),
+                name: skill_name.to_owned(),
+                version: None,
+            }),
+            name: world_name.to_owned(),
+            docs: None,
+            imports: Vec::new(),
+            exports: vec![crate::CanonicalInterface {
+                name: format!("{skill_name}-exports"),
+                docs: None,
+                functions: vec![crate::CanonicalFunction {
+                    name: action_name.to_owned(),
+                    docs: None,
+                    params: vec![crate::CanonicalParam {
+                        name: "value".to_owned(),
+                        ty: crate::CanonicalTypeRef::Primitive(
+                            crate::CanonicalPrimitiveType::String,
+                        ),
+                    }],
+                    result: crate::CanonicalFunctionResult::Scalar(
+                        crate::CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::String),
+                    ),
+                }],
+                types: Vec::new(),
+            }],
         }
     }
 }
