@@ -77,6 +77,15 @@ impl SqliteCapabilityProvider {
         }))
         .map_err(Into::into)
     }
+
+    pub fn execute_batch(&self, sql: &str) -> Result<(), CapabilityProviderError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| CapabilityProviderError::new("sqlite connection mutex is poisoned"))?;
+        connection.execute_batch(sql)?;
+        Ok(())
+    }
 }
 
 impl CapabilityProvider for SqliteCapabilityProvider {
@@ -257,6 +266,28 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rows, r#"[{"condition":"rain"}]"#);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn sqlite_provider_executes_batches() {
+        let path = temp_db_path("sqlite-provider-batch");
+        let provider = SqliteCapabilityProvider::new(&path).unwrap();
+
+        provider
+            .execute_batch(
+                r#"
+                CREATE TABLE reports (id TEXT PRIMARY KEY, status TEXT NOT NULL);
+                INSERT INTO reports (id, status) VALUES ('report-1', 'ready');
+                "#,
+            )
+            .unwrap();
+
+        let rows = provider
+            .execute("SELECT status FROM reports WHERE id = ?", Some(r#"["report-1"]"#))
+            .unwrap();
+        assert_eq!(rows, r#"[{"status":"ready"}]"#);
 
         let _ = std::fs::remove_file(path);
     }
