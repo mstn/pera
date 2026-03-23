@@ -1,14 +1,16 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
+use pera_canonical::SkillCatalog;
 use pera_core::{
-    ActionId, ActionRecord, ActionRequest, ActionResult, ActionStatus, CodeArtifactId,
+    ActionId, ActionRecord, ActionRequest, ActionResult, ActionSkillRef, ActionStatus, CodeArtifactId,
     ExecutionSession, ExecutionStatus, Interpreter, InterpreterStep, RunId, StartExecutionRequest,
 };
 
 #[derive(Debug)]
 pub enum RunExecutorError {
     Interpreter(pera_core::InterpreterError),
+    ActionResolution(String),
     InvalidState(&'static str),
 }
 
@@ -16,6 +18,7 @@ impl Display for RunExecutorError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Interpreter(error) => write!(f, "interpreter error: {error}"),
+            Self::ActionResolution(message) => f.write_str(message),
             Self::InvalidState(message) => f.write_str(message),
         }
     }
@@ -47,6 +50,7 @@ pub enum RunTransitionTrigger {
 #[derive(Debug)]
 pub struct RunExecutor<I> {
     interpreter: I,
+    skill_catalog: SkillCatalog,
 }
 
 impl<I> RunExecutor<I>
@@ -54,7 +58,14 @@ where
     I: Interpreter,
 {
     pub fn new(interpreter: I) -> Self {
-        Self { interpreter }
+        Self::with_skill_catalog(interpreter, SkillCatalog::from_skills(Vec::new()).expect("empty skill catalog"))
+    }
+
+    pub fn with_skill_catalog(interpreter: I, skill_catalog: SkillCatalog) -> Self {
+        Self {
+            interpreter,
+            skill_catalog,
+        }
     }
 
     pub fn start_run(
@@ -139,10 +150,12 @@ where
         match step {
             InterpreterStep::Suspended(suspension) => {
                 let action_id = next_action_id();
+                let resolved_action = self.resolve_action(&suspension.call.action_name)?;
                 let action_request = ActionRequest {
                     id: action_id,
                     run_id: session.id,
-                    action_name: suspension.call.action_name,
+                    skill: resolved_action.skill,
+                    action_name: resolved_action.action_name,
                     arguments: suspension.call.arguments,
                 };
                 let action_record = ActionRecord {
@@ -173,4 +186,39 @@ where
             }
         }
     }
+
+    fn resolve_action(
+        &self,
+        action_name: &pera_core::ActionName,
+    ) -> Result<ResolvedAction, RunExecutorError> {
+        let action = self
+            .skill_catalog
+            .action_registry()
+            .resolve_model_action(action_name.as_str())
+            .ok_or_else(|| {
+                RunExecutorError::ActionResolution(format!(
+                    "unknown external action '{}'",
+                    action_name.as_str()
+                ))
+            })?;
+
+        Ok(ResolvedAction {
+            skill: ActionSkillRef {
+                skill_name: action.skill.skill_name.clone(),
+                skill_version: action
+                    .skill
+                    .skill_version
+                    .as_ref()
+                    .map(|value| pera_core::SkillVersion::new(value.clone())),
+                profile_name: action.skill.profile_name.clone(),
+            },
+            action_name: pera_core::ActionName::new(action.action_name.clone()),
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedAction {
+    skill: ActionSkillRef,
+    action_name: pera_core::ActionName,
 }

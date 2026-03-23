@@ -8,7 +8,8 @@ use pera_core::{
 };
 use pera_runtime::{
     interpreter::MontyInterpreter, EventHub, ExecutionEngine, FileSystemEventLog,
-    FileSystemRunStore, InProcessActionExecutor, RejectingActionHandler, RunExecutor,
+    FileSystemRunStore, FileSystemSkillCatalogLoader, InProcessActionExecutor,
+    RejectingActionHandler, RunExecutor,
     TeeEventPublisher,
 };
 
@@ -29,12 +30,15 @@ impl RunCommand {
 
         let interpreter = MontyInterpreter::new();
         let store = FileSystemRunStore::new(&self.root).map_err(CliError::Store)?;
+        let skill_catalog = FileSystemSkillCatalogLoader::new(&self.root)
+            .load()
+            .map_err(CliError::Store)?;
         let event_hub = EventHub::new();
         let event_log = FileSystemEventLog::new(&self.root).map_err(CliError::Store)?;
         let recovery_events = event_log.read_events().map_err(CliError::Store)?;
         let publisher = TeeEventPublisher::new(event_log, event_hub.publisher());
 
-        let run_executor = RunExecutor::new(interpreter);
+        let run_executor = RunExecutor::with_skill_catalog(interpreter, skill_catalog);
         let action_executor = InProcessActionExecutor::new(RejectingActionHandler::new());
         let engine = ExecutionEngine::new(run_executor, store, publisher, action_executor, event_hub);
         let mut subscription = engine.subscribe();

@@ -109,7 +109,7 @@ impl CanonicalBindings {
 
 #[derive(Debug, Clone)]
 pub struct ActionRegistry {
-    actions_by_qualified_name: BTreeMap<String, ActionDefinition>,
+    actions_by_canonical_action_id: BTreeMap<String, ActionDefinition>,
     actions_by_qualified_model_name: BTreeMap<String, String>,
     unique_actions_by_model_name: BTreeMap<String, String>,
     unique_actions_by_local_name: BTreeMap<String, String>,
@@ -128,7 +128,7 @@ impl ActionRegistry {
     }
 
     pub fn from_skills(skills: Vec<CatalogSkill>) -> Result<Self, BindingError> {
-        let mut actions_by_qualified_name = BTreeMap::new();
+        let mut actions_by_canonical_action_id = BTreeMap::new();
         let mut actions_by_qualified_model_name = BTreeMap::new();
         let mut unique_actions_by_model_name = BTreeMap::new();
         let mut unique_actions_by_local_name = BTreeMap::new();
@@ -151,14 +151,15 @@ impl ActionRegistry {
 
             for function in &exports.functions {
                 let model_name = python_function_name(&function.name);
-                let qualified_name = format!("{}.{}", skill.metadata.skill_name, function.name);
+                let canonical_action_id =
+                    format!("{}.{}", skill.metadata.skill_name, function.name);
                 let qualified_model_name =
                     format!("{}.{}", skill.metadata.python_namespace, model_name);
 
                 let definition = ActionDefinition {
                     skill: skill.metadata.clone(),
                     action_name: function.name.clone(),
-                    qualified_name: qualified_name.clone(),
+                    canonical_action_id: canonical_action_id.clone(),
                     model_name: model_name.clone(),
                     qualified_model_name: qualified_model_name.clone(),
                     docs: function.docs.clone(),
@@ -174,37 +175,38 @@ impl ActionRegistry {
                     result: function.result.clone(),
                 };
 
-                if actions_by_qualified_name
-                    .insert(qualified_name.clone(), definition)
+                if actions_by_canonical_action_id
+                    .insert(canonical_action_id.clone(), definition)
                     .is_some()
                 {
                     return Err(BindingError::new(format!(
-                        "duplicate qualified action '{qualified_name}'"
+                        "duplicate canonical action id '{canonical_action_id}'"
                     )));
                 }
 
                 actions_by_qualified_model_name
-                    .insert(qualified_model_name, qualified_name.clone());
+                    .insert(qualified_model_name, canonical_action_id.clone());
 
                 match unique_actions_by_model_name.get(&model_name) {
-                    Some(existing) if existing != &qualified_name => {
+                    Some(existing) if existing != &canonical_action_id => {
                         duplicate_model_names.insert(model_name.clone());
                         unique_actions_by_model_name.remove(&model_name);
                     }
                     None if !duplicate_model_names.contains(&model_name) => {
                         unique_actions_by_model_name
-                            .insert(model_name.clone(), qualified_name.clone());
+                            .insert(model_name.clone(), canonical_action_id.clone());
                     }
                     _ => {}
                 }
 
                 match unique_actions_by_local_name.get(&function.name) {
-                    Some(existing) if existing != &qualified_name => {
+                    Some(existing) if existing != &canonical_action_id => {
                         duplicate_local_names.insert(function.name.clone());
                         unique_actions_by_local_name.remove(&function.name);
                     }
                     None if !duplicate_local_names.contains(&function.name) => {
-                        unique_actions_by_local_name.insert(function.name.clone(), qualified_name);
+                        unique_actions_by_local_name
+                            .insert(function.name.clone(), canonical_action_id);
                     }
                     _ => {}
                 }
@@ -212,7 +214,7 @@ impl ActionRegistry {
         }
 
         Ok(Self {
-            actions_by_qualified_name,
+            actions_by_canonical_action_id,
             actions_by_qualified_model_name,
             unique_actions_by_model_name,
             unique_actions_by_local_name,
@@ -220,25 +222,24 @@ impl ActionRegistry {
         })
     }
 
-    pub fn action_by_qualified_name(&self, name: &str) -> Option<&ActionDefinition> {
-        self.actions_by_qualified_name.get(name)
+    pub fn resolve_canonical_action(
+        &self,
+        canonical_action_id: &str,
+    ) -> Option<&ActionDefinition> {
+        self.actions_by_canonical_action_id.get(canonical_action_id)
     }
 
-    pub fn resolve_action(&self, name: &str) -> Option<&ActionDefinition> {
-        if let Some(action) = self.actions_by_qualified_name.get(name) {
-            return Some(action);
+    pub fn resolve_model_action(&self, model_name: &str) -> Option<&ActionDefinition> {
+        if let Some(canonical_action_id) = self.actions_by_qualified_model_name.get(model_name) {
+            return self.actions_by_canonical_action_id.get(canonical_action_id);
         }
 
-        if let Some(qualified_name) = self.actions_by_qualified_model_name.get(name) {
-            return self.actions_by_qualified_name.get(qualified_name);
+        if let Some(canonical_action_id) = self.unique_actions_by_model_name.get(model_name) {
+            return self.actions_by_canonical_action_id.get(canonical_action_id);
         }
 
-        if let Some(qualified_name) = self.unique_actions_by_model_name.get(name) {
-            return self.actions_by_qualified_name.get(qualified_name);
-        }
-
-        if let Some(qualified_name) = self.unique_actions_by_local_name.get(name) {
-            return self.actions_by_qualified_name.get(qualified_name);
+        if let Some(canonical_action_id) = self.unique_actions_by_local_name.get(model_name) {
+            return self.actions_by_canonical_action_id.get(canonical_action_id);
         }
 
         None
@@ -254,7 +255,7 @@ impl ActionRegistry {
 pub struct ActionDefinition {
     pub skill: SkillMetadata,
     pub action_name: String,
-    pub qualified_name: String,
+    pub canonical_action_id: String,
     pub model_name: String,
     pub qualified_model_name: String,
     pub docs: Option<String>,
@@ -267,7 +268,7 @@ impl ActionDefinition {
         ActionLocator {
             skill: self.skill.clone(),
             action_name: self.action_name.clone(),
-            qualified_name: self.qualified_name.clone(),
+            canonical_action_id: self.canonical_action_id.clone(),
         }
     }
 }
@@ -283,7 +284,7 @@ pub struct ActionParam {
 pub struct ActionLocator {
     pub skill: SkillMetadata,
     pub action_name: String,
-    pub qualified_name: String,
+    pub canonical_action_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -347,7 +348,7 @@ impl ModelAdapter {
     ) -> Result<CanonicalInvocation, BindingError> {
         let action = self
             .registry
-            .resolve_action(&invocation.function_name)
+            .resolve_model_action(&invocation.function_name)
             .ok_or_else(|| {
                 BindingError::new(format!(
                     "unknown model action '{}'",
@@ -385,7 +386,7 @@ impl ModelAdapter {
     ) -> Result<Value, BindingError> {
         let action = self
             .registry
-            .resolve_action(action_name)
+            .resolve_canonical_action(action_name)
             .ok_or_else(|| BindingError::new(format!("unknown action '{action_name}'")))?;
         lift_model_result(
             &self.registry,
@@ -408,11 +409,11 @@ impl WasmAdapter {
     ) -> Result<WasmInvocation, BindingError> {
         let action = self
             .registry
-            .action_by_qualified_name(&invocation.locator.qualified_name)
+            .resolve_canonical_action(&invocation.locator.canonical_action_id)
             .ok_or_else(|| {
                 BindingError::new(format!(
                     "unknown canonical action '{}'",
-                    invocation.locator.qualified_name
+                    invocation.locator.canonical_action_id
                 ))
             })?;
 
@@ -424,7 +425,7 @@ impl WasmAdapter {
                 .ok_or_else(|| {
                     BindingError::new(format!(
                         "missing canonical argument '{}' for action '{}'",
-                        param.canonical_name, invocation.locator.qualified_name
+                        param.canonical_name, invocation.locator.canonical_action_id
                     ))
                 })?;
             arguments.push(lower_wasm_value(
@@ -449,7 +450,7 @@ impl WasmAdapter {
     ) -> Result<CanonicalValue, BindingError> {
         let action = self
             .registry
-            .resolve_action(action_name)
+            .resolve_canonical_action(action_name)
             .ok_or_else(|| BindingError::new(format!("unknown action '{action_name}'")))?;
         lift_wasm_result(
             &self.registry,
@@ -1072,7 +1073,7 @@ mod tests {
         assert_eq!(canonical.locator.skill.skill_name, "secret-service");
         assert_eq!(canonical.locator.action_name, "resolve-mission");
         assert_eq!(
-            canonical.locator.qualified_name,
+            canonical.locator.canonical_action_id,
             "secret-service.resolve-mission"
         );
         assert_eq!(
@@ -1205,20 +1206,20 @@ mod tests {
         let registry = catalog.action_registry();
         assert_eq!(
             registry
-                .resolve_action("resolve_mission")
-                .map(|action| action.qualified_name.as_str()),
+                .resolve_model_action("resolve_mission")
+                .map(|action| action.canonical_action_id.as_str()),
             Some("secret-service.resolve-mission")
         );
         assert_eq!(
             registry
-                .resolve_action("weather_brief.get_forecast")
-                .map(|action| action.qualified_name.as_str()),
+                .resolve_model_action("weather_brief.get_forecast")
+                .map(|action| action.canonical_action_id.as_str()),
             Some("weather-brief.get-forecast")
         );
         assert_eq!(
             registry
-                .resolve_action("secret-service.resolve-mission")
-                .map(|action| action.qualified_name.as_str()),
+                .resolve_canonical_action("secret-service.resolve-mission")
+                .map(|action| action.canonical_action_id.as_str()),
             Some("secret-service.resolve-mission")
         );
     }
@@ -1241,17 +1242,17 @@ mod tests {
         .unwrap();
 
         let registry = catalog.action_registry();
-        assert!(registry.resolve_action("ping").is_none());
+        assert!(registry.resolve_model_action("ping").is_none());
         assert_eq!(
             registry
-                .resolve_action("alpha.ping")
-                .map(|action| action.qualified_name.as_str()),
+                .resolve_model_action("alpha.ping")
+                .map(|action| action.canonical_action_id.as_str()),
             Some("alpha.ping")
         );
         assert_eq!(
             registry
-                .resolve_action("beta.ping")
-                .map(|action| action.qualified_name.as_str()),
+                .resolve_model_action("beta.ping")
+                .map(|action| action.canonical_action_id.as_str()),
             Some("beta.ping")
         );
     }

@@ -699,6 +699,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "monty",
+ "pera-canonical",
  "pera-core",
  "serde",
  "serde_json",

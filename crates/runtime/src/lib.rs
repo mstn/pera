@@ -1,6 +1,7 @@
 //! Runtime orchestration layer for Pera.
 
 mod action;
+mod catalog;
 mod engine;
 mod events;
 mod fs;
@@ -13,6 +14,7 @@ pub use action::{
     ActionExecutionUpdate, ActionExecutor, ActionHandler, ActionProcessorError,
     InProcessActionExecutor, RejectingActionHandler,
 };
+pub use catalog::FileSystemSkillCatalogLoader;
 
 pub(crate) use action::ActionWorker;
 pub use engine::{ExecutionEngine, ExecutionEngineError};

@@ -9,7 +9,7 @@ mod run;
 mod skill;
 mod value;
 
-pub use action::{ActionRecord, ActionRequest, ActionResult, ActionStatus};
+pub use action::{ActionRecord, ActionRequest, ActionResult, ActionSkillRef, ActionStatus};
 pub use code::{CodeArtifact, CodeLanguage, ScriptName};
 pub use event::ExecutionEvent;
 pub use ids::{ActionId, ActionName, CodeArtifactId, InputName, RunId};

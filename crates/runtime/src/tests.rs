@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use pera_canonical::{CatalogSkill, SkillCatalog, SkillMetadata};
 use pera_core::{
     ActionName, ActionResult, CodeArtifact, CodeArtifactId, CodeLanguage, CompiledProgram,
     EventPublisher, ExecutionEvent, ExecutionOutput, ExecutionSnapshot, ExecutionStatus,
@@ -160,7 +161,7 @@ fn run_executor_completes_without_external_calls() {
 
 #[test]
 fn run_executor_suspends_and_resumes() {
-    let executor = RunExecutor::new(FakeInterpreter);
+    let executor = RunExecutor::with_skill_catalog(FakeInterpreter, single_action_catalog("echo"));
 
     let transition = executor
         .start_run(
@@ -207,8 +208,49 @@ fn run_executor_suspends_and_resumes() {
 }
 
 #[test]
+fn run_executor_annotates_actions_from_skill_catalog() {
+    let executor = RunExecutor::with_skill_catalog(FakeInterpreter, secret_service_catalog());
+
+    let transition = executor
+        .start_run(
+            request("call:resolve_mission:9"),
+            run_id("00000000-0000-0000-0000-000000000001"),
+            code_id("00000000-0000-0000-0000-000000000001"),
+            || action_id("00000000-0000-0000-0000-000000000001"),
+        )
+        .unwrap();
+
+    let action = transition.action_to_enqueue.unwrap();
+    assert_eq!(action.action_name.as_str(), "resolve-mission");
+    assert_eq!(
+        action.skill.skill_name.as_str(),
+        "secret-service"
+    );
+    assert_eq!(
+        action.skill.profile_name.as_deref(),
+        Some("secret-service-default")
+    );
+}
+
+#[test]
+fn run_executor_rejects_unknown_actions_when_catalog_is_configured() {
+    let executor = RunExecutor::with_skill_catalog(FakeInterpreter, secret_service_catalog());
+
+    let error = executor
+        .start_run(
+            request("call:missing:9"),
+            run_id("00000000-0000-0000-0000-000000000001"),
+            code_id("00000000-0000-0000-0000-000000000001"),
+            || action_id("00000000-0000-0000-0000-000000000001"),
+        )
+        .unwrap_err();
+
+    assert!(error.to_string().contains("unknown external action 'missing'"));
+}
+
+#[test]
 fn run_executor_fails_run() {
-    let executor = RunExecutor::new(FakeInterpreter);
+    let executor = RunExecutor::with_skill_catalog(FakeInterpreter, single_action_catalog("echo"));
 
     let started = executor
         .start_run(
@@ -229,7 +271,7 @@ fn run_executor_fails_run() {
 async fn execution_engine_manages_multiple_runs() {
     let event_hub = EventHub::new();
     let publisher = TeeEventPublisher::new(RecordingEventPublisher::new(), event_hub.publisher());
-    let run_executor = RunExecutor::new(FakeInterpreter);
+    let run_executor = RunExecutor::with_skill_catalog(FakeInterpreter, single_action_catalog("echo"));
     let action_executor = InProcessActionExecutor::new(EchoActionHandler);
     let engine = ExecutionEngine::new(
         run_executor,
@@ -280,7 +322,7 @@ async fn execution_engine_manages_multiple_runs() {
 async fn execution_engine_emits_action_failure_and_run_failure() {
     let event_hub = EventHub::new();
     let publisher = TeeEventPublisher::new(RecordingEventPublisher::new(), event_hub.publisher());
-    let run_executor = RunExecutor::new(FakeInterpreter);
+    let run_executor = RunExecutor::with_skill_catalog(FakeInterpreter, single_action_catalog("missing"));
     let action_executor = InProcessActionExecutor::new(RejectingActionHandler::new());
     let engine = ExecutionEngine::new(
         run_executor,
@@ -336,7 +378,7 @@ async fn execution_engine_recovers_waiting_runs_from_event_log() {
     let root = temp_root("recovery");
     let mut store = FileSystemRunStore::new(&root).unwrap();
     let mut event_log = FileSystemEventLog::new(&root).unwrap();
-    let executor = RunExecutor::new(FakeInterpreter);
+    let executor = RunExecutor::with_skill_catalog(FakeInterpreter, single_action_catalog("echo"));
     let transition = executor
         .start_run(
             request("call:echo:41"),
@@ -378,7 +420,7 @@ async fn execution_engine_recovers_waiting_runs_from_event_log() {
     let event_hub = EventHub::new();
     let publisher = TeeEventPublisher::new(event_log, event_hub.publisher());
     let engine = ExecutionEngine::new(
-        RunExecutor::new(FakeInterpreter),
+        RunExecutor::with_skill_catalog(FakeInterpreter, single_action_catalog("echo")),
         FileSystemRunStore::new(&root).unwrap(),
         publisher,
         InProcessActionExecutor::new(EchoActionHandler),
@@ -428,4 +470,67 @@ fn next_action_id(value: &str) -> pera_core::ActionId {
 
 fn code_id(value: &str) -> CodeArtifactId {
     CodeArtifactId::parse_str(value).unwrap()
+}
+
+fn secret_service_catalog() -> SkillCatalog {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let world_path = manifest_dir.join("../../skills/examples/secret-service/world.wit");
+    let world =
+        pera_canonical::load_canonical_world_from_wit(&world_path, "secret-service-default")
+            .unwrap();
+
+    SkillCatalog::from_skill(CatalogSkill {
+        metadata: {
+            let mut metadata = SkillMetadata::new("secret-service", "secret-service-default");
+            metadata.profile_name = Some("secret-service-default".to_owned());
+            metadata
+        },
+        world,
+    })
+    .unwrap()
+}
+
+fn single_action_catalog(action_name: &str) -> SkillCatalog {
+    SkillCatalog::from_skill(CatalogSkill {
+        metadata: {
+            let mut metadata = SkillMetadata::new("test-skill", "test-world");
+            metadata.profile_name = Some("test-profile".to_owned());
+            metadata
+        },
+        world: single_action_world("test-skill", "test-world", action_name),
+    })
+    .unwrap()
+}
+
+fn single_action_world(skill_name: &str, world_name: &str, action_name: &str) -> pera_canonical::CanonicalWorld {
+    pera_canonical::CanonicalWorld {
+        package: Some(pera_canonical::CanonicalPackageRef {
+            namespace: "tests".to_owned(),
+            name: skill_name.to_owned(),
+            version: None,
+        }),
+        name: world_name.to_owned(),
+        docs: None,
+        imports: Vec::new(),
+        exports: vec![pera_canonical::CanonicalInterface {
+            name: format!("{skill_name}-exports"),
+            docs: None,
+            functions: vec![pera_canonical::CanonicalFunction {
+                name: action_name.to_owned(),
+                docs: None,
+                params: vec![pera_canonical::CanonicalParam {
+                    name: "value".to_owned(),
+                    ty: pera_canonical::CanonicalTypeRef::Primitive(
+                        pera_canonical::CanonicalPrimitiveType::String,
+                    ),
+                }],
+                result: pera_canonical::CanonicalFunctionResult::Scalar(
+                    pera_canonical::CanonicalTypeRef::Primitive(
+                        pera_canonical::CanonicalPrimitiveType::String,
+                    ),
+                ),
+            }],
+            types: Vec::new(),
+        }],
+    }
 }
