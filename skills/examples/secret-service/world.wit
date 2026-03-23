@@ -1,0 +1,148 @@
+package miniclaw:secret-service@0.1.0;
+
+interface sqlite {
+  type json = string;
+  execute: func(sql: string, params-json: option<json>) -> json;
+}
+
+interface secret-service-types {
+  type json = string;
+
+  enum difficulty {
+    low,
+    medium,
+    high,
+    extreme,
+  }
+
+  enum mission-status {
+    planned,
+    assigned,
+    in-progress,
+    resolved,
+    failed,
+    aborted,
+  }
+
+  enum inventory-status {
+    available,
+    assigned,
+    used,
+    retired,
+  }
+
+  enum mission-outcome {
+    success,
+    failure,
+    aborted,
+  }
+
+  record agent {
+    id: string,
+    codename: string,
+    skills: list<string>,
+    loyalty: s32,
+    cover-identity: string,
+    status: string,
+  }
+
+  record mission {
+    id: string,
+    objective: string,
+    difficulty: difficulty,
+    region: string,
+    required-skills: list<string>,
+    status: mission-status,
+    assigned-agent-id: option<string>,
+    result-notes: option<string>,
+  }
+
+  record inventory-item {
+    id: string,
+    name: string,
+    category: string,
+    quantity: s32,
+    status: inventory-status,
+    assigned-agent-id: option<string>,
+    mission-id: option<string>,
+    specs: option<json>,
+  }
+
+  record assign-mission-output {
+    mission: mission,
+    assigned-gadgets: list<inventory-item>,
+  }
+
+  record resolve-mission-output {
+    mission: mission,
+    released-gadgets: list<inventory-item>,
+  }
+}
+
+interface secret-service-exports {
+  use secret-service-types.{
+    json,
+    difficulty,
+    mission-status,
+    inventory-status,
+    mission-outcome,
+    agent,
+    mission,
+    inventory-item,
+    assign-mission-output,
+    resolve-mission-output,
+  };
+
+  register-agent: func(
+    codename: string,
+    skills: list<string>,
+    loyalty: s32,
+    cover-identity: string,
+  ) -> agent;
+
+  list-agents: func(
+    loyalty-min: option<s32>,
+    required-skill: option<string>,
+  ) -> list<agent>;
+
+  create-mission: func(
+    objective: string,
+    difficulty: difficulty,
+    region: string,
+    required-skills: option<list<string>>,
+  ) -> mission;
+
+  list-missions: func(
+    status: option<mission-status>,
+    region: option<string>,
+  ) -> list<mission>;
+
+  add-inventory-item: func(
+    name: string,
+    category: string,
+    quantity: s32,
+    specs: option<json>,
+  ) -> inventory-item;
+
+  list-inventory: func(
+    status: option<inventory-status>,
+    only-available: option<bool>,
+  ) -> list<inventory-item>;
+
+  assign-mission: func(
+    mission-id: string,
+    agent-id: string,
+    gadget-ids: option<list<string>>,
+  ) -> assign-mission-output;
+
+  resolve-mission: func(
+    mission-id: string,
+    outcome: mission-outcome,
+    notes: option<string>,
+  ) -> resolve-mission-output;
+}
+
+world secret-service-default {
+  import sqlite;
+  export secret-service-exports;
+}

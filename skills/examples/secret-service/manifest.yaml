@@ -1,0 +1,37 @@
+schema_version: 1
+
+skill:
+  name: secret-service
+  version: 0.1.0
+  description: Manage covert operations with agents, missions, and gadgets.
+
+defaults:
+  instructions:
+    source: SKILL.md
+  databases:
+    - name: main
+      engine: sqlite
+      migrations:
+        dir: db/schema
+        table: schema_migrations
+      seeds:
+        dir: db/seeds
+        default: operation_nightfall
+      on_load: migrate
+
+profiles:
+  - name: secret-service-default
+    default: true
+    runtime:
+      kind: wasm-component
+      wasm:
+        wit:
+          path: world.wit
+          world: secret-service-default
+        artifacts:
+          dir: build/secret-service-default
+        build:
+          tool: componentize-py
+          module: app
+    capabilities:
+      - sqlite

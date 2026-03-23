@@ -23,6 +23,7 @@ async fn run() -> Result<(), error::CliError> {
     let cli = Cli::parse();
 
     match cli.command {
+        Command::Bindings(command) => command.execute().await,
         Command::Run(command) => command.execute().await,
     }
 }

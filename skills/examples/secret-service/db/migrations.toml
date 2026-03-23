@@ -1,0 +1,12 @@
+# Ordered migration manifest for secret-service skill DB.
+[[migrations]]
+id = "0001_init"
+file = "0001_init.sql"
+checksum = "1eeba84f4c2c07e5bd18a26a57aee6c68405d5a3fb515add80a920e0d8982090"
+description = "Create core tables for agents, missions, inventory, and mission events"
+
+[[migrations]]
+id = "0002_indexes"
+file = "0002_indexes.sql"
+checksum = "40df41acc9583c5962d49187ab83ccc3d6f5bf3366fa2927da4edaee9975a6eb"
+description = "Add indexes for mission and inventory lookups"

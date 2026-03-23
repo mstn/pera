@@ -1,0 +1,3 @@
+wit_world
+*.sqlite
+db/snapshots/*.sqlite

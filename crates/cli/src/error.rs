@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::io;
 use std::path::PathBuf;
+use std::process::ExitStatus;
 
 use pera_core::{RunId, StoreError};
 use pera_runtime::ExecutionEngineError;
@@ -13,6 +14,14 @@ pub enum CliError {
     UnknownRun(RunId),
     Store(StoreError),
     Engine(ExecutionEngineError),
+    CreateDir { path: PathBuf, source: io::Error },
+    ToolNotInstalled { tool: &'static str, hint: String },
+    ToolIo { tool: &'static str, source: io::Error },
+    ToolFailed {
+        tool: &'static str,
+        status: ExitStatus,
+        stderr: String,
+    },
     UnexpectedStateOwned(String),
 }
 
@@ -26,6 +35,24 @@ impl Display for CliError {
             Self::UnknownRun(run_id) => write!(f, "run {run_id} was not found"),
             Self::Store(error) => write!(f, "filesystem state initialization failed: {error}"),
             Self::Engine(error) => write!(f, "execution failed: {error}"),
+            Self::CreateDir { path, source } => {
+                write!(f, "failed to create {}: {source}", path.display())
+            }
+            Self::ToolNotInstalled { tool, hint } => {
+                write!(f, "{tool} is not installed. {hint}")
+            }
+            Self::ToolIo { tool, source } => write!(f, "failed to run {tool}: {source}"),
+            Self::ToolFailed {
+                tool,
+                status,
+                stderr,
+            } => {
+                if stderr.trim().is_empty() {
+                    write!(f, "{tool} exited with status {status}")
+                } else {
+                    write!(f, "{tool} exited with status {status}: {}", stderr.trim())
+                }
+            }
             Self::UnexpectedStateOwned(message) => write!(f, "execution failed: {message}"),
         }
     }
@@ -35,9 +62,12 @@ impl Error for CliError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::ReadFile { source, .. } => Some(source),
-            Self::InvalidArguments(_) | Self::UnknownRun(_) => None,
+            Self::InvalidArguments(_) | Self::UnknownRun(_) | Self::ToolNotInstalled { .. } => None,
             Self::Store(error) => Some(error),
             Self::Engine(error) => Some(error),
+            Self::CreateDir { source, .. } => Some(source),
+            Self::ToolIo { source, .. } => Some(source),
+            Self::ToolFailed { .. } => None,
             Self::UnexpectedStateOwned(_) => None,
         }
     }
