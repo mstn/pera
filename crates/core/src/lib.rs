@@ -6,6 +6,7 @@ mod event;
 mod ids;
 mod interpreter;
 mod run;
+mod skill;
 mod value;
 
 pub use action::{ActionRecord, ActionRequest, ActionResult, ActionStatus};
@@ -17,4 +18,10 @@ pub use interpreter::{
     InterpreterError, InterpreterKind, InterpreterStep, Suspension,
 };
 pub use run::{EventPublisher, ExecutionSession, ExecutionStatus, RunStore, StartExecutionRequest, StoreError};
+pub use skill::{
+    SkillBuildSpec, SkillDefaults, SkillDescription, SkillInstructionsSpec, SkillManifest,
+    SkillMetadata, SkillProfileManifest, SkillRuntimeArtifactSpec, SkillRuntimeKind,
+    SkillRuntimeManifest, SkillVersion, WasmSkillBuildSpec, WasmSkillInterfaceSpec,
+    WasmSkillRuntimeSpec,
+};
 pub use value::Value;
