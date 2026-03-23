@@ -2,6 +2,7 @@
 
 mod action;
 mod catalog;
+mod capabilities;
 mod engine;
 mod events;
 mod fs;
@@ -15,6 +16,10 @@ pub use action::{
     InProcessActionExecutor, RejectingActionHandler,
 };
 pub use catalog::FileSystemSkillCatalogLoader;
+pub use capabilities::{
+    CapabilityProvider, CapabilityProviderError, CapabilityProviderRegistry,
+    SqliteCapabilityProvider,
+};
 
 pub(crate) use action::ActionWorker;
 pub use engine::{ExecutionEngine, ExecutionEngineError};
