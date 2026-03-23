@@ -13,7 +13,7 @@ pub mod interpreter;
 
 pub use action::{
     ActionExecutionUpdate, ActionExecutor, ActionHandler, ActionProcessorError,
-    InProcessActionExecutor, RejectingActionHandler,
+    InProcessActionExecutor, RejectingActionHandler, WasmtimeComponentActionExecutor,
 };
 pub use catalog::FileSystemSkillCatalogLoader;
 pub use capabilities::{

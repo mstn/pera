@@ -105,7 +105,7 @@ fn canonical_world_item(
     key: &WorldKey,
     item: &WorldItem,
 ) -> Result<CanonicalInterface, CanonicalWitError> {
-    let name = world_key_name(key);
+    let name = resolve.name_world_key(key);
     match item {
         WorldItem::Interface { id, .. } => canonical_interface(resolve, name, *id),
         WorldItem::Function(function) => Ok(CanonicalInterface {
@@ -375,13 +375,6 @@ fn canonical_named_or_inline_type_ref(
         _ => Err(CanonicalWitError::new(
             "anonymous non-inline type is not supported in canonical import",
         )),
-    }
-}
-
-fn world_key_name(key: &WorldKey) -> String {
-    match key {
-        WorldKey::Name(name) => name.clone(),
-        WorldKey::Interface(id) => format!("interface-{}", id.index()),
     }
 }
 

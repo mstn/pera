@@ -8,9 +8,9 @@ use pera_core::{
 };
 use pera_runtime::{
     interpreter::MontyInterpreter, EventHub, ExecutionEngine, FileSystemEventLog,
-    FileSystemRunStore, FileSystemSkillCatalogLoader, InProcessActionExecutor,
-    RejectingActionHandler, RunExecutor,
+    FileSystemRunStore, FileSystemSkillCatalogLoader, RunExecutor,
     TeeEventPublisher,
+    WasmtimeComponentActionExecutor,
 };
 
 use crate::error::CliError;
@@ -38,8 +38,9 @@ impl RunCommand {
         let recovery_events = event_log.read_events().map_err(CliError::Store)?;
         let publisher = TeeEventPublisher::new(event_log, event_hub.publisher());
 
-        let run_executor = RunExecutor::with_skill_catalog(interpreter, skill_catalog);
-        let action_executor = InProcessActionExecutor::new(RejectingActionHandler::new());
+        let run_executor = RunExecutor::with_skill_catalog(interpreter, skill_catalog.clone());
+        let action_executor = WasmtimeComponentActionExecutor::new(&self.root, skill_catalog)
+            .map_err(|error| CliError::UnexpectedStateOwned(error.to_string()))?;
         let engine = ExecutionEngine::new(run_executor, store, publisher, action_executor, event_hub);
         let mut subscription = engine.subscribe();
         engine

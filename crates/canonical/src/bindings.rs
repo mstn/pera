@@ -46,6 +46,7 @@ pub struct CatalogSkill {
 #[derive(Debug, Clone)]
 pub struct SkillCatalog {
     registry: Arc<ActionRegistry>,
+    skills_by_key: Arc<BTreeMap<String, CatalogSkill>>,
 }
 
 impl SkillCatalog {
@@ -54,9 +55,23 @@ impl SkillCatalog {
     }
 
     pub fn from_skills(skills: Vec<CatalogSkill>) -> Result<Self, BindingError> {
-        let registry = ActionRegistry::from_skills(skills)?;
+        let registry = ActionRegistry::from_skills(skills.clone())?;
+        let mut skills_by_key = BTreeMap::new();
+        for skill in skills {
+            let key = skill_catalog_key(
+                &skill.metadata.skill_name,
+                skill.metadata.skill_version.as_deref(),
+                skill.metadata.profile_name.as_deref(),
+            );
+            if skills_by_key.insert(key.clone(), skill).is_some() {
+                return Err(BindingError::new(format!(
+                    "duplicate catalog skill key '{key}'"
+                )));
+            }
+        }
         Ok(Self {
             registry: Arc::new(registry),
+            skills_by_key: Arc::new(skills_by_key),
         })
     }
 
@@ -74,6 +89,16 @@ impl SkillCatalog {
         WasmAdapter {
             registry: Arc::clone(&self.registry),
         }
+    }
+
+    pub fn resolve_skill(
+        &self,
+        skill_name: &str,
+        skill_version: Option<&str>,
+        profile_name: Option<&str>,
+    ) -> Option<&CatalogSkill> {
+        self.skills_by_key
+            .get(&skill_catalog_key(skill_name, skill_version, profile_name))
     }
 }
 
@@ -481,6 +506,19 @@ impl Display for BindingError {
 }
 
 impl Error for BindingError {}
+
+fn skill_catalog_key(
+    skill_name: &str,
+    skill_version: Option<&str>,
+    profile_name: Option<&str>,
+) -> String {
+    format!(
+        "{}::{}::{}",
+        skill_name,
+        skill_version.unwrap_or_default(),
+        profile_name.unwrap_or_default()
+    )
+}
 
 fn lower_model_value(
     registry: &ActionRegistry,
