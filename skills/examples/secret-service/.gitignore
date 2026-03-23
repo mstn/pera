@@ -1,3 +1,5 @@
 wit_world
 *.sqlite
 db/snapshots/*.sqlite
+build
+__pycache__

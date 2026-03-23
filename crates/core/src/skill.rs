@@ -33,11 +33,39 @@ impl SkillVersion {
 pub struct SkillDefaults {
     #[serde(default)]
     pub instructions: Option<SkillInstructionsSpec>,
+    #[serde(default)]
+    pub databases: Vec<SkillDatabaseSpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SkillInstructionsSpec {
     pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SkillDatabaseSpec {
+    pub name: String,
+    pub engine: String,
+    #[serde(default)]
+    pub migrations: Option<SkillDatabaseMigrationsSpec>,
+    #[serde(default)]
+    pub seeds: Option<SkillDatabaseSeedsSpec>,
+    #[serde(default)]
+    pub on_load: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SkillDatabaseMigrationsSpec {
+    pub dir: String,
+    #[serde(default)]
+    pub table: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SkillDatabaseSeedsSpec {
+    pub dir: String,
+    #[serde(default)]
+    pub default: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

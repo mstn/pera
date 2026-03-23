@@ -15,6 +15,12 @@ pub enum CliError {
     Store(StoreError),
     Engine(ExecutionEngineError),
     CreateDir { path: PathBuf, source: io::Error },
+    WriteFile { path: PathBuf, source: io::Error },
+    CopyPath {
+        source_path: PathBuf,
+        target_path: PathBuf,
+        source: io::Error,
+    },
     ToolNotInstalled { tool: &'static str, hint: String },
     ToolIo { tool: &'static str, source: io::Error },
     ToolFailed {
@@ -38,6 +44,19 @@ impl Display for CliError {
             Self::CreateDir { path, source } => {
                 write!(f, "failed to create {}: {source}", path.display())
             }
+            Self::WriteFile { path, source } => {
+                write!(f, "failed to write {}: {source}", path.display())
+            }
+            Self::CopyPath {
+                source_path,
+                target_path,
+                source,
+            } => write!(
+                f,
+                "failed to copy {} to {}: {source}",
+                source_path.display(),
+                target_path.display()
+            ),
             Self::ToolNotInstalled { tool, hint } => {
                 write!(f, "{tool} is not installed. {hint}")
             }
@@ -66,6 +85,8 @@ impl Error for CliError {
             Self::Store(error) => Some(error),
             Self::Engine(error) => Some(error),
             Self::CreateDir { source, .. } => Some(source),
+            Self::WriteFile { source, .. } => Some(source),
+            Self::CopyPath { source, .. } => Some(source),
             Self::ToolIo { source, .. } => Some(source),
             Self::ToolFailed { .. } => None,
             Self::UnexpectedStateOwned(_) => None,

@@ -19,9 +19,9 @@ pub use interpreter::{
 };
 pub use run::{EventPublisher, ExecutionSession, ExecutionStatus, RunStore, StartExecutionRequest, StoreError};
 pub use skill::{
-    SkillBuildSpec, SkillDefaults, SkillDescription, SkillInstructionsSpec, SkillManifest,
-    SkillMetadata, SkillProfileManifest, SkillRuntimeArtifactSpec, SkillRuntimeKind,
-    SkillRuntimeManifest, SkillVersion, WasmSkillBuildSpec, WasmSkillInterfaceSpec,
-    WasmSkillRuntimeSpec,
+    SkillBuildSpec, SkillDatabaseMigrationsSpec, SkillDatabaseSeedsSpec, SkillDatabaseSpec,
+    SkillDefaults, SkillDescription, SkillInstructionsSpec, SkillManifest, SkillMetadata,
+    SkillProfileManifest, SkillRuntimeArtifactSpec, SkillRuntimeKind, SkillRuntimeManifest,
+    SkillVersion, WasmSkillBuildSpec, WasmSkillInterfaceSpec, WasmSkillRuntimeSpec,
 };
 pub use value::Value;

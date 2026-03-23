@@ -8,6 +8,7 @@ clap = { version = "4.5.38", features = ["derive"] }
 pera-core = { path = "../core" }
 pera-runtime = { path = "../runtime", features = ["monty"] }
 serde_json = "1.0"
+serde_yaml = "0.9"
 tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread"] }
 
 [[bin]]

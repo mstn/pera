@@ -670,6 +670,7 @@ dependencies = [
  "pera-core",
  "pera-runtime",
  "serde_json",
+ "serde_yaml",
  "tokio",
 ]
 
