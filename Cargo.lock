@@ -1453,6 +1453,7 @@ dependencies = [
 [[package]]
 name = "monty"
 version = "0.0.8"
+source = "git+https://github.com/pydantic/monty?rev=60538204fd9cd420d1a93042bb52f7168fb9fca2#60538204fd9cd420d1a93042bb52f7168fb9fca2"
 dependencies = [
  "ahash",
  "fancy-regex",
@@ -1464,6 +1465,7 @@ dependencies = [
  "num-integer",
  "num-traits",
  "postcard",
+ "pyo3-build-config",
  "ruff_python_ast",
  "ruff_python_parser",
  "ruff_text_size",
@@ -1753,6 +1755,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "pyo3-build-config"
+version = "0.28.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8bf94ee265674bf76c09fa430b0e99c26e319c945d96ca0d5a8215f31bf81cf7"
+dependencies = [
+ "target-lexicon",
 ]
 
 [[package]]
