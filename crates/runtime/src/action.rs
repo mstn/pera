@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use pera_canonical::{ModelInvocation, WasmValue};
+use pera_canonical::WasmValue;
 use pera_core::{ActionId, ActionRequest, ActionResult, RunId, Value};
 use tokio::sync::mpsc;
 use wasmtime::component::{Linker, ResourceTable, Val};
@@ -189,18 +189,11 @@ impl WasmtimeComponentActionExecutor {
     fn execute_sync(&self, action: &ActionRequest) -> Result<Value, ActionProcessorError> {
         let action_definition = self.resolve_action_definition(action)?;
         let skill = self.resolve_skill(action)?;
-        let model_invocation = self.model_invocation(action, &action_definition)?;
-        let canonical_invocation = self
-            .runtime
-            .catalog()
-            .model_adapter()
-            .lower_invocation(&model_invocation)
-            .map_err(|error| ActionProcessorError::new(error.to_string()))?;
         let wasm_invocation = self
             .runtime
             .catalog()
             .wasm_adapter()
-            .lower_invocation(&canonical_invocation)
+            .lower_action_request(action)
             .map_err(|error| ActionProcessorError::new(error.to_string()))?;
         let component = self
             .runtime
@@ -272,12 +265,12 @@ impl WasmtimeComponentActionExecutor {
             .runtime
             .catalog()
             .wasm_adapter()
-            .lift_result(&canonical_invocation.locator.canonical_action_id, &result_val)
+            .lift_result(&wasm_invocation.locator.canonical_action_id, &result_val)
             .map_err(|error| ActionProcessorError::new(error.to_string()))?;
         self.runtime
             .catalog()
             .model_adapter()
-            .lift_result(&canonical_invocation.locator.canonical_action_id, &canonical_value)
+            .lift_result(&wasm_invocation.locator.canonical_action_id, &canonical_value)
             .map_err(|error| ActionProcessorError::new(error.to_string()))
     }
 
@@ -319,33 +312,6 @@ impl WasmtimeComponentActionExecutor {
                     action.skill.profile_name.as_deref().unwrap_or("")
                 ))
             })
-    }
-
-    fn model_invocation(
-        &self,
-        action: &ActionRequest,
-        action_definition: &pera_canonical::ActionDefinition,
-    ) -> Result<ModelInvocation, ActionProcessorError> {
-        if action.arguments.len() != action_definition.params.len() {
-            return Err(ActionProcessorError::new(format!(
-                "action '{}' expected {} argument(s) but received {}",
-                action_definition.canonical_action_id,
-                action_definition.params.len(),
-                action.arguments.len()
-            )));
-        }
-
-        let arguments = action_definition
-            .params
-            .iter()
-            .zip(action.arguments.iter())
-            .map(|(param, value)| (param.model_name.clone(), value.clone()))
-            .collect();
-
-        Ok(ModelInvocation {
-            function_name: action_definition.qualified_model_name.clone(),
-            arguments,
-        })
     }
 
     fn link_imports(

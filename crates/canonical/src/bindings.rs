@@ -3,7 +3,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 
-use pera_core::Value;
+use pera_core::{ActionRequest, Value};
 
 use crate::ir::{
     CanonicalFunctionResult, CanonicalTypeDef, CanonicalTypeDefKind, CanonicalTypeRef,
@@ -428,6 +428,57 @@ pub struct WasmAdapter {
 }
 
 impl WasmAdapter {
+    pub fn lower_action_request(
+        &self,
+        action: &ActionRequest,
+    ) -> Result<WasmInvocation, BindingError> {
+        let canonical_action_id = format!(
+            "{}.{}",
+            action.skill.skill_name,
+            action.action_name.as_str()
+        );
+        let definition = self
+            .registry
+            .resolve_canonical_action(&canonical_action_id)
+            .ok_or_else(|| {
+                BindingError::new(format!(
+                    "unknown canonical action '{}'",
+                    canonical_action_id
+                ))
+            })?;
+
+        if action.arguments.len() != definition.params.len() {
+            return Err(BindingError::new(format!(
+                "action '{}' expected {} argument(s) but received {}",
+                canonical_action_id,
+                definition.params.len(),
+                action.arguments.len()
+            )));
+        }
+
+        let mut arguments = Vec::with_capacity(definition.params.len());
+        for (param, value) in definition.params.iter().zip(action.arguments.iter()) {
+            let canonical = lower_model_value(
+                &self.registry,
+                &definition.skill.skill_name,
+                &param.ty,
+                value,
+            )?;
+            arguments.push(lower_wasm_value(
+                &self.registry,
+                &definition.skill.skill_name,
+                &param.ty,
+                &canonical,
+            )?);
+        }
+
+        Ok(WasmInvocation {
+            locator: definition.locator(),
+            export_name: definition.action_name.clone(),
+            arguments,
+        })
+    }
+
     pub fn lower_invocation(
         &self,
         invocation: &CanonicalInvocation,
@@ -1144,6 +1195,47 @@ mod tests {
 
         let canonical = model.lower_invocation(&invocation).unwrap();
         let lowered = wasm.lower_invocation(&canonical).unwrap();
+        assert_eq!(lowered.locator.skill.skill_name, "secret-service");
+        assert_eq!(lowered.export_name, "resolve-mission");
+        assert_eq!(lowered.arguments.len(), 3);
+        assert_eq!(lowered.arguments[0], WasmValue::String("m-1".to_owned()));
+        assert_eq!(
+            lowered.arguments[1],
+            WasmValue::EnumCase("failure".to_owned())
+        );
+        assert_eq!(
+            lowered.arguments[2],
+            WasmValue::Option(Box::new(Some(WasmValue::String(
+                "extract failed".to_owned()
+            ))))
+        );
+    }
+
+    #[test]
+    fn wasm_adapter_lowers_action_request_directly() {
+        let bindings = bindings();
+        let wasm = bindings.wasm_adapter();
+
+        let lowered = wasm
+            .lower_action_request(&pera_core::ActionRequest {
+                id: pera_core::ActionId::parse_str("00000000-0000-0000-0000-000000000001")
+                    .unwrap(),
+                run_id: pera_core::RunId::parse_str("00000000-0000-0000-0000-000000000001")
+                    .unwrap(),
+                skill: pera_core::ActionSkillRef {
+                    skill_name: "secret-service".to_owned(),
+                    skill_version: Some(pera_core::SkillVersion::new("0.1.0")),
+                    profile_name: Some("secret-service-default".to_owned()),
+                },
+                action_name: pera_core::ActionName::new("resolve-mission"),
+                arguments: vec![
+                    Value::String("m-1".to_owned()),
+                    Value::String("failure".to_owned()),
+                    Value::String("extract failed".to_owned()),
+                ],
+            })
+            .unwrap();
+
         assert_eq!(lowered.locator.skill.skill_name, "secret-service");
         assert_eq!(lowered.export_name, "resolve-mission");
         assert_eq!(lowered.arguments.len(), 3);
