@@ -1,10 +1,11 @@
 use async_trait::async_trait;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use pera_canonical::{CatalogSkill, SkillCatalog, SkillMetadata};
 use pera_core::{
-    ActionName, ActionResult, CodeArtifact, CodeArtifactId, CodeLanguage, CompiledProgram,
+    ActionName, ActionResult, CanonicalValue, CodeArtifact, CodeArtifactId, CodeLanguage, CompiledProgram,
     EventPublisher, ExecutionEvent, ExecutionOutput, ExecutionSnapshot, ExecutionStatus,
     ExternalCall, InputValues, Interpreter, InterpreterError, InterpreterKind, InterpreterStep,
     RunStore, ScriptName, StartExecutionRequest, Suspension, Value,
@@ -54,7 +55,8 @@ impl Interpreter for FakeInterpreter {
                 },
                 call: ExternalCall {
                     action_name: ActionName::new(action_name),
-                    arguments: vec![Value::Int(argument)],
+                    positional_arguments: vec![Value::Int(argument)],
+                    named_arguments: BTreeMap::new(),
                 },
             }));
         }
@@ -81,8 +83,19 @@ impl ActionHandler for EchoActionHandler {
     async fn handle(
         &self,
         action: &pera_core::ActionRequest,
-    ) -> Result<Value, ActionProcessorError> {
-        Ok(action.arguments.first().cloned().unwrap_or(Value::Null))
+    ) -> Result<CanonicalValue, ActionProcessorError> {
+        match action.invocation.arguments.get("value") {
+            Some(CanonicalValue::S64(value)) => Ok(CanonicalValue::S64(*value)),
+            Some(CanonicalValue::S32(value)) => Ok(CanonicalValue::S32(*value)),
+            Some(CanonicalValue::U64(value)) => i64::try_from(*value)
+                .map(CanonicalValue::S64)
+                .map_err(|_| ActionProcessorError::new("canonical u64 does not fit in model int")),
+            Some(CanonicalValue::U32(value)) => Ok(CanonicalValue::S64((*value).into())),
+            Some(CanonicalValue::Null) | None => Ok(CanonicalValue::Null),
+            Some(other) => Err(ActionProcessorError::new(format!(
+                "unsupported canonical echo argument: {other:?}"
+            ))),
+        }
     }
 }
 
@@ -178,7 +191,10 @@ fn run_executor_suspends_and_resumes() {
     };
     let action = transition.action_to_enqueue.clone().unwrap();
     assert_eq!(action.id, action_id);
-    assert_eq!(action.arguments, vec![Value::Int(9)]);
+    assert_eq!(
+        action.invocation.arguments,
+        BTreeMap::from([("value".to_owned(), CanonicalValue::S64(9))])
+    );
     assert_eq!(transition.trigger, RunTransitionTrigger::Started);
 
     let resumed = executor
@@ -187,7 +203,7 @@ fn run_executor_suspends_and_resumes() {
             action,
             ActionResult {
                 action_id,
-                value: Value::Int(11),
+                value: CanonicalValue::S64(11),
             },
             || next_action_id("00000000-0000-0000-0000-000000000002"),
         )
@@ -209,7 +225,10 @@ fn run_executor_suspends_and_resumes() {
 
 #[test]
 fn run_executor_annotates_actions_from_skill_catalog() {
-    let executor = RunExecutor::with_skill_catalog(FakeInterpreter, secret_service_catalog());
+    let executor = RunExecutor::with_skill_catalog(
+        FakeInterpreter,
+        single_action_catalog_for_skill("secret-service", "resolve-mission"),
+    );
 
     let transition = executor
         .start_run(
@@ -221,7 +240,7 @@ fn run_executor_annotates_actions_from_skill_catalog() {
         .unwrap();
 
     let action = transition.action_to_enqueue.unwrap();
-    assert_eq!(action.action_name.as_str(), "resolve-mission");
+    assert_eq!(action.invocation.action_name.as_str(), "resolve-mission");
     assert_eq!(
         action.skill.skill_name.as_str(),
         "secret-service"
@@ -491,13 +510,17 @@ fn secret_service_catalog() -> SkillCatalog {
 }
 
 fn single_action_catalog(action_name: &str) -> SkillCatalog {
+    single_action_catalog_for_skill("test-skill", action_name)
+}
+
+fn single_action_catalog_for_skill(skill_name: &str, action_name: &str) -> SkillCatalog {
     SkillCatalog::from_skill(CatalogSkill {
         metadata: {
-            let mut metadata = SkillMetadata::new("test-skill", "test-world");
+            let mut metadata = SkillMetadata::new(skill_name, "test-world");
             metadata.profile_name = Some("test-profile".to_owned());
             metadata
         },
-        world: single_action_world("test-skill", "test-world", action_name),
+        world: single_action_world(skill_name, "test-world", action_name),
     })
     .unwrap()
 }
@@ -521,12 +544,12 @@ fn single_action_world(skill_name: &str, world_name: &str, action_name: &str) ->
                 params: vec![pera_canonical::CanonicalParam {
                     name: "value".to_owned(),
                     ty: pera_canonical::CanonicalTypeRef::Primitive(
-                        pera_canonical::CanonicalPrimitiveType::String,
+                        pera_canonical::CanonicalPrimitiveType::S64,
                     ),
                 }],
                 result: pera_canonical::CanonicalFunctionResult::Scalar(
                     pera_canonical::CanonicalTypeRef::Primitive(
-                        pera_canonical::CanonicalPrimitiveType::String,
+                        pera_canonical::CanonicalPrimitiveType::S64,
                     ),
                 ),
             }],

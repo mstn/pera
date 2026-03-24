@@ -3,7 +3,8 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 
-use pera_core::{ActionRequest, Value};
+use pera_core::{CanonicalInvocation, CanonicalValue, Value};
+use wasmtime::component::Val;
 
 use crate::ir::{
     CanonicalFunctionResult, CanonicalTypeDef, CanonicalTypeDefKind, CanonicalTypeRef,
@@ -85,8 +86,8 @@ impl SkillCatalog {
         }
     }
 
-    pub fn wasm_adapter(&self) -> WasmAdapter {
-        WasmAdapter {
+    pub fn wasmtime_adapter(&self) -> WasmtimeAdapter {
+        WasmtimeAdapter {
             registry: Arc::clone(&self.registry),
         }
     }
@@ -127,8 +128,8 @@ impl CanonicalBindings {
         self.catalog.model_adapter()
     }
 
-    pub fn wasm_adapter(&self) -> WasmAdapter {
-        self.catalog.wasm_adapter()
+    pub fn wasmtime_adapter(&self) -> WasmtimeAdapter {
+        self.catalog.wasmtime_adapter()
     }
 }
 
@@ -318,47 +319,11 @@ pub struct ModelInvocation {
     pub arguments: BTreeMap<String, Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CanonicalInvocation {
-    pub locator: ActionLocator,
-    pub arguments: BTreeMap<String, CanonicalValue>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WasmInvocation {
+#[derive(Debug, Clone, PartialEq)]
+pub struct WasmtimeInvocation {
     pub locator: ActionLocator,
     pub export_name: String,
-    pub arguments: Vec<WasmValue>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CanonicalValue {
-    Null,
-    Bool(bool),
-    S32(i32),
-    S64(i64),
-    U32(u32),
-    U64(u64),
-    String(String),
-    List(Vec<CanonicalValue>),
-    Record(BTreeMap<String, CanonicalValue>),
-    EnumCase(String),
-    Tuple(Vec<CanonicalValue>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WasmValue {
-    Bool(bool),
-    S32(i32),
-    S64(i64),
-    U32(u32),
-    U64(u64),
-    String(String),
-    List(Vec<WasmValue>),
-    Record(Vec<(String, WasmValue)>),
-    EnumCase(String),
-    Tuple(Vec<WasmValue>),
-    Option(Box<Option<WasmValue>>),
+    pub arguments: Vec<Val>,
 }
 
 #[derive(Debug, Clone)]
@@ -367,7 +332,7 @@ pub struct ModelAdapter {
 }
 
 impl ModelAdapter {
-    pub fn lower_invocation(
+    pub fn model_invocation_to_canonical_invocation(
         &self,
         invocation: &ModelInvocation,
     ) -> Result<CanonicalInvocation, BindingError> {
@@ -399,12 +364,12 @@ impl ModelAdapter {
         }
 
         Ok(CanonicalInvocation {
-            locator: action.locator(),
+            action_name: pera_core::ActionName::new(action.action_name.clone()),
             arguments,
         })
     }
 
-    pub fn lift_result(
+    pub fn canonical_result_to_model_value(
         &self,
         action_name: &str,
         value: &CanonicalValue,
@@ -423,21 +388,18 @@ impl ModelAdapter {
 }
 
 #[derive(Debug, Clone)]
-pub struct WasmAdapter {
+pub struct WasmtimeAdapter {
     registry: Arc<ActionRegistry>,
 }
 
-impl WasmAdapter {
-    pub fn lower_action_request(
+impl WasmtimeAdapter {
+    pub fn canonical_invocation_to_wasmtime_invocation(
         &self,
-        action: &ActionRequest,
-    ) -> Result<WasmInvocation, BindingError> {
-        let canonical_action_id = format!(
-            "{}.{}",
-            action.skill.skill_name,
-            action.action_name.as_str()
-        );
-        let definition = self
+        skill_name: &str,
+        invocation: &CanonicalInvocation,
+    ) -> Result<WasmtimeInvocation, BindingError> {
+        let canonical_action_id = format!("{}.{}", skill_name, invocation.action_name.as_str());
+        let action = self
             .registry
             .resolve_canonical_action(&canonical_action_id)
             .ok_or_else(|| {
@@ -447,64 +409,24 @@ impl WasmAdapter {
                 ))
             })?;
 
-        if action.arguments.len() != definition.params.len() {
+        let mut arguments = Vec::with_capacity(action.params.len());
+        if invocation.arguments.len() != action.params.len() {
             return Err(BindingError::new(format!(
                 "action '{}' expected {} argument(s) but received {}",
                 canonical_action_id,
-                definition.params.len(),
-                action.arguments.len()
+                action.params.len(),
+                invocation.arguments.len()
             )));
         }
 
-        let mut arguments = Vec::with_capacity(definition.params.len());
-        for (param, value) in definition.params.iter().zip(action.arguments.iter()) {
-            let canonical = lower_model_value(
-                &self.registry,
-                &definition.skill.skill_name,
-                &param.ty,
-                value,
-            )?;
-            arguments.push(lower_wasm_value(
-                &self.registry,
-                &definition.skill.skill_name,
-                &param.ty,
-                &canonical,
-            )?);
-        }
-
-        Ok(WasmInvocation {
-            locator: definition.locator(),
-            export_name: definition.action_name.clone(),
-            arguments,
-        })
-    }
-
-    pub fn lower_invocation(
-        &self,
-        invocation: &CanonicalInvocation,
-    ) -> Result<WasmInvocation, BindingError> {
-        let action = self
-            .registry
-            .resolve_canonical_action(&invocation.locator.canonical_action_id)
-            .ok_or_else(|| {
+        for param in &action.params {
+            let value = invocation.arguments.get(&param.canonical_name).ok_or_else(|| {
                 BindingError::new(format!(
-                    "unknown canonical action '{}'",
-                    invocation.locator.canonical_action_id
+                    "missing canonical argument '{}' for action '{}'",
+                    param.canonical_name, canonical_action_id
                 ))
             })?;
-
-        let mut arguments = Vec::with_capacity(action.params.len());
-        for param in &action.params {
-            let value = invocation
-                .arguments
-                .get(&param.canonical_name)
-                .ok_or_else(|| {
-                    BindingError::new(format!(
-                        "missing canonical argument '{}' for action '{}'",
-                        param.canonical_name, invocation.locator.canonical_action_id
-                    ))
-                })?;
-            arguments.push(lower_wasm_value(
+            arguments.push(canonical_value_to_wasmtime_val(
                 &self.registry,
                 &action.skill.skill_name,
                 &param.ty,
@@ -512,23 +434,23 @@ impl WasmAdapter {
             )?);
         }
 
-        Ok(WasmInvocation {
-            locator: invocation.locator.clone(),
+        Ok(WasmtimeInvocation {
+            locator: action.locator(),
             export_name: action.action_name.clone(),
             arguments,
         })
     }
 
-    pub fn lift_result(
+    pub fn wasmtime_value_to_canonical_value(
         &self,
         action_name: &str,
-        value: &WasmValue,
+        value: &Val,
     ) -> Result<CanonicalValue, BindingError> {
         let action = self
             .registry
             .resolve_canonical_action(action_name)
             .ok_or_else(|| BindingError::new(format!("unknown action '{action_name}'")))?;
-        lift_wasm_result(
+        wasmtime_val_to_canonical_result(
             &self.registry,
             &action.skill.skill_name,
             &action.result,
@@ -849,42 +771,42 @@ fn lift_named_model_value(
     }
 }
 
-fn lower_wasm_value(
+fn canonical_value_to_wasmtime_val(
     registry: &ActionRegistry,
     skill_name: &str,
     ty: &CanonicalTypeRef,
     value: &CanonicalValue,
-) -> Result<WasmValue, BindingError> {
+) -> Result<Val, BindingError> {
     match ty {
         CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::Bool) => match value {
-            CanonicalValue::Bool(value) => Ok(WasmValue::Bool(*value)),
+            CanonicalValue::Bool(value) => Ok(Val::Bool(*value)),
             _ => Err(BindingError::new("expected canonical bool")),
         },
         CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::S32) => match value {
-            CanonicalValue::S32(value) => Ok(WasmValue::S32(*value)),
+            CanonicalValue::S32(value) => Ok(Val::S32(*value)),
             _ => Err(BindingError::new("expected canonical s32")),
         },
         CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::S64)
         | CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::S16)
         | CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::S8) => match value {
-            CanonicalValue::S64(value) => Ok(WasmValue::S64(*value)),
-            CanonicalValue::S32(value) => Ok(WasmValue::S64((*value).into())),
+            CanonicalValue::S64(value) => Ok(Val::S64(*value)),
+            CanonicalValue::S32(value) => Ok(Val::S64((*value).into())),
             _ => Err(BindingError::new("expected canonical signed integer")),
         },
         CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::U32) => match value {
-            CanonicalValue::U32(value) => Ok(WasmValue::U32(*value)),
+            CanonicalValue::U32(value) => Ok(Val::U32(*value)),
             _ => Err(BindingError::new("expected canonical u32")),
         },
         CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::U64)
         | CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::U16)
         | CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::U8) => match value {
-            CanonicalValue::U64(value) => Ok(WasmValue::U64(*value)),
-            CanonicalValue::U32(value) => Ok(WasmValue::U64((*value).into())),
+            CanonicalValue::U64(value) => Ok(Val::U64(*value)),
+            CanonicalValue::U32(value) => Ok(Val::U64((*value).into())),
             _ => Err(BindingError::new("expected canonical unsigned integer")),
         },
         CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::String)
         | CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::Char) => match value {
-            CanonicalValue::String(value) => Ok(WasmValue::String(value.clone())),
+            CanonicalValue::String(value) => Ok(Val::String(value.clone().into())),
             _ => Err(BindingError::new("expected canonical string")),
         },
         CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::Float32)
@@ -894,38 +816,40 @@ fn lower_wasm_value(
         CanonicalTypeRef::List(inner) => match value {
             CanonicalValue::List(items) => items
                 .iter()
-                .map(|item| lower_wasm_value(registry, skill_name, inner, item))
+                .map(|item| canonical_value_to_wasmtime_val(registry, skill_name, inner, item))
                 .collect::<Result<Vec<_>, _>>()
-                .map(WasmValue::List),
+                .map(Val::List),
             _ => Err(BindingError::new("expected canonical list")),
         },
         CanonicalTypeRef::Option(inner) => match value {
-            CanonicalValue::Null => Ok(WasmValue::Option(Box::new(None))),
-            _ => lower_wasm_value(registry, skill_name, inner, value)
-                .map(|value| WasmValue::Option(Box::new(Some(value)))),
+            CanonicalValue::Null => Ok(Val::Option(None)),
+            _ => canonical_value_to_wasmtime_val(registry, skill_name, inner, value)
+                .map(|value| Val::Option(Some(Box::new(value)))),
         },
         CanonicalTypeRef::Tuple(items) => match value {
             CanonicalValue::Tuple(values) if values.len() == items.len() => items
                 .iter()
                 .zip(values.iter())
-                .map(|(ty, value)| lower_wasm_value(registry, skill_name, ty, value))
+                .map(|(ty, value)| canonical_value_to_wasmtime_val(registry, skill_name, ty, value))
                 .collect::<Result<Vec<_>, _>>()
-                .map(WasmValue::Tuple),
+                .map(Val::Tuple),
             _ => Err(BindingError::new("expected canonical tuple")),
         },
         CanonicalTypeRef::Result { .. } => Err(BindingError::new(
             "canonical result types are not supported as direct invocation inputs",
         )),
-        CanonicalTypeRef::Named(name) => lower_named_wasm_value(registry, skill_name, name, value),
+        CanonicalTypeRef::Named(name) => {
+            canonical_named_value_to_wasmtime_val(registry, skill_name, name, value)
+        }
     }
 }
 
-fn lower_named_wasm_value(
+fn canonical_named_value_to_wasmtime_val(
     registry: &ActionRegistry,
     skill_name: &str,
     name: &str,
     value: &CanonicalValue,
-) -> Result<WasmValue, BindingError> {
+) -> Result<Val, BindingError> {
     let ty = registry
         .type_by_name_in_skill(skill_name, name)
         .ok_or_else(|| {
@@ -933,9 +857,11 @@ fn lower_named_wasm_value(
         })?;
 
     match &ty.kind {
-        CanonicalTypeDefKind::Alias(alias) => lower_wasm_value(registry, skill_name, alias, value),
+        CanonicalTypeDefKind::Alias(alias) => {
+            canonical_value_to_wasmtime_val(registry, skill_name, alias, value)
+        }
         CanonicalTypeDefKind::Enum(_) => match value {
-            CanonicalValue::EnumCase(value) => Ok(WasmValue::EnumCase(value.clone())),
+            CanonicalValue::EnumCase(value) => Ok(Val::Enum(value.clone())),
             _ => Err(BindingError::new(format!(
                 "expected canonical enum for '{skill_name}.{name}'"
             ))),
@@ -952,10 +878,15 @@ fn lower_named_wasm_value(
                     })?;
                     lowered.push((
                         field.name.clone(),
-                        lower_wasm_value(registry, skill_name, &field.ty, field_value)?,
+                        canonical_value_to_wasmtime_val(
+                            registry,
+                            skill_name,
+                            &field.ty,
+                            field_value,
+                        )?,
                     ));
                 }
-                Ok(WasmValue::Record(lowered))
+                Ok(Val::Record(lowered))
             }
             _ => Err(BindingError::new(format!(
                 "expected canonical record for '{skill_name}.{name}'"
@@ -970,24 +901,33 @@ fn lower_named_wasm_value(
     }
 }
 
-fn lift_wasm_result(
+fn wasmtime_val_to_canonical_result(
     registry: &ActionRegistry,
     skill_name: &str,
     result: &CanonicalFunctionResult,
-    value: &WasmValue,
+    value: &Val,
 ) -> Result<CanonicalValue, BindingError> {
     match result {
         CanonicalFunctionResult::None => Ok(CanonicalValue::Null),
-        CanonicalFunctionResult::Scalar(ty) => lift_wasm_value(registry, skill_name, ty, value),
+        CanonicalFunctionResult::Scalar(ty) => {
+            wasmtime_val_to_canonical_value(registry, skill_name, ty, value)
+        }
         CanonicalFunctionResult::Named(params) => {
             if params.len() == 1 {
-                lift_wasm_value(registry, skill_name, &params[0].ty, value)
+                wasmtime_val_to_canonical_value(registry, skill_name, &params[0].ty, value)
             } else {
                 match value {
-                    WasmValue::Tuple(items) if items.len() == params.len() => params
+                    Val::Tuple(items) if items.len() == params.len() => params
                         .iter()
                         .zip(items.iter())
-                        .map(|(param, item)| lift_wasm_value(registry, skill_name, &param.ty, item))
+                        .map(|(param, item)| {
+                            wasmtime_val_to_canonical_value(
+                                registry,
+                                skill_name,
+                                &param.ty,
+                                item,
+                            )
+                        })
                         .collect::<Result<Vec<_>, _>>()
                         .map(CanonicalValue::Tuple),
                     _ => Err(BindingError::new("expected wasm tuple result")),
@@ -997,42 +937,42 @@ fn lift_wasm_result(
     }
 }
 
-fn lift_wasm_value(
+fn wasmtime_val_to_canonical_value(
     registry: &ActionRegistry,
     skill_name: &str,
     ty: &CanonicalTypeRef,
-    value: &WasmValue,
+    value: &Val,
 ) -> Result<CanonicalValue, BindingError> {
     match ty {
         CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::Bool) => match value {
-            WasmValue::Bool(value) => Ok(CanonicalValue::Bool(*value)),
+            Val::Bool(value) => Ok(CanonicalValue::Bool(*value)),
             _ => Err(BindingError::new("expected wasm bool")),
         },
         CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::S32) => match value {
-            WasmValue::S32(value) => Ok(CanonicalValue::S32(*value)),
+            Val::S32(value) => Ok(CanonicalValue::S32(*value)),
             _ => Err(BindingError::new("expected wasm s32")),
         },
         CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::S64)
         | CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::S16)
         | CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::S8) => match value {
-            WasmValue::S64(value) => Ok(CanonicalValue::S64(*value)),
-            WasmValue::S32(value) => Ok(CanonicalValue::S64((*value).into())),
+            Val::S64(value) => Ok(CanonicalValue::S64(*value)),
+            Val::S32(value) => Ok(CanonicalValue::S64((*value).into())),
             _ => Err(BindingError::new("expected wasm signed integer")),
         },
         CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::U32) => match value {
-            WasmValue::U32(value) => Ok(CanonicalValue::U32(*value)),
+            Val::U32(value) => Ok(CanonicalValue::U32(*value)),
             _ => Err(BindingError::new("expected wasm u32")),
         },
         CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::U64)
         | CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::U16)
         | CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::U8) => match value {
-            WasmValue::U64(value) => Ok(CanonicalValue::U64(*value)),
-            WasmValue::U32(value) => Ok(CanonicalValue::U64((*value).into())),
+            Val::U64(value) => Ok(CanonicalValue::U64(*value)),
+            Val::U32(value) => Ok(CanonicalValue::U64((*value).into())),
             _ => Err(BindingError::new("expected wasm unsigned integer")),
         },
         CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::String)
         | CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::Char) => match value {
-            WasmValue::String(value) => Ok(CanonicalValue::String(value.clone())),
+            Val::String(value) => Ok(CanonicalValue::String(value.to_string())),
             _ => Err(BindingError::new("expected wasm string")),
         },
         CanonicalTypeRef::Primitive(crate::CanonicalPrimitiveType::Float32)
@@ -1040,27 +980,27 @@ fn lift_wasm_value(
             Err(BindingError::new("float wasm values are not supported yet"))
         }
         CanonicalTypeRef::List(inner) => match value {
-            WasmValue::List(items) => items
+            Val::List(items) => items
                 .iter()
-                .map(|item| lift_wasm_value(registry, skill_name, inner, item))
+                .map(|item| wasmtime_val_to_canonical_value(registry, skill_name, inner, item))
                 .collect::<Result<Vec<_>, _>>()
                 .map(CanonicalValue::List),
             _ => Err(BindingError::new("expected wasm list")),
         },
         CanonicalTypeRef::Option(inner) => match value {
-            WasmValue::Option(option) => option
+            Val::Option(option) => option
                 .as_ref()
                 .as_ref()
-                .map(|value| lift_wasm_value(registry, skill_name, inner, value))
+                .map(|value| wasmtime_val_to_canonical_value(registry, skill_name, inner, value))
                 .transpose()
-                .map(|value| value.unwrap_or(CanonicalValue::Null)),
+                .map(|value: Option<CanonicalValue>| value.unwrap_or(CanonicalValue::Null)),
             _ => Err(BindingError::new("expected wasm option")),
         },
         CanonicalTypeRef::Tuple(items) => match value {
-            WasmValue::Tuple(values) if values.len() == items.len() => items
+            Val::Tuple(values) if values.len() == items.len() => items
                 .iter()
                 .zip(values.iter())
-                .map(|(ty, value)| lift_wasm_value(registry, skill_name, ty, value))
+                .map(|(ty, value)| wasmtime_val_to_canonical_value(registry, skill_name, ty, value))
                 .collect::<Result<Vec<_>, _>>()
                 .map(CanonicalValue::Tuple),
             _ => Err(BindingError::new("expected wasm tuple")),
@@ -1068,15 +1008,17 @@ fn lift_wasm_value(
         CanonicalTypeRef::Result { .. } => Err(BindingError::new(
             "wasm result wrappers are not supported yet",
         )),
-        CanonicalTypeRef::Named(name) => lift_named_wasm_value(registry, skill_name, name, value),
+        CanonicalTypeRef::Named(name) => {
+            wasmtime_named_value_to_canonical_value(registry, skill_name, name, value)
+        }
     }
 }
 
-fn lift_named_wasm_value(
+fn wasmtime_named_value_to_canonical_value(
     registry: &ActionRegistry,
     skill_name: &str,
     name: &str,
-    value: &WasmValue,
+    value: &Val,
 ) -> Result<CanonicalValue, BindingError> {
     let ty = registry
         .type_by_name_in_skill(skill_name, name)
@@ -1085,15 +1027,17 @@ fn lift_named_wasm_value(
         })?;
 
     match &ty.kind {
-        CanonicalTypeDefKind::Alias(alias) => lift_wasm_value(registry, skill_name, alias, value),
+        CanonicalTypeDefKind::Alias(alias) => {
+            wasmtime_val_to_canonical_value(registry, skill_name, alias, value)
+        }
         CanonicalTypeDefKind::Enum(_) => match value {
-            WasmValue::EnumCase(value) => Ok(CanonicalValue::EnumCase(value.clone())),
+            Val::Enum(value) => Ok(CanonicalValue::EnumCase(value.clone())),
             _ => Err(BindingError::new(format!(
                 "expected wasm enum for '{skill_name}.{name}'"
             ))),
         },
         CanonicalTypeDefKind::Record(record) => match value {
-            WasmValue::Record(fields) => {
+            Val::Record(fields) => {
                 let by_name = fields.iter().cloned().collect::<BTreeMap<_, _>>();
                 let mut lifted = BTreeMap::new();
                 for field in &record.fields {
@@ -1105,7 +1049,12 @@ fn lift_named_wasm_value(
                     })?;
                     lifted.insert(
                         field.name.clone(),
-                        lift_wasm_value(registry, skill_name, &field.ty, field_value)?,
+                        wasmtime_val_to_canonical_value(
+                            registry,
+                            skill_name,
+                            &field.ty,
+                            field_value,
+                        )?,
                     );
                 }
                 Ok(CanonicalValue::Record(lifted))
@@ -1127,12 +1076,13 @@ fn lift_named_wasm_value(
 mod tests {
     use std::collections::BTreeMap;
 
-    use pera_core::Value;
+    use pera_core::{CanonicalValue, Value};
+    use wasmtime::component::Val;
 
-    use crate::{CanonicalValue, CanonicalWorld, load_canonical_world_from_wit};
+    use crate::{CanonicalWorld, load_canonical_world_from_wit};
 
     use super::{
-        CanonicalBindings, CatalogSkill, ModelInvocation, SkillCatalog, SkillMetadata, WasmValue,
+        CanonicalBindings, CatalogSkill, ModelInvocation, SkillCatalog, SkillMetadata,
     };
 
     fn bindings() -> CanonicalBindings {
@@ -1158,13 +1108,10 @@ mod tests {
             ]),
         };
 
-        let canonical = adapter.lower_invocation(&invocation).unwrap();
-        assert_eq!(canonical.locator.skill.skill_name, "secret-service");
-        assert_eq!(canonical.locator.action_name, "resolve-mission");
-        assert_eq!(
-            canonical.locator.canonical_action_id,
-            "secret-service.resolve-mission"
-        );
+        let canonical = adapter
+            .model_invocation_to_canonical_invocation(&invocation)
+            .unwrap();
+        assert_eq!(canonical.action_name.as_str(), "resolve-mission");
         assert_eq!(
             canonical.arguments.get("mission-id"),
             Some(&CanonicalValue::String("m-1".to_owned()))
@@ -1179,7 +1126,7 @@ mod tests {
     fn wasm_adapter_lowers_canonical_invocation_into_ordered_arguments() {
         let bindings = bindings();
         let model = bindings.model_adapter();
-        let wasm = bindings.wasm_adapter();
+        let wasm = bindings.wasmtime_adapter();
 
         let invocation = ModelInvocation {
             function_name: "resolve_mission".to_owned(),
@@ -1193,20 +1140,21 @@ mod tests {
             ]),
         };
 
-        let canonical = model.lower_invocation(&invocation).unwrap();
-        let lowered = wasm.lower_invocation(&canonical).unwrap();
+        let canonical = model
+            .model_invocation_to_canonical_invocation(&invocation)
+            .unwrap();
+        let lowered = wasm
+            .canonical_invocation_to_wasmtime_invocation("secret-service", &canonical)
+            .unwrap();
         assert_eq!(lowered.locator.skill.skill_name, "secret-service");
         assert_eq!(lowered.export_name, "resolve-mission");
         assert_eq!(lowered.arguments.len(), 3);
-        assert_eq!(lowered.arguments[0], WasmValue::String("m-1".to_owned()));
-        assert_eq!(
-            lowered.arguments[1],
-            WasmValue::EnumCase("failure".to_owned())
-        );
+        assert_eq!(lowered.arguments[0], Val::String("m-1".to_owned().into()));
+        assert_eq!(lowered.arguments[1], Val::Enum("failure".to_owned()));
         assert_eq!(
             lowered.arguments[2],
-            WasmValue::Option(Box::new(Some(WasmValue::String(
-                "extract failed".to_owned()
+            Val::Option(Some(Box::new(Val::String(
+                "extract failed".to_owned().into()
             ))))
         );
     }
@@ -1214,40 +1162,34 @@ mod tests {
     #[test]
     fn wasm_adapter_lowers_action_request_directly() {
         let bindings = bindings();
-        let wasm = bindings.wasm_adapter();
+        let wasm = bindings.wasmtime_adapter();
 
         let lowered = wasm
-            .lower_action_request(&pera_core::ActionRequest {
-                id: pera_core::ActionId::parse_str("00000000-0000-0000-0000-000000000001")
-                    .unwrap(),
-                run_id: pera_core::RunId::parse_str("00000000-0000-0000-0000-000000000001")
-                    .unwrap(),
-                skill: pera_core::ActionSkillRef {
-                    skill_name: "secret-service".to_owned(),
-                    skill_version: Some(pera_core::SkillVersion::new("0.1.0")),
-                    profile_name: Some("secret-service-default".to_owned()),
+            .canonical_invocation_to_wasmtime_invocation(
+                "secret-service",
+                &pera_core::CanonicalInvocation {
+                    action_name: pera_core::ActionName::new("resolve-mission"),
+                    arguments: BTreeMap::from([
+                        ("mission-id".to_owned(), CanonicalValue::String("m-1".to_owned())),
+                        ("outcome".to_owned(), CanonicalValue::EnumCase("failure".to_owned())),
+                        (
+                            "notes".to_owned(),
+                            CanonicalValue::String("extract failed".to_owned()),
+                        ),
+                    ]),
                 },
-                action_name: pera_core::ActionName::new("resolve-mission"),
-                arguments: vec![
-                    Value::String("m-1".to_owned()),
-                    Value::String("failure".to_owned()),
-                    Value::String("extract failed".to_owned()),
-                ],
-            })
+            )
             .unwrap();
 
         assert_eq!(lowered.locator.skill.skill_name, "secret-service");
         assert_eq!(lowered.export_name, "resolve-mission");
         assert_eq!(lowered.arguments.len(), 3);
-        assert_eq!(lowered.arguments[0], WasmValue::String("m-1".to_owned()));
-        assert_eq!(
-            lowered.arguments[1],
-            WasmValue::EnumCase("failure".to_owned())
-        );
+        assert_eq!(lowered.arguments[0], Val::String("m-1".to_owned().into()));
+        assert_eq!(lowered.arguments[1], Val::Enum("failure".to_owned()));
         assert_eq!(
             lowered.arguments[2],
-            WasmValue::Option(Box::new(Some(WasmValue::String(
-                "extract failed".to_owned()
+            Val::Option(Some(Box::new(Val::String(
+                "extract failed".to_owned().into()
             ))))
         );
     }
@@ -1290,7 +1232,7 @@ mod tests {
         ]));
 
         let lifted = adapter
-            .lift_result("secret-service.create-mission", &value)
+            .canonical_result_to_model_value("secret-service.create-mission", &value)
             .unwrap();
         match lifted {
             Value::Map(fields) => {

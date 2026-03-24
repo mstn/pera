@@ -4,15 +4,14 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use pera_canonical::WasmValue;
-use pera_core::{ActionId, ActionRequest, ActionResult, RunId, Value};
+use pera_core::{ActionId, ActionRequest, ActionResult, CanonicalValue, RunId};
 use tokio::sync::mpsc;
 use wasmtime::component::{Linker, ResourceTable, Val};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
 
-use crate::catalog::SkillRuntime;
 use crate::capabilities::SqliteCapabilityProvider;
+use crate::catalog::SkillRuntime;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionProcessorError {
@@ -43,7 +42,7 @@ impl From<anyhow::Error> for ActionProcessorError {
 
 #[async_trait]
 pub trait ActionHandler: Send + Sync + 'static {
-    async fn handle(&self, action: &ActionRequest) -> Result<Value, ActionProcessorError>;
+    async fn handle(&self, action: &ActionRequest) -> Result<CanonicalValue, ActionProcessorError>;
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -57,10 +56,10 @@ impl RejectingActionHandler {
 
 #[async_trait]
 impl ActionHandler for RejectingActionHandler {
-    async fn handle(&self, action: &ActionRequest) -> Result<Value, ActionProcessorError> {
+    async fn handle(&self, action: &ActionRequest) -> Result<CanonicalValue, ActionProcessorError> {
         Err(ActionProcessorError::new(format!(
             "no action processor is configured for '{}'",
-            action.action_name.as_str()
+            action.invocation.action_name.as_str()
         )))
     }
 }
@@ -173,27 +172,25 @@ impl WasiView for WasmHostState {
 }
 
 impl WasmtimeComponentActionExecutor {
-    pub fn new(
-        runtime: SkillRuntime,
-    ) -> Result<Self, ActionProcessorError> {
+    pub fn new(runtime: SkillRuntime) -> Result<Self, ActionProcessorError> {
         let mut config = Config::new();
         config.wasm_component_model(true);
-        let engine = Engine::new(&config)
-            .map_err(|error| ActionProcessorError::new(error.to_string()))?;
-        Ok(Self {
-            runtime,
-            engine,
-        })
+        let engine =
+            Engine::new(&config).map_err(|error| ActionProcessorError::new(error.to_string()))?;
+        Ok(Self { runtime, engine })
     }
 
-    fn execute_sync(&self, action: &ActionRequest) -> Result<Value, ActionProcessorError> {
+    fn execute_sync(&self, action: &ActionRequest) -> Result<CanonicalValue, ActionProcessorError> {
         let action_definition = self.resolve_action_definition(action)?;
         let skill = self.resolve_skill(action)?;
         let wasm_invocation = self
             .runtime
             .catalog()
-            .wasm_adapter()
-            .lower_action_request(action)
+            .wasmtime_adapter()
+            .canonical_invocation_to_wasmtime_invocation(
+                &action.skill.skill_name,
+                &action.invocation,
+            )
             .map_err(|error| ActionProcessorError::new(error.to_string()))?;
         let component = self
             .runtime
@@ -249,28 +246,27 @@ impl WasmtimeComponentActionExecutor {
                 ))
             })?;
 
-        let params = wasm_invocation
-            .arguments
-            .iter()
-            .map(component_val_from_wasm_value)
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut results = result_slots(&action_definition.result);
-        func.call(&mut store, &params, &mut results)
+        let mut results = match &action_definition.result {
+            pera_canonical::CanonicalFunctionResult::None => Vec::new(),
+            _ => vec![Val::Bool(false)],
+        };
+        func.call(&mut store, &wasm_invocation.arguments, &mut results)
             .map_err(|error| ActionProcessorError::new(error.to_string()))?;
         func.post_return(&mut store)
             .map_err(|error| ActionProcessorError::new(error.to_string()))?;
 
-        let result_val = canonical_result_to_component_result(&results)?;
-        let canonical_value = self
-            .runtime
-            .catalog()
-            .wasm_adapter()
-            .lift_result(&wasm_invocation.locator.canonical_action_id, &result_val)
-            .map_err(|error| ActionProcessorError::new(error.to_string()))?;
+        let result_val = match results.as_slice() {
+            [] => Val::Option(None),
+            [value] => value.clone(),
+            _ => Val::Tuple(results),
+        };
         self.runtime
             .catalog()
-            .model_adapter()
-            .lift_result(&wasm_invocation.locator.canonical_action_id, &canonical_value)
+            .wasmtime_adapter()
+            .wasmtime_value_to_canonical_value(
+                &wasm_invocation.locator.canonical_action_id,
+                &result_val,
+            )
             .map_err(|error| ActionProcessorError::new(error.to_string()))
     }
 
@@ -278,7 +274,11 @@ impl WasmtimeComponentActionExecutor {
         &self,
         action: &ActionRequest,
     ) -> Result<pera_canonical::ActionDefinition, ActionProcessorError> {
-        let canonical_action_id = format!("{}.{}", action.skill.skill_name, action.action_name.as_str());
+        let canonical_action_id = format!(
+            "{}.{}",
+            action.skill.skill_name,
+            action.invocation.action_name.as_str()
+        );
         self.runtime
             .catalog()
             .action_registry()
@@ -338,7 +338,9 @@ impl WasmtimeComponentActionExecutor {
                         let sqlite = Arc::clone(&sqlite);
                         instance.func_wrap(
                             "execute",
-                            move |_store, (sql, params_json): (String, Option<String>)| -> Result<(String,), anyhow::Error> {
+                            move |_store,
+                                  (sql, params_json): (String, Option<String>)|
+                                  -> Result<(String,), anyhow::Error> {
                                 let result = sqlite
                                     .execute(&sql, params_json.as_deref())
                                     .map_err(|error| anyhow!(error.to_string()))?;
@@ -411,93 +413,4 @@ fn is_sqlite_import(import: &pera_canonical::CanonicalInterface) -> bool {
         .iter()
         .any(|function| function.name == "execute")
         && import.name.contains("sqlite")
-}
-
-fn result_slots(result: &pera_canonical::CanonicalFunctionResult) -> Vec<Val> {
-    match result {
-        pera_canonical::CanonicalFunctionResult::None => Vec::new(),
-        _ => vec![Val::Bool(false)],
-    }
-}
-
-fn canonical_result_to_component_result(results: &[Val]) -> Result<WasmValue, ActionProcessorError> {
-    match results {
-        [] => Ok(WasmValue::Option(Box::new(None))),
-        [value] => component_val_to_wasm_value(value),
-        _ => results
-            .iter()
-            .map(component_val_to_wasm_value)
-            .collect::<Result<Vec<_>, _>>()
-            .map(WasmValue::Tuple),
-    }
-}
-
-fn component_val_from_wasm_value(value: &WasmValue) -> Result<Val, ActionProcessorError> {
-    match value {
-        WasmValue::Bool(value) => Ok(Val::Bool(*value)),
-        WasmValue::S32(value) => Ok(Val::S32(*value)),
-        WasmValue::S64(value) => Ok(Val::S64(*value)),
-        WasmValue::U32(value) => Ok(Val::U32(*value)),
-        WasmValue::U64(value) => Ok(Val::U64(*value)),
-        WasmValue::String(value) => Ok(Val::String(value.clone().into())),
-        WasmValue::List(items) => items
-            .iter()
-            .map(component_val_from_wasm_value)
-            .collect::<Result<Vec<_>, _>>()
-            .map(Val::List),
-        WasmValue::Record(fields) => fields
-            .iter()
-            .map(|(name, value)| {
-                Ok((name.clone(), component_val_from_wasm_value(value)?))
-            })
-            .collect::<Result<Vec<_>, ActionProcessorError>>()
-            .map(Val::Record),
-        WasmValue::EnumCase(case_name) => Ok(Val::Enum(case_name.clone())),
-        WasmValue::Tuple(items) => items
-            .iter()
-            .map(component_val_from_wasm_value)
-            .collect::<Result<Vec<_>, _>>()
-            .map(Val::Tuple),
-        WasmValue::Option(value) => value
-            .as_ref()
-            .as_ref()
-            .map(|value| component_val_from_wasm_value(value).map(Box::new))
-            .transpose()
-            .map(Val::Option),
-    }
-}
-
-fn component_val_to_wasm_value(value: &Val) -> Result<WasmValue, ActionProcessorError> {
-    match value {
-        Val::Bool(value) => Ok(WasmValue::Bool(*value)),
-        Val::S32(value) => Ok(WasmValue::S32(*value)),
-        Val::S64(value) => Ok(WasmValue::S64(*value)),
-        Val::U32(value) => Ok(WasmValue::U32(*value)),
-        Val::U64(value) => Ok(WasmValue::U64(*value)),
-        Val::String(value) => Ok(WasmValue::String(value.to_string())),
-        Val::List(items) => items
-            .iter()
-            .map(component_val_to_wasm_value)
-            .collect::<Result<Vec<_>, _>>()
-            .map(WasmValue::List),
-        Val::Record(fields) => fields
-            .iter()
-            .map(|(name, value)| Ok((name.clone(), component_val_to_wasm_value(value)?)))
-            .collect::<Result<Vec<_>, ActionProcessorError>>()
-            .map(WasmValue::Record),
-        Val::Enum(case_name) => Ok(WasmValue::EnumCase(case_name.to_string())),
-        Val::Tuple(items) => items
-            .iter()
-            .map(component_val_to_wasm_value)
-            .collect::<Result<Vec<_>, _>>()
-            .map(WasmValue::Tuple),
-        Val::Option(value) => value
-            .as_ref()
-            .map(|value| component_val_to_wasm_value(value.as_ref()))
-            .transpose()
-            .map(|value| WasmValue::Option(Box::new(value))),
-        other => Err(ActionProcessorError::new(format!(
-            "unsupported component value {other:?}"
-        ))),
-    }
 }

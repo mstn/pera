@@ -34,16 +34,8 @@ impl FileSystemLayout {
         self.root.join("system")
     }
 
-    fn legacy_actions_dir(&self) -> PathBuf {
-        self.root.join("actions")
-    }
-
     fn system_actions_dir(&self) -> PathBuf {
         self.system_dir().join("actions")
-    }
-
-    fn legacy_events_dir(&self) -> PathBuf {
-        self.root.join("events")
     }
 
     fn run_dir(&self, run_id: RunId) -> PathBuf {
@@ -54,21 +46,12 @@ impl FileSystemLayout {
         self.run_dir(run_id).join("run.json")
     }
 
-    fn legacy_run_session_path(&self, run_id: RunId) -> PathBuf {
-        self.run_dir(run_id).join("session.json")
-    }
-
     fn run_code_path(&self, run_id: RunId) -> PathBuf {
         self.run_dir(run_id).join("code.py")
     }
 
     fn system_action_path(&self, action_id: ActionId) -> PathBuf {
         self.system_actions_dir()
-            .join(format!("{}.json", action_id.as_hyphenated()))
-    }
-
-    fn legacy_action_path(&self, action_id: ActionId) -> PathBuf {
-        self.legacy_actions_dir()
             .join(format!("{}.json", action_id.as_hyphenated()))
     }
 
@@ -83,10 +66,6 @@ impl FileSystemLayout {
 
     fn system_events_path(&self) -> PathBuf {
         self.system_dir().join("events.jsonl")
-    }
-
-    fn legacy_events_path(&self) -> PathBuf {
-        self.legacy_events_dir().join("events.jsonl")
     }
 
     fn run_events_path(&self, run_id: RunId) -> PathBuf {
@@ -125,12 +104,7 @@ impl RunStore for FileSystemRunStore {
     }
 
     fn load_run(&self, run_id: RunId) -> Result<ExecutionSession, StoreError> {
-        let run_path = self.layout.run_record_path(run_id);
-        if run_path.exists() {
-            read_json(run_path)
-        } else {
-            read_json(self.layout.legacy_run_session_path(run_id))
-        }
+        read_json(self.layout.run_record_path(run_id))
     }
 
     fn list_runs(&self) -> Result<Vec<RunId>, StoreError> {
@@ -147,21 +121,11 @@ impl RunStore for FileSystemRunStore {
     }
 
     fn load_action(&self, action_id: ActionId) -> Result<ActionRecord, StoreError> {
-        let action_path = self.layout.system_action_path(action_id);
-        if action_path.exists() {
-            read_json(action_path)
-        } else {
-            read_json(self.layout.legacy_action_path(action_id))
-        }
+        read_json(self.layout.system_action_path(action_id))
     }
 
     fn list_actions(&self) -> Result<Vec<ActionId>, StoreError> {
-        let dir = if self.layout.system_actions_dir().exists() {
-            self.layout.system_actions_dir()
-        } else {
-            self.layout.legacy_actions_dir()
-        };
-        list_id_entries(dir, ActionId::parse_str)
+        list_id_entries(self.layout.system_actions_dir(), ActionId::parse_str)
     }
 }
 
@@ -178,11 +142,7 @@ impl FileSystemEventLog {
     }
 
     pub fn read_events(&self) -> Result<Vec<ExecutionEvent>, StoreError> {
-        let path = if self.layout.system_events_path().exists() {
-            self.layout.system_events_path()
-        } else {
-            self.layout.legacy_events_path()
-        };
+        let path = self.layout.system_events_path();
         if !path.exists() {
             return Ok(Vec::new());
         }

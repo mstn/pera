@@ -1,4 +1,12 @@
-use crate::{ActionId, ActionName, RunId, SkillVersion, Value};
+use std::collections::BTreeMap;
+
+use crate::{ActionId, ActionName, CanonicalValue, RunId, SkillVersion};
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CanonicalInvocation {
+    pub action_name: ActionName,
+    pub arguments: BTreeMap<String, CanonicalValue>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ActionSkillRef {
@@ -14,14 +22,13 @@ pub struct ActionRequest {
     pub id: ActionId,
     pub run_id: RunId,
     pub skill: ActionSkillRef,
-    pub action_name: ActionName,
-    pub arguments: Vec<Value>,
+    pub invocation: CanonicalInvocation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ActionResult {
     pub action_id: ActionId,
-    pub value: Value,
+    pub value: CanonicalValue,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

@@ -5,8 +5,8 @@ mod wit;
 
 pub use bindings::{
     ActionDefinition, ActionLocator, ActionParam, ActionRegistry, BindingError,
-    CanonicalBindings, CanonicalInvocation, CanonicalValue, CatalogSkill, ModelAdapter,
-    ModelInvocation, SkillCatalog, SkillMetadata, WasmAdapter, WasmInvocation, WasmValue,
+    CanonicalBindings, CatalogSkill, ModelAdapter,
+    ModelInvocation, SkillCatalog, SkillMetadata, WasmtimeAdapter, WasmtimeInvocation,
 };
 pub use ir::{
     CanonicalEnumCase, CanonicalField, CanonicalFunction, CanonicalFunctionResult,

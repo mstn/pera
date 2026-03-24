@@ -25,7 +25,10 @@ pub struct ExecutionSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ExternalCall {
     pub action_name: ActionName,
-    pub arguments: Vec<Value>,
+    #[serde(default)]
+    pub positional_arguments: Vec<Value>,
+    #[serde(default)]
+    pub named_arguments: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

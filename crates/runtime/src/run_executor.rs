@@ -1,10 +1,12 @@
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
-use pera_canonical::SkillCatalog;
+use pera_canonical::{ModelInvocation, SkillCatalog};
 use pera_core::{
-    ActionId, ActionRecord, ActionRequest, ActionResult, ActionSkillRef, ActionStatus, CodeArtifactId,
-    ExecutionSession, ExecutionStatus, Interpreter, InterpreterStep, RunId, StartExecutionRequest,
+    ActionId, ActionRecord, ActionRequest, ActionResult, ActionSkillRef, ActionStatus,
+    CodeArtifactId, ExecutionSession, ExecutionStatus, Interpreter, InterpreterStep, RunId,
+    StartExecutionRequest,
 };
 
 #[derive(Debug)]
@@ -58,7 +60,10 @@ where
     I: Interpreter,
 {
     pub fn new(interpreter: I) -> Self {
-        Self::with_skill_catalog(interpreter, SkillCatalog::from_skills(Vec::new()).expect("empty skill catalog"))
+        Self::with_skill_catalog(
+            interpreter,
+            SkillCatalog::from_skills(Vec::new()).expect("empty skill catalog"),
+        )
     }
 
     pub fn with_skill_catalog(interpreter: I, skill_catalog: SkillCatalog) -> Self {
@@ -104,13 +109,23 @@ where
             .ok_or(RunExecutorError::InvalidState(
                 "cannot resume a run without a snapshot",
             ))?;
+        let canonical_action_id = format!(
+            "{}.{}",
+            action_request.skill.skill_name,
+            action_request.invocation.action_name.as_str()
+        );
+        let model_value = self
+            .skill_catalog
+            .model_adapter()
+            .canonical_result_to_model_value(&canonical_action_id, &result.value)
+            .map_err(|error| RunExecutorError::ActionResolution(error.to_string()))?;
 
         let completed_action = ActionRecord {
             request: action_request,
             status: ActionStatus::Completed(result.clone()),
         };
 
-        let step = self.interpreter.resume(&snapshot, &result.value)?;
+        let step = self.interpreter.resume(&snapshot, &model_value)?;
         let mut transition = self.apply_step(
             session,
             step,
@@ -150,13 +165,74 @@ where
         match step {
             InterpreterStep::Suspended(suspension) => {
                 let action_id = next_action_id();
-                let resolved_action = self.resolve_action(&suspension.call.action_name)?;
+                let action_definition = self
+                    .skill_catalog
+                    .action_registry()
+                    .resolve_model_action(suspension.call.action_name.as_str())
+                    .cloned()
+                    .ok_or_else(|| {
+                        RunExecutorError::ActionResolution(format!(
+                            "unknown external action '{}'",
+                            suspension.call.action_name.as_str()
+                        ))
+                    })?;
+                let skill = ActionSkillRef {
+                    skill_name: action_definition.skill.skill_name.clone(),
+                    skill_version: action_definition
+                        .skill
+                        .skill_version
+                        .as_ref()
+                        .map(|value| pera_core::SkillVersion::new(value.clone())),
+                    profile_name: action_definition.skill.profile_name.clone(),
+                };
+                if suspension.call.positional_arguments.len() > action_definition.params.len() {
+                    return Err(RunExecutorError::ActionResolution(format!(
+                        "action '{}' expected at most {} positional argument(s) but received {}",
+                        action_definition.canonical_action_id,
+                        action_definition.params.len(),
+                        suspension.call.positional_arguments.len()
+                    )));
+                }
+                let mut model_arguments = action_definition
+                    .params
+                    .iter()
+                    .zip(suspension.call.positional_arguments.iter())
+                    .map(|(param, value)| (param.model_name.clone(), value.clone()))
+                    .collect::<BTreeMap<_, _>>();
+                for (name, value) in &suspension.call.named_arguments {
+                    let param = action_definition
+                        .params
+                        .iter()
+                        .find(|param| param.model_name == *name)
+                        .ok_or_else(|| {
+                            RunExecutorError::ActionResolution(format!(
+                                "action '{}' does not define a named argument '{}'",
+                                action_definition.canonical_action_id, name
+                            ))
+                        })?;
+                    if model_arguments
+                        .insert(param.model_name.clone(), value.clone())
+                        .is_some()
+                    {
+                        return Err(RunExecutorError::ActionResolution(format!(
+                            "action '{}' received duplicate argument '{}'",
+                            action_definition.canonical_action_id, name
+                        )));
+                    }
+                }
+                let canonical_invocation = self
+                    .skill_catalog
+                    .model_adapter()
+                    .model_invocation_to_canonical_invocation(&ModelInvocation {
+                        function_name: suspension.call.action_name.as_str().to_owned(),
+                        arguments: model_arguments,
+                    })
+                    .map_err(|error| RunExecutorError::ActionResolution(error.to_string()))?;
                 let action_request = ActionRequest {
                     id: action_id,
                     run_id: session.id,
-                    skill: resolved_action.skill,
-                    action_name: resolved_action.action_name,
-                    arguments: suspension.call.arguments,
+                    skill,
+                    invocation: canonical_invocation,
                 };
                 let action_record = ActionRecord {
                     request: action_request.clone(),
@@ -186,39 +262,4 @@ where
             }
         }
     }
-
-    fn resolve_action(
-        &self,
-        action_name: &pera_core::ActionName,
-    ) -> Result<ResolvedAction, RunExecutorError> {
-        let action = self
-            .skill_catalog
-            .action_registry()
-            .resolve_model_action(action_name.as_str())
-            .ok_or_else(|| {
-                RunExecutorError::ActionResolution(format!(
-                    "unknown external action '{}'",
-                    action_name.as_str()
-                ))
-            })?;
-
-        Ok(ResolvedAction {
-            skill: ActionSkillRef {
-                skill_name: action.skill.skill_name.clone(),
-                skill_version: action
-                    .skill
-                    .skill_version
-                    .as_ref()
-                    .map(|value| pera_core::SkillVersion::new(value.clone())),
-                profile_name: action.skill.profile_name.clone(),
-            },
-            action_name: pera_core::ActionName::new(action.action_name.clone()),
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ResolvedAction {
-    skill: ActionSkillRef,
-    action_name: pera_core::ActionName,
 }

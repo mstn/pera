@@ -1534,6 +1534,7 @@ version = "0.1.0"
 dependencies = [
  "pera-core",
  "serde",
+ "wasmtime",
  "wit-parser 0.227.1",
 ]
 

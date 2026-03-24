@@ -88,12 +88,29 @@ fn progress_to_step(progress: RunProgress<NoLimitTracker>) -> Result<Interpreter
 
 fn function_call_to_step(call: FunctionCall<NoLimitTracker>) -> Result<InterpreterStep, InterpreterError> {
     let function_name = call.function_name.clone();
-    let arguments = call
+    let positional_arguments = call
         .args
         .clone()
         .into_iter()
         .map(monty_object_to_value)
         .collect::<Result<Vec<_>, _>>()?;
+    let named_arguments = call
+        .kwargs
+        .clone()
+        .into_iter()
+        .map(|(key, value)| {
+            let key = match key {
+                MontyObject::String(value) => value,
+                other => {
+                    return Err(InterpreterError::new(format!(
+                        "external call '{}' has a non-string keyword argument key: {other:?}",
+                        function_name
+                    )));
+                }
+            };
+            Ok((key, monty_object_to_value(value)?))
+        })
+        .collect::<Result<std::collections::BTreeMap<_, _>, _>>()?;
     let snapshot = RunProgress::FunctionCall(call).dump().map_err(to_interpreter_error)?;
 
     Ok(InterpreterStep::Suspended(Suspension {
@@ -103,7 +120,8 @@ fn function_call_to_step(call: FunctionCall<NoLimitTracker>) -> Result<Interpret
         },
         call: ExternalCall {
             action_name: ActionName::new(function_name),
-            arguments,
+            positional_arguments,
+            named_arguments,
         },
     }))
 }
