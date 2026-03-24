@@ -9,7 +9,9 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, trace};
 use wasmtime::component::Val;
 
-use crate::catalog::{SkillRuntime, WarmInstance};
+use crate::catalog::{
+    InvocationContext, InvocationErrorSource, InvocationEventSource, SkillRuntime, WarmInstance,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionProcessorError {
@@ -208,17 +210,26 @@ impl WasmtimeComponentActionExecutor {
             _ => vec![Val::Bool(false)],
         };
         let call_started_at = Instant::now();
+        instance.store.data_mut().begin_invocation(InvocationContext::new(
+            action.run_id,
+            action.id,
+            wasm_invocation.locator.canonical_action_id.clone(),
+            wasm_invocation.export_name.clone(),
+        ));
         func.call(
             &mut instance.store,
             &wasm_invocation.arguments,
             &mut results,
         )
         .map_err(|error| {
-            ActionProcessorError::new(format!(
-                "component call failed for '{}': {error}",
-                wasm_invocation.locator.canonical_action_id
+            instance.store.data_mut().finish_invocation_failure();
+            let invocation = instance.store.data().invocation().clone();
+            ActionProcessorError::new(format_component_call_error(
+                &invocation,
+                &error,
             ))
         })?;
+        instance.store.data_mut().finish_invocation_success();
         debug!(
             run_id = %action.run_id,
             action_id = %action.id,
@@ -276,6 +287,78 @@ impl WasmtimeComponentActionExecutor {
             "action complete",
         );
         Ok(canonical_value)
+    }
+}
+
+fn format_component_call_error(
+    invocation: &InvocationContext,
+    error: &impl std::fmt::Display,
+) -> String {
+    let invocation_error = invocation
+        .error
+        .as_ref()
+        .map(|error| format!("{} failed: {}", format_error_source(&error.source), error.message));
+    let event_summary = if invocation.events.is_empty() {
+        None
+    } else {
+        Some(
+            invocation
+                .events
+                .iter()
+                .map(|event| format!("{}: {}", format_event_source(&event.source), event.message))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    };
+
+    let mut message = String::new();
+    match invocation_error {
+        Some(invocation_error) => {
+            message.push_str(&format!(
+                "component call failed for '{}': {}",
+                invocation.canonical_action_id, invocation_error
+            ));
+        }
+        None => {
+            message.push_str(&format!(
+                "component call failed for '{}': {}",
+                invocation.canonical_action_id, error
+            ));
+        }
+    }
+
+    message.push_str(&format!(
+        "\n\nInvocation:\nrun_id={}\naction_id={}\nexport={}\nstatus={:?}\nelapsed_ms={}",
+        invocation.run_id,
+        invocation.action_id,
+        invocation.export_name,
+        invocation.status,
+        invocation.started_at.elapsed().as_millis()
+    ));
+
+    if let Some(event_summary) = event_summary {
+        message.push_str(&format!("\n\nEvents:\n{}", event_summary));
+    }
+
+    message.push_str(&format!("\n\nWasm backtrace:\n{}", error));
+    message
+}
+
+fn format_event_source(source: &InvocationEventSource) -> String {
+    match source {
+        InvocationEventSource::Provider { name, operation } => format!("{name} {operation}"),
+        InvocationEventSource::Wasi { operation } => format!("wasi {operation}"),
+        InvocationEventSource::Runtime { operation } => format!("runtime {operation}"),
+        InvocationEventSource::Component => "component".to_owned(),
+    }
+}
+
+fn format_error_source(source: &InvocationErrorSource) -> String {
+    match source {
+        InvocationErrorSource::Provider { name, operation } => format!("{name} {operation}"),
+        InvocationErrorSource::Wasi { operation } => format!("wasi {operation}"),
+        InvocationErrorSource::Runtime { operation } => format!("runtime {operation}"),
+        InvocationErrorSource::Component => "component".to_owned(),
     }
 }
 

@@ -11,7 +11,7 @@ use wasmtime::{Cache, Config, Engine, Store};
 use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
 
 use pera_canonical::{CatalogSkill, SkillCatalog, SkillMetadata, load_canonical_world_from_wit};
-use pera_core::{ActionSkillRef, StoreError};
+use pera_core::{ActionId, ActionSkillRef, RunId, StoreError};
 
 use crate::capabilities::SqliteCapabilityProvider;
 
@@ -34,6 +34,7 @@ pub(crate) struct WarmInstance {
 pub(crate) struct WasmHostState {
     table: ResourceTable,
     wasi: WasiCtx,
+    invocation: InvocationContext,
 }
 
 impl WasmHostState {
@@ -45,8 +46,126 @@ impl WasmHostState {
         Self {
             table: ResourceTable::new(),
             wasi,
+            invocation: InvocationContext::bootstrap(),
         }
     }
+
+    pub(crate) fn begin_invocation(&mut self, invocation: InvocationContext) {
+        self.invocation = invocation;
+    }
+
+    pub(crate) fn invocation(&self) -> &InvocationContext {
+        &self.invocation
+    }
+
+    pub(crate) fn record_event(
+        &mut self,
+        source: InvocationEventSource,
+        message: impl Into<String>,
+    ) {
+        self.invocation.events.push(InvocationEvent {
+            source,
+            message: message.into(),
+        });
+    }
+
+    pub(crate) fn fail(
+        &mut self,
+        source: InvocationErrorSource,
+        message: impl Into<String>,
+    ) {
+        self.invocation.status = InvocationStatus::Failed;
+        self.invocation.error = Some(InvocationError {
+            source,
+            message: message.into(),
+        });
+    }
+
+    pub(crate) fn finish_invocation_success(&mut self) {
+        self.invocation.status = InvocationStatus::Succeeded;
+    }
+
+    pub(crate) fn finish_invocation_failure(&mut self) {
+        self.invocation.status = InvocationStatus::Failed;
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct InvocationContext {
+    pub(crate) run_id: RunId,
+    pub(crate) action_id: ActionId,
+    pub(crate) canonical_action_id: String,
+    pub(crate) export_name: String,
+    pub(crate) started_at: Instant,
+    pub(crate) status: InvocationStatus,
+    pub(crate) events: Vec<InvocationEvent>,
+    pub(crate) error: Option<InvocationError>,
+}
+
+impl InvocationContext {
+    pub(crate) fn new(
+        run_id: RunId,
+        action_id: ActionId,
+        canonical_action_id: impl Into<String>,
+        export_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            run_id,
+            action_id,
+            canonical_action_id: canonical_action_id.into(),
+            export_name: export_name.into(),
+            started_at: Instant::now(),
+            status: InvocationStatus::Running,
+            events: Vec::new(),
+            error: None,
+        }
+    }
+
+    fn bootstrap() -> Self {
+        Self::new(
+            RunId::generate(),
+            ActionId::generate(),
+            "<bootstrap>",
+            "<bootstrap>",
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InvocationStatus {
+    Running,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct InvocationEvent {
+    pub(crate) source: InvocationEventSource,
+    pub(crate) message: String,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) enum InvocationEventSource {
+    Provider { name: String, operation: String },
+    Wasi { operation: String },
+    Runtime { operation: String },
+    Component,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct InvocationError {
+    pub(crate) source: InvocationErrorSource,
+    pub(crate) message: String,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) enum InvocationErrorSource {
+    Provider { name: String, operation: String },
+    Wasi { operation: String },
+    Runtime { operation: String },
+    Component,
 }
 
 impl IoView for WasmHostState {
@@ -569,9 +688,21 @@ fn link_imports(
                     let import_name = import.name.clone();
                     instance.func_wrap(
                         "execute",
-                        move |_store,
+                        move |mut store,
                               (sql, params_json): (String, Option<String>)|
                               -> Result<(String,), anyhow::Error> {
+                            store.data_mut().record_event(
+                                InvocationEventSource::Provider {
+                                    name: import_name.clone(),
+                                    operation: "execute".to_owned(),
+                                },
+                                format!(
+                                    "db={} sql={:?} params_json={:?}",
+                                    sqlite.database_path().display(),
+                                    sql,
+                                    params_json
+                                ),
+                            );
                             trace!(
                                 import = %import_name,
                                 db = %sqlite.database_path().display(),
@@ -581,6 +712,13 @@ fn link_imports(
                             );
                             let result = sqlite.execute(&sql, params_json.as_deref()).map_err(
                                 |error| {
+                                    store.data_mut().fail(
+                                        InvocationErrorSource::Provider {
+                                            name: import_name.clone(),
+                                            operation: "execute".to_owned(),
+                                        },
+                                        error.to_string(),
+                                    );
                                     tracing::error!(
                                         import = %import_name,
                                         db = %sqlite.database_path().display(),

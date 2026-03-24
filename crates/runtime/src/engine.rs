@@ -9,6 +9,7 @@ use pera_core::{
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
+use tracing::error;
 
 use crate::{
     ActionExecutionUpdate, ActionExecutor, ActionWorker, EventHub, EventSubscription, RunExecutor,
@@ -242,7 +243,10 @@ where
                     }
                 }
                 Some(update) = self.update_rx.recv() => {
-                    let _ = self.handle_update(update).await;
+                    if let Err(update_error) = self.handle_update(update.clone()).await {
+                        error!(error = %update_error, "engine failed to process action update");
+                        let _ = self.handle_update_error(update, update_error).await;
+                    }
                 }
                 else => break,
             }
@@ -323,6 +327,55 @@ where
                     run_id,
                     action_id,
                     message: message.clone(),
+                })?;
+                let session = self.store.load_run(run_id)?;
+                let transition = self.run_executor.fail_run(session, message);
+                self.apply_transition(transition).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_update_error(
+        &mut self,
+        update: ActionExecutionUpdate,
+        error: ExecutionEngineError,
+    ) -> Result<(), ExecutionEngineError> {
+        let message = error.to_string();
+
+        match update {
+            ActionExecutionUpdate::Claimed { run_id, action_id, .. } => {
+                self.publisher.publish(ExecutionEvent::ActionFailed {
+                    run_id,
+                    action_id,
+                    message: message.clone(),
+                })?;
+                let session = self.store.load_run(run_id)?;
+                let transition = self.run_executor.fail_run(session, message);
+                self.apply_transition(transition).await?;
+            }
+            ActionExecutionUpdate::Completed(result) => {
+                let action = self.store.load_action(result.action_id)?;
+                let run_id = action.request.run_id;
+                self.publisher.publish(ExecutionEvent::ActionFailed {
+                    run_id,
+                    action_id: result.action_id,
+                    message: message.clone(),
+                })?;
+                let session = self.store.load_run(run_id)?;
+                let transition = self.run_executor.fail_run(session, message);
+                self.apply_transition(transition).await?;
+            }
+            ActionExecutionUpdate::Failed {
+                run_id,
+                action_id,
+                message: action_message,
+            } => {
+                self.publisher.publish(ExecutionEvent::ActionFailed {
+                    run_id,
+                    action_id,
+                    message: action_message,
                 })?;
                 let session = self.store.load_run(run_id)?;
                 let transition = self.run_executor.fail_run(session, message);
