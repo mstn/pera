@@ -2,9 +2,11 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
+use tracing::{debug, trace};
 use wasmtime::component::Component;
-use wasmtime::Engine;
+use wasmtime::{Cache, Config, Engine};
 
 use pera_canonical::{CatalogSkill, SkillCatalog, SkillMetadata, load_canonical_world_from_wit};
 use pera_core::{ActionSkillRef, StoreError};
@@ -14,23 +16,36 @@ use crate::capabilities::SqliteCapabilityProvider;
 #[derive(Clone)]
 pub struct SkillRuntime {
     root: PathBuf,
+    engine: Engine,
     catalog: SkillCatalog,
     component_cache: Arc<tokio::sync::Mutex<BTreeMap<String, Arc<Component>>>>,
     sqlite_path_cache: Arc<tokio::sync::Mutex<BTreeMap<String, PathBuf>>>,
 }
 
 impl SkillRuntime {
-    pub fn new(root: impl Into<PathBuf>, catalog: SkillCatalog) -> Self {
-        Self {
-            root: root.into(),
+    pub fn new(root: impl Into<PathBuf>, catalog: SkillCatalog) -> Result<Self, StoreError> {
+        let root = root.into();
+        let engine = skill_runtime_engine(&root)?;
+
+        Ok(Self {
+            root,
+            engine,
             catalog,
             component_cache: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
             sqlite_path_cache: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
-        }
+        })
+    }
+
+    pub fn engine(&self) -> &Engine {
+        &self.engine
     }
 
     pub fn catalog(&self) -> &SkillCatalog {
         &self.catalog
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 
     pub fn resolve_skill(&self, skill_ref: &ActionSkillRef) -> Option<&CatalogSkill> {
@@ -41,11 +56,39 @@ impl SkillRuntime {
         )
     }
 
+    pub async fn warm_components(&self) -> Result<(), StoreError> {
+        let started_at = Instant::now();
+        let skill_refs = self
+            .catalog
+            .skills()
+            .map(|skill| ActionSkillRef {
+                skill_name: skill.metadata.skill_name.clone(),
+                skill_version: skill
+                    .metadata
+                    .skill_version
+                    .as_ref()
+                    .map(|version| pera_core::SkillVersion::new(version.clone())),
+                profile_name: skill.metadata.profile_name.clone(),
+            })
+            .collect::<Vec<_>>();
+
+        for skill_ref in &skill_refs {
+            self.load_component(skill_ref).await?;
+        }
+
+        debug!(
+            skill_count = skill_refs.len(),
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "runtime component warm-up complete",
+        );
+        Ok(())
+    }
+
     pub async fn load_component(
         &self,
         skill_ref: &ActionSkillRef,
-        engine: &Engine,
     ) -> Result<Arc<Component>, StoreError> {
+        let started_at = Instant::now();
         let skill = self.resolve_skill(skill_ref).ok_or_else(|| {
             StoreError::new(format!(
                 "skill '{}'{}/{} is not available in the runtime",
@@ -71,11 +114,31 @@ impl SkillRuntime {
             .get(artifact_ref)
             .cloned()
         {
+            trace!(
+                skill = %skill_ref.skill_name,
+                artifact_ref = %artifact_ref,
+                elapsed_ms = started_at.elapsed().as_millis(),
+                "component cache hit",
+            );
             return Ok(component);
         }
 
+        debug!(
+            skill = %skill_ref.skill_name,
+            artifact_ref = %artifact_ref,
+            "component cache miss",
+        );
+        let read_started_at = Instant::now();
         let component_bytes = tokio::fs::read(artifact_ref).await.map_err(io_error)?;
-        let engine = engine.clone();
+        debug!(
+            skill = %skill_ref.skill_name,
+            artifact_ref = %artifact_ref,
+            elapsed_ms = read_started_at.elapsed().as_millis(),
+            byte_len = component_bytes.len(),
+            "component bytes loaded",
+        );
+        let engine = self.engine.clone();
+        let compile_started_at = Instant::now();
         let component = tokio::task::spawn_blocking(move || {
             Component::new(&engine, component_bytes)
                 .map(Arc::new)
@@ -83,25 +146,46 @@ impl SkillRuntime {
         })
         .await
         .map_err(join_error)??;
+        debug!(
+            skill = %skill_ref.skill_name,
+            artifact_ref = %artifact_ref,
+            elapsed_ms = compile_started_at.elapsed().as_millis(),
+            "component compiled",
+        );
 
         let mut cache = self.component_cache.lock().await;
-        Ok(cache
+        let component = cache
             .entry(artifact_ref.to_owned())
             .or_insert_with(|| Arc::clone(&component))
-            .clone())
+            .clone();
+        trace!(
+            skill = %skill_ref.skill_name,
+            artifact_ref = %artifact_ref,
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "component ready",
+        );
+        Ok(component)
     }
 
     pub async fn sqlite_provider(
         &self,
         skill_ref: &ActionSkillRef,
     ) -> Result<SqliteCapabilityProvider, StoreError> {
+        let started_at = Instant::now();
         let database_path = self.sqlite_database_path(skill_ref).await?;
-        tokio::task::spawn_blocking(move || {
+        let provider = tokio::task::spawn_blocking(move || {
             SqliteCapabilityProvider::new(database_path)
                 .map_err(|error| StoreError::new(error.to_string()))
         })
         .await
-        .map_err(join_error)?
+        .map_err(join_error)??;
+        trace!(
+            skill = %skill_ref.skill_name,
+            db = %provider.database_path().display(),
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "sqlite provider ready",
+        );
+        Ok(provider)
     }
 
     fn profile_dir(&self, skill_ref: &ActionSkillRef) -> Result<PathBuf, StoreError> {
@@ -131,8 +215,15 @@ impl SkillRuntime {
     }
 
     async fn sqlite_database_path(&self, skill_ref: &ActionSkillRef) -> Result<PathBuf, StoreError> {
+        let started_at = Instant::now();
         let cache_key = skill_runtime_key(skill_ref);
         if let Some(path) = self.sqlite_path_cache.lock().await.get(&cache_key).cloned() {
+            trace!(
+                skill = %skill_ref.skill_name,
+                path = %path.display(),
+                elapsed_ms = started_at.elapsed().as_millis(),
+                "sqlite path cache hit",
+            );
             return Ok(path);
         }
 
@@ -189,7 +280,14 @@ impl SkillRuntime {
             .join(format!("{}.sqlite", database.name));
 
         let mut cache = self.sqlite_path_cache.lock().await;
-        Ok(cache.entry(cache_key).or_insert_with(|| path.clone()).clone())
+        let path = cache.entry(cache_key).or_insert_with(|| path.clone()).clone();
+        trace!(
+            skill = %skill_ref.skill_name,
+            path = %path.display(),
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "sqlite path resolved",
+        );
+        Ok(path)
     }
 }
 
@@ -250,8 +348,31 @@ impl FileSystemSkillRuntimeLoader {
 
     pub fn load(&self) -> Result<SkillRuntime, StoreError> {
         let catalog = FileSystemSkillCatalogLoader::new(&self.root).load()?;
-        Ok(SkillRuntime::new(&self.root, catalog))
+        SkillRuntime::new(&self.root, catalog)
     }
+}
+
+fn skill_runtime_engine(root: &Path) -> Result<Engine, StoreError> {
+    let mut config = Config::new();
+    config.wasm_component_model(true);
+    let cache = Cache::new(skill_runtime_cache_config(root)?).map_err(anyhow_error)?;
+    config.cache(Some(cache));
+    Engine::new(&config).map_err(anyhow_error)
+}
+
+fn skill_runtime_cache_config(root: &Path) -> Result<wasmtime::CacheConfig, StoreError> {
+    let cache_dir = absolute_cache_dir(root.join("cache").join("wasmtime"))?;
+    let mut config = wasmtime::CacheConfig::new();
+    config.with_directory(cache_dir);
+    Ok(config)
+}
+
+fn absolute_cache_dir(path: PathBuf) -> Result<PathBuf, StoreError> {
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    let cwd = std::env::current_dir().map_err(io_error)?;
+    Ok(cwd.join(path))
 }
 
 fn load_catalog_skill(
@@ -318,6 +439,10 @@ fn json_error(error: serde_json::Error) -> StoreError {
 }
 
 fn yaml_error(error: serde_yaml::Error) -> StoreError {
+    StoreError::new(error.to_string())
+}
+
+fn anyhow_error(error: anyhow::Error) -> StoreError {
     StoreError::new(error.to_string())
 }
 

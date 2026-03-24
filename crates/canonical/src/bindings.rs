@@ -101,6 +101,10 @@ impl SkillCatalog {
         self.skills_by_key
             .get(&skill_catalog_key(skill_name, skill_version, profile_name))
     }
+
+    pub fn skills(&self) -> impl Iterator<Item = &CatalogSkill> {
+        self.skills_by_key.values()
+    }
 }
 
 #[derive(Debug, Clone)]

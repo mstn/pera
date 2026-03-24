@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
 use pera_core::{SkillDatabaseSpec, SkillManifest, SkillProfileManifest};
-use pera_runtime::SqliteCapabilityProvider;
+use pera_runtime::{FileSystemSkillRuntimeLoader, SqliteCapabilityProvider};
 
 use crate::commands::bindings::run_componentize_py;
 use crate::error::CliError;
@@ -19,6 +19,7 @@ impl SkillCommand {
         match &self.command {
             SkillSubcommand::Compile(command) => command.execute(),
             SkillSubcommand::Db(command) => command.execute(),
+            SkillSubcommand::Precompile(command) => command.execute().await,
             SkillSubcommand::Upload(command) => command.execute(),
         }
     }
@@ -28,6 +29,7 @@ impl SkillCommand {
 enum SkillSubcommand {
     Compile(CompileSkillCommand),
     Db(SkillDbCommand),
+    Precompile(PrecompileSkillCommand),
     Upload(UploadSkillCommand),
 }
 
@@ -45,6 +47,12 @@ struct CompileSkillCommand {
 struct UploadSkillCommand {
     #[arg(long)]
     compiled_dir: PathBuf,
+    #[arg(long)]
+    root: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct PrecompileSkillCommand {
     #[arg(long)]
     root: PathBuf,
 }
@@ -235,6 +243,24 @@ impl UploadSkillCommand {
             meta.profile_name,
             catalog_dir.display()
         );
+        Ok(())
+    }
+}
+
+impl PrecompileSkillCommand {
+    async fn execute(&self) -> Result<(), CliError> {
+        let root = self
+            .root
+            .canonicalize()
+            .map_err(|source| CliError::ReadFile {
+                path: self.root.clone(),
+                source,
+            })?;
+        let skill_runtime = FileSystemSkillRuntimeLoader::new(&root)
+            .load()
+            .map_err(CliError::Store)?;
+        skill_runtime.warm_components().await.map_err(CliError::Store)?;
+        println!("Precompiled installed skills into {}", root.join("cache").join("wasmtime").display());
         Ok(())
     }
 }

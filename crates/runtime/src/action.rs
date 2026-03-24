@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -9,7 +10,7 @@ use pera_core::{ActionId, ActionRequest, ActionResult, CanonicalValue, RunId};
 use tokio::sync::mpsc;
 use tracing::{debug, error, trace};
 use wasmtime::component::{Component, ComponentExportIndex, Instance, Linker, ResourceTable, Val};
-use wasmtime::{Config, Engine, Store};
+use wasmtime::{Engine, Store};
 use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
 
 use crate::capabilities::SqliteCapabilityProvider;
@@ -156,7 +157,6 @@ impl<H> InProcessActionExecutor<H> {
 #[derive(Clone)]
 pub struct WasmtimeComponentActionExecutor {
     runtime: Arc<SkillRuntime>,
-    engine: Engine,
     warm_instances: Arc<tokio::sync::Mutex<BTreeMap<String, Arc<Mutex<WarmInstance>>>>>,
 }
 
@@ -198,13 +198,8 @@ impl WasiView for WasmHostState {
 
 impl WasmtimeComponentActionExecutor {
     pub fn new(runtime: SkillRuntime) -> Result<Self, ActionProcessorError> {
-        let mut config = Config::new();
-        config.wasm_component_model(true);
-        let engine =
-            Engine::new(&config).map_err(|error| ActionProcessorError::new(error.to_string()))?;
         Ok(Self {
             runtime: Arc::new(runtime),
-            engine,
             warm_instances: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
         })
     }
@@ -214,6 +209,7 @@ impl WasmtimeComponentActionExecutor {
         action: &ActionRequest,
         warm_instance: Arc<Mutex<WarmInstance>>,
     ) -> Result<CanonicalValue, ActionProcessorError> {
+        let started_at = Instant::now();
         let action_definition = resolve_action_definition(runtime, action)?;
         let wasm_invocation = runtime
             .catalog()
@@ -233,9 +229,16 @@ impl WasmtimeComponentActionExecutor {
             "action start",
         );
 
+        let lock_started_at = Instant::now();
         let mut warm_instance = warm_instance
             .lock()
             .map_err(|_| ActionProcessorError::new("warm instance mutex is poisoned"))?;
+        trace!(
+            run_id = %action.run_id,
+            action_id = %action.id,
+            elapsed_ms = lock_started_at.elapsed().as_millis(),
+            "warm instance lock acquired",
+        );
         let function_export = warm_instance
             .function_exports
             .get(&wasm_invocation.export_name)
@@ -247,6 +250,7 @@ impl WasmtimeComponentActionExecutor {
                 ))
             })?;
         let instance = warm_instance.instance;
+        let lookup_started_at = Instant::now();
         let func = instance
             .get_func(&mut warm_instance.store, &function_export)
             .ok_or_else(|| {
@@ -255,11 +259,18 @@ impl WasmtimeComponentActionExecutor {
                     wasm_invocation.export_name
                 ))
             })?;
+        trace!(
+            run_id = %action.run_id,
+            action_id = %action.id,
+            elapsed_ms = lookup_started_at.elapsed().as_millis(),
+            "wasmtime function resolved",
+        );
 
         let mut results = match &action_definition.result {
             pera_canonical::CanonicalFunctionResult::None => Vec::new(),
             _ => vec![Val::Bool(false)],
         };
+        let call_started_at = Instant::now();
         func.call(
             &mut warm_instance.store,
             &wasm_invocation.arguments,
@@ -271,6 +282,15 @@ impl WasmtimeComponentActionExecutor {
                 wasm_invocation.locator.canonical_action_id
             ))
         })?;
+        debug!(
+            run_id = %action.run_id,
+            action_id = %action.id,
+            skill = %action.skill.skill_name,
+            export = %wasm_invocation.export_name,
+            elapsed_ms = call_started_at.elapsed().as_millis(),
+            "wasmtime call completed",
+        );
+        let post_return_started_at = Instant::now();
         func.post_return(&mut warm_instance.store)
             .map_err(|error| {
                 ActionProcessorError::new(format!(
@@ -278,12 +298,19 @@ impl WasmtimeComponentActionExecutor {
                     wasm_invocation.locator.canonical_action_id
                 ))
             })?;
+        trace!(
+            run_id = %action.run_id,
+            action_id = %action.id,
+            elapsed_ms = post_return_started_at.elapsed().as_millis(),
+            "wasmtime post-return completed",
+        );
 
         let result_val = match results.as_slice() {
             [] => Val::Option(None),
             [value] => value.clone(),
             _ => Val::Tuple(results),
         };
+        let decode_started_at = Instant::now();
         let canonical_value = runtime
             .catalog()
             .wasmtime_adapter()
@@ -297,11 +324,18 @@ impl WasmtimeComponentActionExecutor {
                     wasm_invocation.locator.canonical_action_id
                 ))
             })?;
+        trace!(
+            run_id = %action.run_id,
+            action_id = %action.id,
+            elapsed_ms = decode_started_at.elapsed().as_millis(),
+            "wasmtime result decoded",
+        );
         debug!(
             run_id = %action.run_id,
             action_id = %action.id,
             skill = %action.skill.skill_name,
             export = %wasm_invocation.export_name,
+            elapsed_ms = started_at.elapsed().as_millis(),
             "action complete",
         );
         Ok(canonical_value)
@@ -403,20 +437,35 @@ impl WasmtimeComponentActionExecutor {
         action: &ActionRequest,
         component: Arc<Component>,
     ) -> Result<Arc<Mutex<WarmInstance>>, ActionProcessorError> {
+        let started_at = Instant::now();
         let cache_key = warm_instance_key(&action.skill);
         if let Some(instance) = self.warm_instances.lock().await.get(&cache_key).cloned() {
+            trace!(
+                run_id = %action.run_id,
+                action_id = %action.id,
+                skill = %action.skill.skill_name,
+                elapsed_ms = started_at.elapsed().as_millis(),
+                "warm instance cache hit",
+            );
             return Ok(instance);
         }
 
+        debug!(
+            run_id = %action.run_id,
+            action_id = %action.id,
+            skill = %action.skill.skill_name,
+            "warm instance cache miss",
+        );
         let skill = self.resolve_skill(action)?;
         let sqlite_provider = self
             .runtime
             .sqlite_provider(&action.skill)
             .await
             .map_err(|error| ActionProcessorError::new(error.to_string()))?;
-        let engine = self.engine.clone();
+        let engine = self.runtime.engine().clone();
         let skill_for_build = skill.clone();
         let component_for_build = Arc::clone(&component);
+        let build_started_at = Instant::now();
         let warm_instance = tokio::task::spawn_blocking(move || {
             Self::build_warm_instance(
                 &skill_for_build,
@@ -427,13 +476,28 @@ impl WasmtimeComponentActionExecutor {
         })
         .await
         .map_err(|error| ActionProcessorError::new(error.to_string()))??;
+        debug!(
+            run_id = %action.run_id,
+            action_id = %action.id,
+            skill = %action.skill.skill_name,
+            elapsed_ms = build_started_at.elapsed().as_millis(),
+            "warm instance built",
+        );
 
         let warm_instance = Arc::new(Mutex::new(warm_instance));
         let mut cache = self.warm_instances.lock().await;
-        Ok(cache
+        let warm_instance = cache
             .entry(cache_key)
             .or_insert_with(|| Arc::clone(&warm_instance))
-            .clone())
+            .clone();
+        trace!(
+            run_id = %action.run_id,
+            action_id = %action.id,
+            skill = %action.skill.skill_name,
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "warm instance ready",
+        );
+        Ok(warm_instance)
     }
 
     fn build_warm_instance(
@@ -442,14 +506,34 @@ impl WasmtimeComponentActionExecutor {
         sqlite_provider: SqliteCapabilityProvider,
         engine: &Engine,
     ) -> Result<WarmInstance, ActionProcessorError> {
+        let started_at = Instant::now();
+        let linker_started_at = Instant::now();
         let mut linker = Linker::new(engine);
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
             .map_err(|error| ActionProcessorError::new(error.to_string()))?;
         Self::link_imports(&mut linker, skill, Arc::new(sqlite_provider))?;
+        debug!(
+            skill = %skill.metadata.skill_name,
+            elapsed_ms = linker_started_at.elapsed().as_millis(),
+            "wasmtime linker configured",
+        );
+        let store_started_at = Instant::now();
         let mut store = Store::new(engine, WasmHostState::new());
+        trace!(
+            skill = %skill.metadata.skill_name,
+            elapsed_ms = store_started_at.elapsed().as_millis(),
+            "wasmtime store created",
+        );
+        let instantiate_started_at = Instant::now();
         let instance = linker
             .instantiate(&mut store, &component)
             .map_err(|error| ActionProcessorError::new(error.to_string()))?;
+        debug!(
+            skill = %skill.metadata.skill_name,
+            elapsed_ms = instantiate_started_at.elapsed().as_millis(),
+            "wasmtime component instantiated",
+        );
+        let export_started_at = Instant::now();
         let mut function_exports = BTreeMap::new();
         for export_interface in &skill.world.exports {
             let instance_export = component
@@ -472,6 +556,17 @@ impl WasmtimeComponentActionExecutor {
                 function_exports.insert(function.name.clone(), function_export);
             }
         }
+        trace!(
+            skill = %skill.metadata.skill_name,
+            export_count = function_exports.len(),
+            elapsed_ms = export_started_at.elapsed().as_millis(),
+            "wasmtime exports indexed",
+        );
+        debug!(
+            skill = %skill.metadata.skill_name,
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "warm instance lifecycle complete",
+        );
         Ok(WarmInstance {
             store,
             instance,
@@ -485,7 +580,7 @@ impl ActionExecutor for WasmtimeComponentActionExecutor {
     async fn execute(&self, action: ActionRequest) -> ActionExecutionUpdate {
         let component = match self
             .runtime
-            .load_component(&action.skill, &self.engine)
+            .load_component(&action.skill)
             .await
         {
             Ok(component) => component,
@@ -512,6 +607,7 @@ impl ActionExecutor for WasmtimeComponentActionExecutor {
         let warm_instance_key = warm_instance_key(&action.skill);
         let warm_instances = Arc::clone(&self.warm_instances);
         let runtime = Arc::clone(&self.runtime);
+        let execute_started_at = Instant::now();
         let result =
             tokio::task::spawn_blocking(move || {
                 Self::execute_sync(runtime.as_ref(), &action, warm_instance)
@@ -521,6 +617,7 @@ impl ActionExecutor for WasmtimeComponentActionExecutor {
             run_id = %run_id,
             action_id = %action_id,
             join_result = if result.is_ok() { "ok" } else { "join-error" },
+            elapsed_ms = execute_started_at.elapsed().as_millis(),
             "action task joined",
         );
         match result {
