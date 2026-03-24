@@ -1,17 +1,17 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::fs;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use pera_canonical::{ModelInvocation, SkillCatalog, WasmValue};
+use pera_canonical::{ModelInvocation, WasmValue};
 use pera_core::{ActionId, ActionRequest, ActionResult, RunId, Value};
 use tokio::sync::mpsc;
-use wasmtime::component::{Component, Linker, Val};
+use wasmtime::component::{Linker, ResourceTable, Val};
 use wasmtime::{Config, Engine, Store};
+use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
 
+use crate::catalog::SkillRuntime;
 use crate::capabilities::SqliteCapabilityProvider;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,23 +138,50 @@ impl<H> InProcessActionExecutor<H> {
 
 #[derive(Debug, Clone)]
 pub struct WasmtimeComponentActionExecutor {
-    root: PathBuf,
-    catalog: SkillCatalog,
+    runtime: SkillRuntime,
     engine: Engine,
+}
+
+struct WasmHostState {
+    table: ResourceTable,
+    wasi: WasiCtx,
+}
+
+impl WasmHostState {
+    fn new() -> Self {
+        let wasi = WasiCtxBuilder::new()
+            .inherit_stdout()
+            .inherit_stderr()
+            .build();
+        Self {
+            table: ResourceTable::new(),
+            wasi,
+        }
+    }
+}
+
+impl IoView for WasmHostState {
+    fn table(&mut self) -> &mut ResourceTable {
+        &mut self.table
+    }
+}
+
+impl WasiView for WasmHostState {
+    fn ctx(&mut self) -> &mut WasiCtx {
+        &mut self.wasi
+    }
 }
 
 impl WasmtimeComponentActionExecutor {
     pub fn new(
-        root: impl Into<PathBuf>,
-        catalog: SkillCatalog,
+        runtime: SkillRuntime,
     ) -> Result<Self, ActionProcessorError> {
         let mut config = Config::new();
         config.wasm_component_model(true);
         let engine = Engine::new(&config)
             .map_err(|error| ActionProcessorError::new(error.to_string()))?;
         Ok(Self {
-            root: root.into(),
-            catalog,
+            runtime,
             engine,
         })
     }
@@ -164,39 +191,27 @@ impl WasmtimeComponentActionExecutor {
         let skill = self.resolve_skill(action)?;
         let model_invocation = self.model_invocation(action, &action_definition)?;
         let canonical_invocation = self
-            .catalog
+            .runtime
+            .catalog()
             .model_adapter()
             .lower_invocation(&model_invocation)
             .map_err(|error| ActionProcessorError::new(error.to_string()))?;
         let wasm_invocation = self
-            .catalog
+            .runtime
+            .catalog()
             .wasm_adapter()
             .lower_invocation(&canonical_invocation)
             .map_err(|error| ActionProcessorError::new(error.to_string()))?;
-
-        let component_path = action_definition
-            .skill
-            .artifact_ref
-            .as_ref()
-            .map(PathBuf::from)
-            .ok_or_else(|| {
-                ActionProcessorError::new(format!(
-                    "skill '{}' has no compiled artifact reference",
-                    action.skill.skill_name
-                ))
-            })?;
-        let component_bytes = fs::read(&component_path).map_err(|error| {
-            ActionProcessorError::new(format!(
-                "failed to read component {}: {error}",
-                component_path.display()
-            ))
-        })?;
-        let component = Component::new(&self.engine, component_bytes)
+        let component = self
+            .runtime
+            .load_component(&action.skill, &self.engine)
             .map_err(|error| ActionProcessorError::new(error.to_string()))?;
 
         let mut linker = Linker::new(&self.engine);
+        wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
+            .map_err(|error| ActionProcessorError::new(error.to_string()))?;
         self.link_imports(&mut linker, &skill, action)?;
-        let mut store = Store::new(&self.engine, ());
+        let mut store = Store::new(&self.engine, WasmHostState::new());
         let instance = linker
             .instantiate(&mut store, &component)
             .map_err(|error| ActionProcessorError::new(error.to_string()))?;
@@ -254,11 +269,13 @@ impl WasmtimeComponentActionExecutor {
 
         let result_val = canonical_result_to_component_result(&results)?;
         let canonical_value = self
-            .catalog
+            .runtime
+            .catalog()
             .wasm_adapter()
             .lift_result(&canonical_invocation.locator.canonical_action_id, &result_val)
             .map_err(|error| ActionProcessorError::new(error.to_string()))?;
-        self.catalog
+        self.runtime
+            .catalog()
             .model_adapter()
             .lift_result(&canonical_invocation.locator.canonical_action_id, &canonical_value)
             .map_err(|error| ActionProcessorError::new(error.to_string()))
@@ -269,7 +286,8 @@ impl WasmtimeComponentActionExecutor {
         action: &ActionRequest,
     ) -> Result<pera_canonical::ActionDefinition, ActionProcessorError> {
         let canonical_action_id = format!("{}.{}", action.skill.skill_name, action.action_name.as_str());
-        self.catalog
+        self.runtime
+            .catalog()
             .action_registry()
             .resolve_canonical_action(&canonical_action_id)
             .cloned()
@@ -285,12 +303,8 @@ impl WasmtimeComponentActionExecutor {
         &self,
         action: &ActionRequest,
     ) -> Result<pera_canonical::CatalogSkill, ActionProcessorError> {
-        self.catalog
-            .resolve_skill(
-                &action.skill.skill_name,
-                action.skill.skill_version.as_ref().map(|version| version.as_str()),
-                action.skill.profile_name.as_deref(),
-            )
+        self.runtime
+            .resolve_skill(&action.skill)
             .cloned()
             .ok_or_else(|| {
                 ActionProcessorError::new(format!(
@@ -336,7 +350,7 @@ impl WasmtimeComponentActionExecutor {
 
     fn link_imports(
         &self,
-        linker: &mut Linker<()>,
+        linker: &mut Linker<WasmHostState>,
         skill: &pera_canonical::CatalogSkill,
         action: &ActionRequest,
     ) -> Result<(), ActionProcessorError> {
@@ -350,7 +364,7 @@ impl WasmtimeComponentActionExecutor {
             }
 
             if is_sqlite_import(import) {
-                let sqlite = Arc::new(self.sqlite_provider_for(action, &skill.metadata)?);
+                let sqlite = Arc::new(self.sqlite_provider_for(action)?);
                 linker
                     .root()
                     .instance(&import.name)
@@ -381,78 +395,9 @@ impl WasmtimeComponentActionExecutor {
     fn sqlite_provider_for(
         &self,
         action: &ActionRequest,
-        metadata: &pera_canonical::SkillMetadata,
     ) -> Result<SqliteCapabilityProvider, ActionProcessorError> {
-        let profile_name = action
-            .skill
-            .profile_name
-            .as_deref()
-            .or(metadata.profile_name.as_deref())
-            .ok_or_else(|| {
-                ActionProcessorError::new(format!(
-                    "skill '{}' is missing a profile name",
-                    action.skill.skill_name
-                ))
-            })?;
-        let skill_version = action
-            .skill
-            .skill_version
-            .as_ref()
-            .map(|version| version.as_str().to_owned())
-            .or_else(|| metadata.skill_version.clone())
-            .ok_or_else(|| {
-                ActionProcessorError::new(format!(
-                    "skill '{}' is missing a version",
-                    action.skill.skill_name
-                ))
-            })?;
-        let manifest_path = self
-            .root
-            .join("catalog")
-            .join("skills")
-            .join(&action.skill.skill_name)
-            .join(&skill_version)
-            .join(profile_name)
-            .join("manifest.yaml");
-        let manifest_bytes = fs::read(&manifest_path).map_err(|error| {
-            ActionProcessorError::new(format!(
-                "failed to read {}: {error}",
-                manifest_path.display()
-            ))
-        })?;
-        let manifest: pera_core::SkillManifest = serde_yaml::from_slice(&manifest_bytes)
-            .map_err(|error| ActionProcessorError::new(error.to_string()))?;
-        let sqlite_databases = manifest
-            .defaults
-            .databases
-            .iter()
-            .filter(|database| database.engine == "sqlite")
-            .collect::<Vec<_>>();
-        let database = match sqlite_databases.as_slice() {
-            [database] => *database,
-            [] => {
-                return Err(ActionProcessorError::new(format!(
-                    "skill '{}' does not define a sqlite database",
-                    action.skill.skill_name
-                )))
-            }
-            _ => {
-                return Err(ActionProcessorError::new(format!(
-                    "skill '{}' defines multiple sqlite databases; capability mapping is ambiguous",
-                    action.skill.skill_name
-                )))
-            }
-        };
-        let path = self
-            .root
-            .join("state")
-            .join("skills")
-            .join(&action.skill.skill_name)
-            .join(skill_version)
-            .join(profile_name)
-            .join("databases")
-            .join(format!("{}.sqlite", database.name));
-        SqliteCapabilityProvider::new(path)
+        self.runtime
+            .sqlite_provider(&action.skill)
             .map_err(|error| ActionProcessorError::new(error.to_string()))
     }
 }

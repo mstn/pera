@@ -2,9 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
-use pera_core::{
-    SkillDatabaseSpec, SkillManifest, SkillProfileManifest,
-};
+use pera_core::{SkillDatabaseSpec, SkillManifest, SkillProfileManifest};
 use pera_runtime::SqliteCapabilityProvider;
 
 use crate::commands::bindings::run_componentize_py;
@@ -94,23 +92,30 @@ struct SkillDatabaseLifecycleCommand {
 
 impl CompileSkillCommand {
     fn execute(&self) -> Result<(), CliError> {
-        let manifest_dir = self.skill_dir.canonicalize().map_err(|source| CliError::ReadFile {
-            path: self.skill_dir.clone(),
-            source,
-        })?;
+        let manifest_dir = self
+            .skill_dir
+            .canonicalize()
+            .map_err(|source| CliError::ReadFile {
+                path: self.skill_dir.clone(),
+                source,
+            })?;
         let manifest_path = resolve_manifest_path(&manifest_dir)?;
-        let manifest_source = fs::read_to_string(&manifest_path).map_err(|source| CliError::ReadFile {
-            path: manifest_path.clone(),
-            source,
+        let manifest_source =
+            fs::read_to_string(&manifest_path).map_err(|source| CliError::ReadFile {
+                path: manifest_path.clone(),
+                source,
+            })?;
+        let manifest: SkillManifest = serde_yaml::from_str(&manifest_source).map_err(|error| {
+            CliError::UnexpectedStateOwned(format!("invalid manifest: {error}"))
         })?;
-        let manifest: SkillManifest = serde_yaml::from_str(&manifest_source)
-            .map_err(|error| CliError::UnexpectedStateOwned(format!("invalid manifest: {error}")))?;
         let profile = select_profile(&manifest, self.profile.as_deref())?;
         let wasm = profile
             .runtime
             .wasm
             .as_ref()
-            .ok_or(CliError::InvalidArguments("only wasm-component profiles are supported"))?;
+            .ok_or(CliError::InvalidArguments(
+                "only wasm-component profiles are supported",
+            ))?;
         let artifact_dir = manifest_dir.join(&wasm.artifacts.dir);
         fs::create_dir_all(&artifact_dir).map_err(|source| CliError::CreateDir {
             path: artifact_dir.clone(),
@@ -122,7 +127,9 @@ impl CompileSkillCommand {
         let module = wasm
             .build
             .as_ref()
-            .ok_or(CliError::InvalidArguments("wasm build configuration is required"))?
+            .ok_or(CliError::InvalidArguments(
+                "wasm build configuration is required",
+            ))?
             .module
             .clone();
         run_componentize_py(
@@ -134,7 +141,6 @@ impl CompileSkillCommand {
                 "--world".to_owned(),
                 wasm.wit.world.clone(),
                 "componentize".to_owned(),
-                "--stub-wasi".to_owned(),
                 module,
                 "-o".to_owned(),
                 component_path.display().to_string(),
@@ -143,11 +149,9 @@ impl CompileSkillCommand {
 
         copy_file(
             &manifest_path,
-            &artifact_dir.join(
-                manifest_path
-                    .file_name()
-                    .ok_or(CliError::InvalidArguments("manifest path is missing a file name"))?,
-            ),
+            &artifact_dir.join(manifest_path.file_name().ok_or(CliError::InvalidArguments(
+                "manifest path is missing a file name",
+            ))?),
         )?;
 
         if let Some(instructions) = &manifest.defaults.instructions {
@@ -170,34 +174,42 @@ impl CompileSkillCommand {
             }
         });
         let meta_path = artifact_dir.join("meta.json");
-        let meta_bytes = serde_json::to_vec_pretty(&meta)
-            .map_err(|error| CliError::UnexpectedStateOwned(format!("failed to serialize meta.json: {error}")))?;
+        let meta_bytes = serde_json::to_vec_pretty(&meta).map_err(|error| {
+            CliError::UnexpectedStateOwned(format!("failed to serialize meta.json: {error}"))
+        })?;
         fs::write(&meta_path, meta_bytes).map_err(|source| CliError::WriteFile {
             path: meta_path,
             source,
         })?;
 
-        println!("Compiled profile '{}' into {}", profile.name, artifact_dir.display());
+        println!(
+            "Compiled profile '{}' into {}",
+            profile.name,
+            artifact_dir.display()
+        );
         Ok(())
     }
 }
 
 impl UploadSkillCommand {
     fn execute(&self) -> Result<(), CliError> {
-        let compiled_dir = self
-            .compiled_dir
-            .canonicalize()
-            .map_err(|source| CliError::ReadFile {
-                path: self.compiled_dir.clone(),
-                source,
-            })?;
+        let compiled_dir =
+            self.compiled_dir
+                .canonicalize()
+                .map_err(|source| CliError::ReadFile {
+                    path: self.compiled_dir.clone(),
+                    source,
+                })?;
         let meta_path = compiled_dir.join("meta.json");
         let meta_source = fs::read_to_string(&meta_path).map_err(|source| CliError::ReadFile {
             path: meta_path.clone(),
             source,
         })?;
         let meta: CompiledSkillMeta = serde_json::from_str(&meta_source).map_err(|error| {
-            CliError::UnexpectedStateOwned(format!("invalid meta.json in {}: {error}", meta_path.display()))
+            CliError::UnexpectedStateOwned(format!(
+                "invalid meta.json in {}: {error}",
+                meta_path.display()
+            ))
         })?;
 
         let catalog_dir = self
@@ -229,10 +241,13 @@ impl UploadSkillCommand {
 
 impl SkillDatabaseLifecycleCommand {
     fn execute(&self, mode: DbMode) -> Result<(), CliError> {
-        let root = self.root.canonicalize().map_err(|source| CliError::ReadFile {
-            path: self.root.clone(),
-            source,
-        })?;
+        let root = self
+            .root
+            .canonicalize()
+            .map_err(|source| CliError::ReadFile {
+                path: self.root.clone(),
+                source,
+            })?;
         let profile_dir = resolve_catalog_profile_dir(
             &root,
             &self.skill,
@@ -240,12 +255,14 @@ impl SkillDatabaseLifecycleCommand {
             self.profile.as_deref(),
         )?;
         let manifest_path = resolve_manifest_path(&profile_dir)?;
-        let manifest_source = fs::read_to_string(&manifest_path).map_err(|source| CliError::ReadFile {
-            path: manifest_path.clone(),
-            source,
+        let manifest_source =
+            fs::read_to_string(&manifest_path).map_err(|source| CliError::ReadFile {
+                path: manifest_path.clone(),
+                source,
+            })?;
+        let manifest: SkillManifest = serde_yaml::from_str(&manifest_source).map_err(|error| {
+            CliError::UnexpectedStateOwned(format!("invalid manifest: {error}"))
         })?;
-        let manifest: SkillManifest = serde_yaml::from_str(&manifest_source)
-            .map_err(|error| CliError::UnexpectedStateOwned(format!("invalid manifest: {error}")))?;
         let profile_name = profile_dir
             .file_name()
             .and_then(|value| value.to_str())
@@ -331,10 +348,7 @@ fn resolve_manifest_path(skill_dir: &Path) -> Result<PathBuf, CliError> {
         .into_iter()
         .find(|path| path.exists())
         .ok_or_else(|| {
-            CliError::UnexpectedStateOwned(format!(
-                "no manifest found in {}",
-                skill_dir.display()
-            ))
+            CliError::UnexpectedStateOwned(format!("no manifest found in {}", skill_dir.display()))
         })
 }
 
@@ -354,13 +368,17 @@ fn select_profile<'a>(
             .profiles
             .iter()
             .find(|profile| profile.name == profile_name)
-            .ok_or_else(|| CliError::UnexpectedStateOwned(format!("unknown profile '{profile_name}'"))),
+            .ok_or_else(|| {
+                CliError::UnexpectedStateOwned(format!("unknown profile '{profile_name}'"))
+            }),
         None => manifest
             .profiles
             .iter()
             .find(|profile| profile.default)
             .or_else(|| manifest.profiles.first())
-            .ok_or(CliError::UnexpectedStateOwned("manifest has no profiles".to_owned())),
+            .ok_or(CliError::UnexpectedStateOwned(
+                "manifest has no profiles".to_owned(),
+            )),
     }
 }
 
@@ -371,11 +389,12 @@ fn initialize_sqlite_database(
     selected_seed: Option<&str>,
     database_path: &Path,
 ) -> Result<(), CliError> {
-    let provider = SqliteCapabilityProvider::new(database_path)
-        .map_err(|error| CliError::UnexpectedStateOwned(format!(
+    let provider = SqliteCapabilityProvider::new(database_path).map_err(|error| {
+        CliError::UnexpectedStateOwned(format!(
             "failed to initialize sqlite database {}: {error}",
             database_path.display()
-        )))?;
+        ))
+    })?;
 
     if database.on_load.as_deref() == Some("migrate") {
         let Some(migrations) = &database.migrations else {
@@ -395,13 +414,19 @@ fn initialize_sqlite_database(
                 database.name
             ))
         })?;
-        let seed_path = profile_dir.join(&seeds.dir).join(format!("{seed_name}.sql"));
+        let seed_path = profile_dir
+            .join(&seeds.dir)
+            .join(format!("{seed_name}.sql"));
         apply_sql_file(&provider, &seed_path)?;
     }
 
     println!(
         "{} SQLite database '{}' for profile '{}' at {}",
-        if database_path.exists() { "Prepared" } else { "Created" },
+        if database_path.exists() {
+            "Prepared"
+        } else {
+            "Created"
+        },
         database.name,
         profile.name,
         database_path.display()
@@ -524,20 +549,23 @@ fn select_default_or_single_profile(version_dir: &Path) -> Result<PathBuf, CliEr
         _ => {
             for profile_dir in &entries {
                 let manifest_path = resolve_manifest_path(profile_dir)?;
-                let manifest_source = fs::read_to_string(&manifest_path).map_err(|source| {
-                    CliError::ReadFile {
+                let manifest_source =
+                    fs::read_to_string(&manifest_path).map_err(|source| CliError::ReadFile {
                         path: manifest_path.clone(),
                         source,
-                    }
-                })?;
-                let manifest: SkillManifest = serde_yaml::from_str(&manifest_source).map_err(|error| {
-                    CliError::UnexpectedStateOwned(format!("invalid manifest: {error}"))
-                })?;
+                    })?;
+                let manifest: SkillManifest =
+                    serde_yaml::from_str(&manifest_source).map_err(|error| {
+                        CliError::UnexpectedStateOwned(format!("invalid manifest: {error}"))
+                    })?;
                 let profile_name = profile_dir
                     .file_name()
                     .and_then(|value| value.to_str())
                     .unwrap_or_default();
-                if manifest.profiles.iter().any(|profile| profile.name == profile_name && profile.default)
+                if manifest
+                    .profiles
+                    .iter()
+                    .any(|profile| profile.name == profile_name && profile.default)
                 {
                     return Ok(profile_dir.clone());
                 }
@@ -630,12 +658,12 @@ fn apply_sql_file(provider: &SqliteCapabilityProvider, path: &Path) -> Result<()
         path: path.to_path_buf(),
         source,
     })?;
-    provider
-        .execute_batch(&sql)
-        .map_err(|error| CliError::UnexpectedStateOwned(format!(
+    provider.execute_batch(&sql).map_err(|error| {
+        CliError::UnexpectedStateOwned(format!(
             "failed to apply SQL from {}: {error}",
             path.display()
-        )))?;
+        ))
+    })?;
     Ok(())
 }
 
@@ -684,11 +712,15 @@ fn copy_dir_recursive(source: &Path, target: &Path) -> Result<(), CliError> {
         })?;
         let path = entry.path();
         let target_path = target.join(entry.file_name());
-        if entry.file_type().map_err(|source_err| CliError::CopyPath {
-            source_path: path.clone(),
-            target_path: target_path.clone(),
-            source: source_err,
-        })?.is_dir() {
+        if entry
+            .file_type()
+            .map_err(|source_err| CliError::CopyPath {
+                source_path: path.clone(),
+                target_path: target_path.clone(),
+                source: source_err,
+            })?
+            .is_dir()
+        {
             copy_dir_recursive(&path, &target_path)?;
         } else {
             copy_file(&path, &target_path)?;

@@ -15,7 +15,7 @@ pub use action::{
     ActionExecutionUpdate, ActionExecutor, ActionHandler, ActionProcessorError,
     InProcessActionExecutor, RejectingActionHandler, WasmtimeComponentActionExecutor,
 };
-pub use catalog::FileSystemSkillCatalogLoader;
+pub use catalog::{FileSystemSkillCatalogLoader, FileSystemSkillRuntimeLoader, SkillRuntime};
 pub use capabilities::{
     CapabilityProvider, CapabilityProviderError, CapabilityProviderRegistry,
     SqliteCapabilityProvider,
