@@ -6,7 +6,7 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use pera_core::{ActionId, ActionRequest, ActionResult, CanonicalValue, RunId};
 use tokio::sync::mpsc;
-use wasmtime::component::{Linker, ResourceTable, Val};
+use wasmtime::component::{Component, Linker, ResourceTable, Val};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
 
@@ -135,7 +135,7 @@ impl<H> InProcessActionExecutor<H> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WasmtimeComponentActionExecutor {
     runtime: SkillRuntime,
     engine: Engine,
@@ -180,7 +180,12 @@ impl WasmtimeComponentActionExecutor {
         Ok(Self { runtime, engine })
     }
 
-    fn execute_sync(&self, action: &ActionRequest) -> Result<CanonicalValue, ActionProcessorError> {
+    fn execute_sync(
+        &self,
+        action: &ActionRequest,
+        component: Arc<Component>,
+        sqlite_provider: SqliteCapabilityProvider,
+    ) -> Result<CanonicalValue, ActionProcessorError> {
         let action_definition = self.resolve_action_definition(action)?;
         let skill = self.resolve_skill(action)?;
         let wasm_invocation = self
@@ -192,15 +197,11 @@ impl WasmtimeComponentActionExecutor {
                 &action.invocation,
             )
             .map_err(|error| ActionProcessorError::new(error.to_string()))?;
-        let component = self
-            .runtime
-            .load_component(&action.skill, &self.engine)
-            .map_err(|error| ActionProcessorError::new(error.to_string()))?;
 
         let mut linker = Linker::new(&self.engine);
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
             .map_err(|error| ActionProcessorError::new(error.to_string()))?;
-        self.link_imports(&mut linker, &skill, action)?;
+        self.link_imports(&mut linker, &skill, Arc::new(sqlite_provider))?;
         let mut store = Store::new(&self.engine, WasmHostState::new());
         let instance = linker
             .instantiate(&mut store, &component)
@@ -318,7 +319,7 @@ impl WasmtimeComponentActionExecutor {
         &self,
         linker: &mut Linker<WasmHostState>,
         skill: &pera_canonical::CatalogSkill,
-        action: &ActionRequest,
+        sqlite_provider: Arc<SqliteCapabilityProvider>,
     ) -> Result<(), ActionProcessorError> {
         for import in &skill.world.imports {
             if import.functions.is_empty() {
@@ -330,7 +331,7 @@ impl WasmtimeComponentActionExecutor {
             }
 
             if is_sqlite_import(import) {
-                let sqlite = Arc::new(self.sqlite_provider_for(action)?);
+                let sqlite = Arc::clone(&sqlite_provider);
                 linker
                     .root()
                     .instance(&import.name)
@@ -359,25 +360,47 @@ impl WasmtimeComponentActionExecutor {
         }
         Ok(())
     }
-
-    fn sqlite_provider_for(
-        &self,
-        action: &ActionRequest,
-    ) -> Result<SqliteCapabilityProvider, ActionProcessorError> {
-        self.runtime
-            .sqlite_provider(&action.skill)
-            .map_err(|error| ActionProcessorError::new(error.to_string()))
-    }
 }
 
 #[async_trait]
 impl ActionExecutor for WasmtimeComponentActionExecutor {
     async fn execute(&self, action: ActionRequest) -> ActionExecutionUpdate {
-        match self.execute_sync(&action) {
-            Ok(value) => ActionExecutionUpdate::Completed(ActionResult {
+        let component = match self.runtime.load_component(&action.skill, &self.engine).await {
+            Ok(component) => component,
+            Err(error) => {
+                return ActionExecutionUpdate::Failed {
+                    run_id: action.run_id,
+                    action_id: action.id,
+                    message: error.to_string(),
+                };
+            }
+        };
+        let sqlite_provider = match self.runtime.sqlite_provider(&action.skill).await {
+            Ok(provider) => provider,
+            Err(error) => {
+                return ActionExecutionUpdate::Failed {
+                    run_id: action.run_id,
+                    action_id: action.id,
+                    message: error.to_string(),
+                };
+            }
+        };
+        let executor = self.clone();
+        let action_for_exec = action.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            executor.execute_sync(&action_for_exec, component, sqlite_provider)
+        })
+        .await;
+        match result {
+            Ok(Ok(value)) => ActionExecutionUpdate::Completed(ActionResult {
                 action_id: action.id,
                 value,
             }),
+            Ok(Err(error)) => ActionExecutionUpdate::Failed {
+                run_id: action.run_id,
+                action_id: action.id,
+                message: error.to_string(),
+            },
             Err(error) => ActionExecutionUpdate::Failed {
                 run_id: action.run_id,
                 action_id: action.id,

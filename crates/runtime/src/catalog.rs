@@ -1,5 +1,7 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use wasmtime::component::Component;
 use wasmtime::Engine;
@@ -9,10 +11,12 @@ use pera_core::{ActionSkillRef, StoreError};
 
 use crate::capabilities::SqliteCapabilityProvider;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SkillRuntime {
     root: PathBuf,
     catalog: SkillCatalog,
+    component_cache: Arc<tokio::sync::Mutex<BTreeMap<String, Arc<Component>>>>,
+    sqlite_path_cache: Arc<tokio::sync::Mutex<BTreeMap<String, PathBuf>>>,
 }
 
 impl SkillRuntime {
@@ -20,6 +24,8 @@ impl SkillRuntime {
         Self {
             root: root.into(),
             catalog,
+            component_cache: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
+            sqlite_path_cache: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -35,11 +41,11 @@ impl SkillRuntime {
         )
     }
 
-    pub fn load_component(
+    pub async fn load_component(
         &self,
         skill_ref: &ActionSkillRef,
         engine: &Engine,
-    ) -> Result<Component, StoreError> {
+    ) -> Result<Arc<Component>, StoreError> {
         let skill = self.resolve_skill(skill_ref).ok_or_else(|| {
             StoreError::new(format!(
                 "skill '{}'{}/{} is not available in the runtime",
@@ -58,17 +64,81 @@ impl SkillRuntime {
                 skill_ref.skill_name
             ))
         })?;
-        let component_bytes = fs::read(artifact_ref).map_err(io_error)?;
-        Component::new(engine, component_bytes).map_err(|error| StoreError::new(error.to_string()))
+        if let Some(component) = self
+            .component_cache
+            .lock()
+            .await
+            .get(artifact_ref)
+            .cloned()
+        {
+            return Ok(component);
+        }
+
+        let component_bytes = tokio::fs::read(artifact_ref).await.map_err(io_error)?;
+        let engine = engine.clone();
+        let component = tokio::task::spawn_blocking(move || {
+            Component::new(&engine, component_bytes)
+                .map(Arc::new)
+                .map_err(|error| StoreError::new(error.to_string()))
+        })
+        .await
+        .map_err(join_error)??;
+
+        let mut cache = self.component_cache.lock().await;
+        Ok(cache
+            .entry(artifact_ref.to_owned())
+            .or_insert_with(|| Arc::clone(&component))
+            .clone())
     }
 
-    pub fn sqlite_provider(
+    pub async fn sqlite_provider(
         &self,
         skill_ref: &ActionSkillRef,
     ) -> Result<SqliteCapabilityProvider, StoreError> {
+        let database_path = self.sqlite_database_path(skill_ref).await?;
+        tokio::task::spawn_blocking(move || {
+            SqliteCapabilityProvider::new(database_path)
+                .map_err(|error| StoreError::new(error.to_string()))
+        })
+        .await
+        .map_err(join_error)?
+    }
+
+    fn profile_dir(&self, skill_ref: &ActionSkillRef) -> Result<PathBuf, StoreError> {
+        let skill_version = skill_ref
+            .skill_version
+            .as_ref()
+            .map(|version| version.as_str())
+            .ok_or_else(|| {
+                StoreError::new(format!(
+                    "skill '{}' is missing a version",
+                    skill_ref.skill_name
+                ))
+            })?;
+        let profile_name = skill_ref.profile_name.as_deref().ok_or_else(|| {
+            StoreError::new(format!(
+                "skill '{}' is missing a profile name",
+                skill_ref.skill_name
+            ))
+        })?;
+        Ok(self
+            .root
+            .join("catalog")
+            .join("skills")
+            .join(&skill_ref.skill_name)
+            .join(skill_version)
+            .join(profile_name))
+    }
+
+    async fn sqlite_database_path(&self, skill_ref: &ActionSkillRef) -> Result<PathBuf, StoreError> {
+        let cache_key = skill_runtime_key(skill_ref);
+        if let Some(path) = self.sqlite_path_cache.lock().await.get(&cache_key).cloned() {
+            return Ok(path);
+        }
+
         let profile_dir = self.profile_dir(skill_ref)?;
         let manifest_path = resolve_manifest_path(&profile_dir)?;
-        let manifest_bytes = fs::read(&manifest_path).map_err(io_error)?;
+        let manifest_bytes = tokio::fs::read(&manifest_path).await.map_err(io_error)?;
         let manifest: pera_core::SkillManifest =
             serde_yaml::from_slice(&manifest_bytes).map_err(yaml_error)?;
         let sqlite_databases = manifest
@@ -117,33 +187,9 @@ impl SkillRuntime {
             .join(profile_name)
             .join("databases")
             .join(format!("{}.sqlite", database.name));
-        SqliteCapabilityProvider::new(path).map_err(|error| StoreError::new(error.to_string()))
-    }
 
-    fn profile_dir(&self, skill_ref: &ActionSkillRef) -> Result<PathBuf, StoreError> {
-        let skill_version = skill_ref
-            .skill_version
-            .as_ref()
-            .map(|version| version.as_str())
-            .ok_or_else(|| {
-                StoreError::new(format!(
-                    "skill '{}' is missing a version",
-                    skill_ref.skill_name
-                ))
-            })?;
-        let profile_name = skill_ref.profile_name.as_deref().ok_or_else(|| {
-            StoreError::new(format!(
-                "skill '{}' is missing a profile name",
-                skill_ref.skill_name
-            ))
-        })?;
-        Ok(self
-            .root
-            .join("catalog")
-            .join("skills")
-            .join(&skill_ref.skill_name)
-            .join(skill_version)
-            .join(profile_name))
+        let mut cache = self.sqlite_path_cache.lock().await;
+        Ok(cache.entry(cache_key).or_insert_with(|| path.clone()).clone())
     }
 }
 
@@ -273,6 +319,23 @@ fn json_error(error: serde_json::Error) -> StoreError {
 
 fn yaml_error(error: serde_yaml::Error) -> StoreError {
     StoreError::new(error.to_string())
+}
+
+fn join_error(error: tokio::task::JoinError) -> StoreError {
+    StoreError::new(error.to_string())
+}
+
+fn skill_runtime_key(skill_ref: &ActionSkillRef) -> String {
+    format!(
+        "{}::{}::{}",
+        skill_ref.skill_name,
+        skill_ref
+            .skill_version
+            .as_ref()
+            .map(|version| version.as_str())
+            .unwrap_or_default(),
+        skill_ref.profile_name.as_deref().unwrap_or_default()
+    )
 }
 
 #[derive(Debug, serde::Deserialize)]
