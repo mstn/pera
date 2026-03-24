@@ -594,7 +594,7 @@ fn lower_named_model_value(
             ))),
         },
         CanonicalTypeDefKind::Record(record) => match value {
-            Value::Map(fields) => {
+            Value::Record { fields, .. } => {
                 let mut lowered = BTreeMap::new();
                 for field in &record.fields {
                     let model_name = python_function_name(&field.name);
@@ -760,7 +760,10 @@ fn lift_named_model_value(
                         lift_model_value(registry, skill_name, &field.ty, field_value)?,
                     );
                 }
-                Ok(Value::Map(lifted))
+                Ok(Value::Record {
+                    name: name.to_owned(),
+                    fields: lifted,
+                })
             }
             _ => Err(BindingError::new(format!(
                 "expected canonical record for '{skill_name}.{name}'"
@@ -1239,7 +1242,8 @@ mod tests {
             .canonical_result_to_model_value("secret-service.create-mission", &value)
             .unwrap();
         match lifted {
-            Value::Map(fields) => {
+            Value::Record { name, fields } => {
+                assert_eq!(name, "mission");
                 assert_eq!(
                     fields.get("objective"),
                     Some(&Value::String("Observe harbor".to_owned()))

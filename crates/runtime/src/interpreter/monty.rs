@@ -157,6 +157,21 @@ fn value_to_monty_object(value: &Value) -> Result<MontyObject, InterpreterError>
             .map(|(key, value)| Ok((MontyObject::String(key.clone()), value_to_monty_object(value)?)))
             .collect::<Result<Vec<_>, _>>()
             .map(MontyObject::dict),
+        Value::Record { name, fields } => {
+            let attrs = fields
+                .iter()
+                .map(|(key, value)| {
+                    Ok((MontyObject::String(key.clone()), value_to_monty_object(value)?))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(MontyObject::Dataclass {
+                name: name.clone(),
+                type_id: 0,
+                field_names: fields.keys().cloned().collect(),
+                attrs: attrs.into(),
+                frozen: true,
+            })
+        }
     }
 }
 
@@ -188,6 +203,24 @@ fn monty_object_to_value(value: MontyObject) -> Result<Value, InterpreterError> 
             }
 
             Ok(Value::Map(map))
+        }
+        MontyObject::Dataclass { name, attrs, .. } => {
+            let mut map = BTreeMap::new();
+
+            for (key, value) in attrs {
+                let key = match key {
+                    MontyObject::String(value) => value,
+                    _ => {
+                        return Err(InterpreterError::new(
+                            "Monty dataclass attributes must use string keys",
+                        ));
+                    }
+                };
+
+                map.insert(key, monty_object_to_value(value)?);
+            }
+
+            Ok(Value::Record { name, fields: map })
         }
         _ => Err(InterpreterError::new(
             "Monty value cannot yet be normalized into a Pera value",

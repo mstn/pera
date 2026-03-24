@@ -8,6 +8,10 @@ pub enum Value {
     String(String),
     List(Vec<Value>),
     Map(BTreeMap<String, Value>),
+    Record {
+        name: String,
+        fields: BTreeMap<String, Value>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
