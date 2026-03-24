@@ -46,10 +46,6 @@ impl FileSystemLayout {
         self.run_dir(run_id).join("run.json")
     }
 
-    fn run_code_path(&self, run_id: RunId) -> PathBuf {
-        self.run_dir(run_id).join("code.py")
-    }
-
     fn system_action_path(&self, action_id: ActionId) -> PathBuf {
         self.system_actions_dir()
             .join(format!("{}.json", action_id.as_hyphenated()))
@@ -91,9 +87,7 @@ impl RunStore for FileSystemRunStore {
         let run_dir = self.layout.run_dir(session.id);
         create_dir_all(&run_dir)?;
         create_dir_all(self.layout.run_actions_dir(session.id))?;
-        write_json(self.layout.run_record_path(session.id), &session)?;
-        write_string(self.layout.run_code_path(session.id), &session.code.source)?;
-        Ok(())
+        write_json(self.layout.run_record_path(session.id), &session)
     }
 
     fn save_run(&mut self, session: ExecutionSession) -> Result<(), StoreError> {
@@ -201,14 +195,6 @@ fn write_json(path: impl AsRef<Path>, value: &impl serde::Serialize) -> Result<(
 fn read_json<T: serde::de::DeserializeOwned>(path: impl AsRef<Path>) -> Result<T, StoreError> {
     let bytes = fs::read(path).map_err(io_error)?;
     serde_json::from_slice(&bytes).map_err(json_error)
-}
-
-fn write_string(path: impl AsRef<Path>, value: &str) -> Result<(), StoreError> {
-    let path = path.as_ref();
-    if let Some(parent) = path.parent() {
-        create_dir_all(parent)?;
-    }
-    fs::write(path, value).map_err(io_error)
 }
 
 fn append_line(path: impl AsRef<Path>, line: &str) -> Result<(), StoreError> {

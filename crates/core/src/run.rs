@@ -2,8 +2,8 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 
 use crate::{
-    ActionId, ActionRecord, CodeArtifact, CompiledProgram, ExecutionEvent, ExecutionOutput,
-    ExecutionSnapshot, InputValues, RunId,
+    ActionId, ActionRecord, CodeArtifact, ExecutionEvent, ExecutionOutput, ExecutionSnapshot,
+    InputValues, RunId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -23,8 +23,6 @@ pub enum ExecutionStatus {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ExecutionSession {
     pub id: RunId,
-    pub code: CodeArtifact,
-    pub program: CompiledProgram,
     pub status: ExecutionStatus,
     pub snapshot: Option<ExecutionSnapshot>,
 }

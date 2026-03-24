@@ -86,8 +86,6 @@ where
         let program = self.interpreter.compile(&request.code)?;
         let session = ExecutionSession {
             id: run_id,
-            code: request.code,
-            program: program.clone(),
             status: ExecutionStatus::Running,
             snapshot: None,
         };
