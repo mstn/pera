@@ -8,6 +8,9 @@ use crate::commands::skill::SkillCommand;
 #[command(name = "pera")]
 #[command(about = "Pera development CLI")]
 pub struct Cli {
+    #[arg(long, global = true, env = "PERA_LOG_LEVEL", default_value = "warn")]
+    pub log_level: String,
+
     #[command(subcommand)]
     pub command: Command,
 }

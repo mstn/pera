@@ -7,6 +7,7 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use pera_core::{ActionId, ActionRequest, ActionResult, CanonicalValue, RunId};
 use tokio::sync::mpsc;
+use tracing::{debug, error, trace};
 use wasmtime::component::{Component, ComponentExportIndex, Instance, Linker, ResourceTable, Val};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
@@ -119,8 +120,24 @@ where
                 worker_id: self.worker_id.clone(),
             });
 
+            debug!(
+                run_id = %action.run_id,
+                action_id = %action.id,
+                worker_id = %self.worker_id,
+                "worker executing action",
+            );
             let update = self.action_executor.execute(action).await;
+            debug!(
+                worker_id = %self.worker_id,
+                update_kind = match &update {
+                    ActionExecutionUpdate::Claimed { .. } => "claimed",
+                    ActionExecutionUpdate::Completed(_) => "completed",
+                    ActionExecutionUpdate::Failed { .. } => "failed",
+                },
+                "worker produced update",
+            );
             let _ = self.update_tx.send(update);
+            trace!(worker_id = %self.worker_id, "worker sent update");
         }
     }
 }
@@ -138,7 +155,7 @@ impl<H> InProcessActionExecutor<H> {
 
 #[derive(Clone)]
 pub struct WasmtimeComponentActionExecutor {
-    runtime: SkillRuntime,
+    runtime: Arc<SkillRuntime>,
     engine: Engine,
     warm_instances: Arc<tokio::sync::Mutex<BTreeMap<String, Arc<Mutex<WarmInstance>>>>>,
 }
@@ -186,20 +203,19 @@ impl WasmtimeComponentActionExecutor {
         let engine =
             Engine::new(&config).map_err(|error| ActionProcessorError::new(error.to_string()))?;
         Ok(Self {
-            runtime,
+            runtime: Arc::new(runtime),
             engine,
             warm_instances: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
         })
     }
 
     fn execute_sync(
-        &self,
+        runtime: &SkillRuntime,
         action: &ActionRequest,
         warm_instance: Arc<Mutex<WarmInstance>>,
     ) -> Result<CanonicalValue, ActionProcessorError> {
-        let action_definition = self.resolve_action_definition(action)?;
-        let wasm_invocation = self
-            .runtime
+        let action_definition = resolve_action_definition(runtime, action)?;
+        let wasm_invocation = runtime
             .catalog()
             .wasmtime_adapter()
             .canonical_invocation_to_wasmtime_invocation(
@@ -207,6 +223,15 @@ impl WasmtimeComponentActionExecutor {
                 &action.invocation,
             )
             .map_err(|error| ActionProcessorError::new(error.to_string()))?;
+
+        debug!(
+            run_id = %action.run_id,
+            action_id = %action.id,
+            skill = %action.skill.skill_name,
+            export = %wasm_invocation.export_name,
+            canonical_action = %wasm_invocation.locator.canonical_action_id,
+            "action start",
+        );
 
         let mut warm_instance = warm_instance
             .lock()
@@ -240,45 +265,46 @@ impl WasmtimeComponentActionExecutor {
             &wasm_invocation.arguments,
             &mut results,
         )
-            .map_err(|error| ActionProcessorError::new(error.to_string()))?;
+        .map_err(|error| {
+            ActionProcessorError::new(format!(
+                "component call failed for '{}': {error}",
+                wasm_invocation.locator.canonical_action_id
+            ))
+        })?;
         func.post_return(&mut warm_instance.store)
-            .map_err(|error| ActionProcessorError::new(error.to_string()))?;
+            .map_err(|error| {
+                ActionProcessorError::new(format!(
+                    "component post-return failed for '{}': {error}",
+                    wasm_invocation.locator.canonical_action_id
+                ))
+            })?;
 
         let result_val = match results.as_slice() {
             [] => Val::Option(None),
             [value] => value.clone(),
             _ => Val::Tuple(results),
         };
-        self.runtime
+        let canonical_value = runtime
             .catalog()
             .wasmtime_adapter()
             .wasmtime_value_to_canonical_value(
                 &wasm_invocation.locator.canonical_action_id,
                 &result_val,
             )
-            .map_err(|error| ActionProcessorError::new(error.to_string()))
-    }
-
-    fn resolve_action_definition(
-        &self,
-        action: &ActionRequest,
-    ) -> Result<pera_canonical::ActionDefinition, ActionProcessorError> {
-        let canonical_action_id = format!(
-            "{}.{}",
-            action.skill.skill_name,
-            action.invocation.action_name.as_str()
-        );
-        self.runtime
-            .catalog()
-            .action_registry()
-            .resolve_canonical_action(&canonical_action_id)
-            .cloned()
-            .ok_or_else(|| {
+            .map_err(|error| {
                 ActionProcessorError::new(format!(
-                    "unknown canonical action '{}'",
-                    canonical_action_id
+                    "failed to decode component result for '{}': {error}",
+                    wasm_invocation.locator.canonical_action_id
                 ))
-            })
+            })?;
+        debug!(
+            run_id = %action.run_id,
+            action_id = %action.id,
+            skill = %action.skill.skill_name,
+            export = %wasm_invocation.export_name,
+            "action complete",
+        );
+        Ok(canonical_value)
     }
 
     fn resolve_skill(
@@ -304,7 +330,6 @@ impl WasmtimeComponentActionExecutor {
     }
 
     fn link_imports(
-        &self,
         linker: &mut Linker<WasmHostState>,
         skill: &pera_canonical::CatalogSkill,
         sqlite_provider: Arc<SqliteCapabilityProvider>,
@@ -325,14 +350,38 @@ impl WasmtimeComponentActionExecutor {
                     .instance(&import.name)
                     .and_then(|mut instance| {
                         let sqlite = Arc::clone(&sqlite);
+                        let import_name = import.name.clone();
                         instance.func_wrap(
                             "execute",
                             move |_store,
                                   (sql, params_json): (String, Option<String>)|
                                   -> Result<(String,), anyhow::Error> {
-                                let result = sqlite
-                                    .execute(&sql, params_json.as_deref())
-                                    .map_err(|error| anyhow!(error.to_string()))?;
+                                trace!(
+                                    import = %import_name,
+                                    db = %sqlite.database_path().display(),
+                                    sql = ?sql,
+                                    params_json = ?params_json,
+                                    "sqlite import call",
+                                );
+                                let result = sqlite.execute(&sql, params_json.as_deref()).map_err(
+                                    |error| {
+                                        error!(
+                                            import = %import_name,
+                                            db = %sqlite.database_path().display(),
+                                            sql = ?sql,
+                                            params_json = ?params_json,
+                                            error = %error,
+                                            "sqlite import error",
+                                        );
+                                        anyhow!(error.to_string())
+                                    },
+                                )?;
+                                trace!(
+                                    import = %import_name,
+                                    db = %sqlite.database_path().display(),
+                                    result_json = %result,
+                                    "sqlite import ok",
+                                );
                                 Ok((result,))
                             },
                         )
@@ -367,10 +416,9 @@ impl WasmtimeComponentActionExecutor {
             .map_err(|error| ActionProcessorError::new(error.to_string()))?;
         let engine = self.engine.clone();
         let skill_for_build = skill.clone();
-        let executor = self.clone();
         let component_for_build = Arc::clone(&component);
         let warm_instance = tokio::task::spawn_blocking(move || {
-            executor.build_warm_instance(
+            Self::build_warm_instance(
                 &skill_for_build,
                 component_for_build,
                 sqlite_provider,
@@ -389,7 +437,6 @@ impl WasmtimeComponentActionExecutor {
     }
 
     fn build_warm_instance(
-        &self,
         skill: &pera_canonical::CatalogSkill,
         component: Arc<Component>,
         sqlite_provider: SqliteCapabilityProvider,
@@ -398,7 +445,7 @@ impl WasmtimeComponentActionExecutor {
         let mut linker = Linker::new(engine);
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
             .map_err(|error| ActionProcessorError::new(error.to_string()))?;
-        self.link_imports(&mut linker, skill, Arc::new(sqlite_provider))?;
+        Self::link_imports(&mut linker, skill, Arc::new(sqlite_provider))?;
         let mut store = Store::new(engine, WasmHostState::new());
         let instance = linker
             .instantiate(&mut store, &component)
@@ -436,7 +483,11 @@ impl WasmtimeComponentActionExecutor {
 #[async_trait]
 impl ActionExecutor for WasmtimeComponentActionExecutor {
     async fn execute(&self, action: ActionRequest) -> ActionExecutionUpdate {
-        let component = match self.runtime.load_component(&action.skill, &self.engine).await {
+        let component = match self
+            .runtime
+            .load_component(&action.skill, &self.engine)
+            .await
+        {
             Ok(component) => component,
             Err(error) => {
                 return ActionExecutionUpdate::Failed {
@@ -456,35 +507,44 @@ impl ActionExecutor for WasmtimeComponentActionExecutor {
                 };
             }
         };
-        let executor = self.clone();
-        let action_for_exec = action.clone();
-        let executor_for_task = executor.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            executor_for_task.execute_sync(&action_for_exec, warm_instance)
-        })
-        .await;
+        let run_id = action.run_id;
+        let action_id = action.id;
+        let warm_instance_key = warm_instance_key(&action.skill);
+        let warm_instances = Arc::clone(&self.warm_instances);
+        let runtime = Arc::clone(&self.runtime);
+        let result =
+            tokio::task::spawn_blocking(move || {
+                Self::execute_sync(runtime.as_ref(), &action, warm_instance)
+            })
+                .await;
+        trace!(
+            run_id = %run_id,
+            action_id = %action_id,
+            join_result = if result.is_ok() { "ok" } else { "join-error" },
+            "action task joined",
+        );
         match result {
-            Ok(Ok(value)) => ActionExecutionUpdate::Completed(ActionResult {
-                action_id: action.id,
-                value,
-            }),
+            Ok(Ok(value)) => {
+                debug!(run_id = %run_id, action_id = %action_id, "action executor returning completed");
+                ActionExecutionUpdate::Completed(ActionResult { action_id, value })
+            }
             Ok(Err(error)) => {
-                executor
-                    .warm_instances
-                    .lock()
-                    .await
-                    .remove(&warm_instance_key(&action.skill));
+                warm_instances.lock().await.remove(&warm_instance_key);
+                error!(run_id = %run_id, action_id = %action_id, error = %error, "action executor returning failed");
                 ActionExecutionUpdate::Failed {
-                    run_id: action.run_id,
-                    action_id: action.id,
+                    run_id,
+                    action_id,
                     message: error.to_string(),
                 }
             }
-            Err(error) => ActionExecutionUpdate::Failed {
-                run_id: action.run_id,
-                action_id: action.id,
-                message: error.to_string(),
-            },
+            Err(error) => {
+                error!(run_id = %run_id, action_id = %action_id, error = %error, "action executor join failed");
+                ActionExecutionUpdate::Failed {
+                    run_id,
+                    action_id,
+                    message: error.to_string(),
+                }
+            }
         }
     }
 }
@@ -515,6 +575,28 @@ fn is_sqlite_import(import: &pera_canonical::CanonicalInterface) -> bool {
         .iter()
         .any(|function| function.name == "execute")
         && import.name.contains("sqlite")
+}
+
+fn resolve_action_definition(
+    runtime: &SkillRuntime,
+    action: &ActionRequest,
+) -> Result<pera_canonical::ActionDefinition, ActionProcessorError> {
+    let canonical_action_id = format!(
+        "{}.{}",
+        action.skill.skill_name,
+        action.invocation.action_name.as_str()
+    );
+    runtime
+        .catalog()
+        .action_registry()
+        .resolve_canonical_action(&canonical_action_id)
+        .cloned()
+        .ok_or_else(|| {
+            ActionProcessorError::new(format!(
+                "unknown canonical action '{}'",
+                canonical_action_id
+            ))
+        })
 }
 
 fn warm_instance_key(skill_ref: &pera_core::ActionSkillRef) -> String {
