@@ -9,4 +9,4 @@
 
 **Experimental** - This project is still in development and not production ready.
 
-`pera` is a lightweight embeddable execution core for agentic systems. It provides an environment where AI agents run. It defines which actions agents can see and execute.
+`pera` is a lightweight embeddable execution core for agentic systems. It provides an environment where AI agents run.
