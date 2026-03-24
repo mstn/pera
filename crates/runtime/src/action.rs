@@ -1,12 +1,13 @@
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
 use pera_core::{ActionId, ActionRequest, ActionResult, CanonicalValue, RunId};
 use tokio::sync::mpsc;
-use wasmtime::component::{Component, Linker, ResourceTable, Val};
+use wasmtime::component::{Component, ComponentExportIndex, Instance, Linker, ResourceTable, Val};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
 
@@ -139,11 +140,18 @@ impl<H> InProcessActionExecutor<H> {
 pub struct WasmtimeComponentActionExecutor {
     runtime: SkillRuntime,
     engine: Engine,
+    warm_instances: Arc<tokio::sync::Mutex<BTreeMap<String, Arc<Mutex<WarmInstance>>>>>,
 }
 
 struct WasmHostState {
     table: ResourceTable,
     wasi: WasiCtx,
+}
+
+struct WarmInstance {
+    store: Store<WasmHostState>,
+    instance: Instance,
+    function_exports: BTreeMap<String, ComponentExportIndex>,
 }
 
 impl WasmHostState {
@@ -177,17 +185,19 @@ impl WasmtimeComponentActionExecutor {
         config.wasm_component_model(true);
         let engine =
             Engine::new(&config).map_err(|error| ActionProcessorError::new(error.to_string()))?;
-        Ok(Self { runtime, engine })
+        Ok(Self {
+            runtime,
+            engine,
+            warm_instances: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
+        })
     }
 
     fn execute_sync(
         &self,
         action: &ActionRequest,
-        component: Arc<Component>,
-        sqlite_provider: SqliteCapabilityProvider,
+        warm_instance: Arc<Mutex<WarmInstance>>,
     ) -> Result<CanonicalValue, ActionProcessorError> {
         let action_definition = self.resolve_action_definition(action)?;
-        let skill = self.resolve_skill(action)?;
         let wasm_invocation = self
             .runtime
             .catalog()
@@ -198,52 +208,26 @@ impl WasmtimeComponentActionExecutor {
             )
             .map_err(|error| ActionProcessorError::new(error.to_string()))?;
 
-        let mut linker = Linker::new(&self.engine);
-        wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
-            .map_err(|error| ActionProcessorError::new(error.to_string()))?;
-        self.link_imports(&mut linker, &skill, Arc::new(sqlite_provider))?;
-        let mut store = Store::new(&self.engine, WasmHostState::new());
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .map_err(|error| ActionProcessorError::new(error.to_string()))?;
-        let export_interface = skill
-            .world
-            .exports
-            .iter()
-            .find(|interface| {
-                interface
-                    .functions
-                    .iter()
-                    .any(|function| function.name == wasm_invocation.export_name)
-            })
+        let mut warm_instance = warm_instance
+            .lock()
+            .map_err(|_| ActionProcessorError::new("warm instance mutex is poisoned"))?;
+        let function_export = warm_instance
+            .function_exports
+            .get(&wasm_invocation.export_name)
+            .cloned()
             .ok_or_else(|| {
                 ActionProcessorError::new(format!(
-                    "component export interface for '{}' was not found",
+                    "component function '{}' was not found",
                     wasm_invocation.export_name
                 ))
             })?;
-        let instance_export = component
-            .get_export_index(None, &export_interface.name)
-            .ok_or_else(|| {
-                ActionProcessorError::new(format!(
-                    "component interface export '{}' was not found",
-                    export_interface.name
-                ))
-            })?;
-        let function_export = component
-            .get_export_index(Some(&instance_export), &wasm_invocation.export_name)
-            .ok_or_else(|| {
-                ActionProcessorError::new(format!(
-                    "component export '{}.{}' was not found",
-                    export_interface.name, wasm_invocation.export_name
-                ))
-            })?;
+        let instance = warm_instance.instance;
         let func = instance
-            .get_func(&mut store, &function_export)
+            .get_func(&mut warm_instance.store, &function_export)
             .ok_or_else(|| {
                 ActionProcessorError::new(format!(
-                    "component function '{}.{}' was not found",
-                    export_interface.name, wasm_invocation.export_name
+                    "component function '{}' was not found",
+                    wasm_invocation.export_name
                 ))
             })?;
 
@@ -251,9 +235,13 @@ impl WasmtimeComponentActionExecutor {
             pera_canonical::CanonicalFunctionResult::None => Vec::new(),
             _ => vec![Val::Bool(false)],
         };
-        func.call(&mut store, &wasm_invocation.arguments, &mut results)
+        func.call(
+            &mut warm_instance.store,
+            &wasm_invocation.arguments,
+            &mut results,
+        )
             .map_err(|error| ActionProcessorError::new(error.to_string()))?;
-        func.post_return(&mut store)
+        func.post_return(&mut warm_instance.store)
             .map_err(|error| ActionProcessorError::new(error.to_string()))?;
 
         let result_val = match results.as_slice() {
@@ -360,6 +348,89 @@ impl WasmtimeComponentActionExecutor {
         }
         Ok(())
     }
+
+    async fn warm_instance(
+        &self,
+        action: &ActionRequest,
+        component: Arc<Component>,
+    ) -> Result<Arc<Mutex<WarmInstance>>, ActionProcessorError> {
+        let cache_key = warm_instance_key(&action.skill);
+        if let Some(instance) = self.warm_instances.lock().await.get(&cache_key).cloned() {
+            return Ok(instance);
+        }
+
+        let skill = self.resolve_skill(action)?;
+        let sqlite_provider = self
+            .runtime
+            .sqlite_provider(&action.skill)
+            .await
+            .map_err(|error| ActionProcessorError::new(error.to_string()))?;
+        let engine = self.engine.clone();
+        let skill_for_build = skill.clone();
+        let executor = self.clone();
+        let component_for_build = Arc::clone(&component);
+        let warm_instance = tokio::task::spawn_blocking(move || {
+            executor.build_warm_instance(
+                &skill_for_build,
+                component_for_build,
+                sqlite_provider,
+                &engine,
+            )
+        })
+        .await
+        .map_err(|error| ActionProcessorError::new(error.to_string()))??;
+
+        let warm_instance = Arc::new(Mutex::new(warm_instance));
+        let mut cache = self.warm_instances.lock().await;
+        Ok(cache
+            .entry(cache_key)
+            .or_insert_with(|| Arc::clone(&warm_instance))
+            .clone())
+    }
+
+    fn build_warm_instance(
+        &self,
+        skill: &pera_canonical::CatalogSkill,
+        component: Arc<Component>,
+        sqlite_provider: SqliteCapabilityProvider,
+        engine: &Engine,
+    ) -> Result<WarmInstance, ActionProcessorError> {
+        let mut linker = Linker::new(engine);
+        wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
+            .map_err(|error| ActionProcessorError::new(error.to_string()))?;
+        self.link_imports(&mut linker, skill, Arc::new(sqlite_provider))?;
+        let mut store = Store::new(engine, WasmHostState::new());
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .map_err(|error| ActionProcessorError::new(error.to_string()))?;
+        let mut function_exports = BTreeMap::new();
+        for export_interface in &skill.world.exports {
+            let instance_export = component
+                .get_export_index(None, &export_interface.name)
+                .ok_or_else(|| {
+                    ActionProcessorError::new(format!(
+                        "component interface export '{}' was not found",
+                        export_interface.name
+                    ))
+                })?;
+            for function in &export_interface.functions {
+                let function_export = component
+                    .get_export_index(Some(&instance_export), &function.name)
+                    .ok_or_else(|| {
+                        ActionProcessorError::new(format!(
+                            "component export '{}.{}' was not found",
+                            export_interface.name, function.name
+                        ))
+                    })?;
+                function_exports.insert(function.name.clone(), function_export);
+            }
+        }
+        Ok(WarmInstance {
+            store,
+            instance,
+            function_exports,
+        })
+    }
 }
 
 #[async_trait]
@@ -375,8 +446,8 @@ impl ActionExecutor for WasmtimeComponentActionExecutor {
                 };
             }
         };
-        let sqlite_provider = match self.runtime.sqlite_provider(&action.skill).await {
-            Ok(provider) => provider,
+        let warm_instance = match self.warm_instance(&action, component).await {
+            Ok(instance) => instance,
             Err(error) => {
                 return ActionExecutionUpdate::Failed {
                     run_id: action.run_id,
@@ -387,8 +458,9 @@ impl ActionExecutor for WasmtimeComponentActionExecutor {
         };
         let executor = self.clone();
         let action_for_exec = action.clone();
+        let executor_for_task = executor.clone();
         let result = tokio::task::spawn_blocking(move || {
-            executor.execute_sync(&action_for_exec, component, sqlite_provider)
+            executor_for_task.execute_sync(&action_for_exec, warm_instance)
         })
         .await;
         match result {
@@ -396,11 +468,18 @@ impl ActionExecutor for WasmtimeComponentActionExecutor {
                 action_id: action.id,
                 value,
             }),
-            Ok(Err(error)) => ActionExecutionUpdate::Failed {
-                run_id: action.run_id,
-                action_id: action.id,
-                message: error.to_string(),
-            },
+            Ok(Err(error)) => {
+                executor
+                    .warm_instances
+                    .lock()
+                    .await
+                    .remove(&warm_instance_key(&action.skill));
+                ActionExecutionUpdate::Failed {
+                    run_id: action.run_id,
+                    action_id: action.id,
+                    message: error.to_string(),
+                }
+            }
             Err(error) => ActionExecutionUpdate::Failed {
                 run_id: action.run_id,
                 action_id: action.id,
@@ -436,4 +515,17 @@ fn is_sqlite_import(import: &pera_canonical::CanonicalInterface) -> bool {
         .iter()
         .any(|function| function.name == "execute")
         && import.name.contains("sqlite")
+}
+
+fn warm_instance_key(skill_ref: &pera_core::ActionSkillRef) -> String {
+    format!(
+        "{}::{}::{}",
+        skill_ref.skill_name,
+        skill_ref
+            .skill_version
+            .as_ref()
+            .map(|version| version.as_str())
+            .unwrap_or_default(),
+        skill_ref.profile_name.as_deref().unwrap_or_default()
+    )
 }
