@@ -12,9 +12,9 @@ use pera_core::{
 };
 
 use crate::{
-    ActionHandler, ActionProcessorError, EventHub, ExecutionEngine, FileSystemEventLog,
-    FileSystemRunStore, InMemoryRunStore, InProcessActionExecutor, RecordingEventPublisher,
-    RejectingActionHandler, RunExecutor, RunTransitionTrigger, TeeEventPublisher,
+    ActionExecutionUpdate, ActionExecutor, ActionProcessorError, EventHub, ExecutionEngine,
+    FileSystemEventLog, FileSystemRunStore, InMemoryRunStore, RecordingEventPublisher,
+    RunExecutor, RunTransitionTrigger, TeeEventPublisher,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -76,15 +76,15 @@ impl Interpreter for FakeInterpreter {
 }
 
 #[derive(Debug, Default, Clone, Copy)]
-struct EchoActionHandler;
+struct EchoActionExecutor;
 
 #[async_trait]
-impl ActionHandler for EchoActionHandler {
-    async fn handle(
+impl ActionExecutor for EchoActionExecutor {
+    async fn execute(
         &self,
-        action: &pera_core::ActionRequest,
-    ) -> Result<CanonicalValue, ActionProcessorError> {
-        match action.invocation.arguments.get("value") {
+        action: pera_core::ActionRequest,
+    ) -> ActionExecutionUpdate {
+        let result = match action.invocation.arguments.get("value") {
             Some(CanonicalValue::S64(value)) => Ok(CanonicalValue::S64(*value)),
             Some(CanonicalValue::S32(value)) => Ok(CanonicalValue::S32(*value)),
             Some(CanonicalValue::U64(value)) => i64::try_from(*value)
@@ -95,6 +95,35 @@ impl ActionHandler for EchoActionHandler {
             Some(other) => Err(ActionProcessorError::new(format!(
                 "unsupported canonical echo argument: {other:?}"
             ))),
+        };
+
+        match result {
+            Ok(value) => ActionExecutionUpdate::Completed(ActionResult {
+                action_id: action.id,
+                value,
+            }),
+            Err(error) => ActionExecutionUpdate::Failed {
+                run_id: action.run_id,
+                action_id: action.id,
+                message: error.to_string(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct RejectingActionExecutor;
+
+#[async_trait]
+impl ActionExecutor for RejectingActionExecutor {
+    async fn execute(&self, action: pera_core::ActionRequest) -> ActionExecutionUpdate {
+        ActionExecutionUpdate::Failed {
+            run_id: action.run_id,
+            action_id: action.id,
+            message: format!(
+                "no action processor is configured for '{}'",
+                action.invocation.action_name.as_str()
+            ),
         }
     }
 }
@@ -291,7 +320,7 @@ async fn execution_engine_manages_multiple_runs() {
     let event_hub = EventHub::new();
     let publisher = TeeEventPublisher::new(RecordingEventPublisher::new(), event_hub.publisher());
     let run_executor = RunExecutor::with_skill_catalog(FakeInterpreter, single_action_catalog("echo"));
-    let action_executor = InProcessActionExecutor::new(EchoActionHandler);
+    let action_executor = EchoActionExecutor;
     let engine = ExecutionEngine::new(
         run_executor,
         InMemoryRunStore::new(),
@@ -342,7 +371,7 @@ async fn execution_engine_emits_action_failure_and_run_failure() {
     let event_hub = EventHub::new();
     let publisher = TeeEventPublisher::new(RecordingEventPublisher::new(), event_hub.publisher());
     let run_executor = RunExecutor::with_skill_catalog(FakeInterpreter, single_action_catalog("missing"));
-    let action_executor = InProcessActionExecutor::new(RejectingActionHandler::new());
+    let action_executor = RejectingActionExecutor;
     let engine = ExecutionEngine::new(
         run_executor,
         InMemoryRunStore::new(),
@@ -442,7 +471,7 @@ async fn execution_engine_recovers_waiting_runs_from_event_log() {
         RunExecutor::with_skill_catalog(FakeInterpreter, single_action_catalog("echo")),
         FileSystemRunStore::new(&root).unwrap(),
         publisher,
-        InProcessActionExecutor::new(EchoActionHandler),
+        EchoActionExecutor,
         event_hub,
     );
     let mut subscription = engine.subscribe();

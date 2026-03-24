@@ -12,8 +12,7 @@ mod skills;
 pub mod interpreter;
 
 pub use action::{
-    ActionExecutionUpdate, ActionExecutor, ActionHandler, ActionProcessorError,
-    InProcessActionExecutor, RejectingActionHandler, WasmtimeComponentActionExecutor,
+    ActionExecutionUpdate, ActionExecutor, ActionProcessorError, WasmtimeComponentActionExecutor,
 };
 pub use catalog::{FileSystemSkillCatalogLoader, FileSystemSkillRuntimeLoader, SkillRuntime};
 pub use capabilities::{

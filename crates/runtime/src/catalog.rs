@@ -1,12 +1,14 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use anyhow::anyhow;
 use tracing::{debug, trace};
-use wasmtime::component::Component;
-use wasmtime::{Cache, Config, Engine};
+use wasmtime::component::{Component, ComponentExportIndex, Instance, Linker, ResourceTable};
+use wasmtime::{Cache, Config, Engine, Store};
+use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
 
 use pera_canonical::{CatalogSkill, SkillCatalog, SkillMetadata, load_canonical_world_from_wit};
 use pera_core::{ActionSkillRef, StoreError};
@@ -20,6 +22,43 @@ pub struct SkillRuntime {
     catalog: SkillCatalog,
     component_cache: Arc<tokio::sync::Mutex<BTreeMap<String, Arc<Component>>>>,
     sqlite_path_cache: Arc<tokio::sync::Mutex<BTreeMap<String, PathBuf>>>,
+    warm_instance_cache: Arc<tokio::sync::Mutex<BTreeMap<String, Arc<Mutex<WarmInstance>>>>>,
+}
+
+pub(crate) struct WarmInstance {
+    pub(crate) store: Store<WasmHostState>,
+    pub(crate) instance: Instance,
+    pub(crate) function_exports: BTreeMap<String, ComponentExportIndex>,
+}
+
+pub(crate) struct WasmHostState {
+    table: ResourceTable,
+    wasi: WasiCtx,
+}
+
+impl WasmHostState {
+    fn new() -> Self {
+        let wasi = WasiCtxBuilder::new()
+            .inherit_stdout()
+            .inherit_stderr()
+            .build();
+        Self {
+            table: ResourceTable::new(),
+            wasi,
+        }
+    }
+}
+
+impl IoView for WasmHostState {
+    fn table(&mut self) -> &mut ResourceTable {
+        &mut self.table
+    }
+}
+
+impl WasiView for WasmHostState {
+    fn ctx(&mut self) -> &mut WasiCtx {
+        &mut self.wasi
+    }
 }
 
 impl SkillRuntime {
@@ -33,6 +72,7 @@ impl SkillRuntime {
             catalog,
             component_cache: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
             sqlite_path_cache: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
+            warm_instance_cache: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
         })
     }
 
@@ -84,7 +124,7 @@ impl SkillRuntime {
         Ok(())
     }
 
-    pub async fn load_component(
+    async fn load_component(
         &self,
         skill_ref: &ActionSkillRef,
     ) -> Result<Arc<Component>, StoreError> {
@@ -186,6 +226,81 @@ impl SkillRuntime {
             "sqlite provider ready",
         );
         Ok(provider)
+    }
+
+    pub(crate) async fn warm_instance(
+        &self,
+        skill_ref: &ActionSkillRef,
+    ) -> Result<Arc<Mutex<WarmInstance>>, StoreError> {
+        let started_at = Instant::now();
+        let cache_key = skill_runtime_key(skill_ref);
+        if let Some(instance) = self
+            .warm_instance_cache
+            .lock()
+            .await
+            .get(&cache_key)
+            .cloned()
+        {
+            trace!(
+                skill = %skill_ref.skill_name,
+                elapsed_ms = started_at.elapsed().as_millis(),
+                "warm instance cache hit",
+            );
+            return Ok(instance);
+        }
+
+        debug!(
+            skill = %skill_ref.skill_name,
+            "warm instance cache miss",
+        );
+        let component = self.load_component(skill_ref).await?;
+        let skill = self.resolve_skill(skill_ref).cloned().ok_or_else(|| {
+            StoreError::new(format!(
+                "skill '{}'{}/{} is not available in the catalog",
+                skill_ref.skill_name,
+                skill_ref
+                    .skill_version
+                    .as_ref()
+                    .map(|version| format!(" version '{}'", version.as_str()))
+                    .unwrap_or_default(),
+                skill_ref.profile_name.as_deref().unwrap_or("")
+            ))
+        })?;
+        let sqlite_provider = self.sqlite_provider(skill_ref).await?;
+        let engine = self.engine.clone();
+        let skill_for_build = skill.clone();
+        let component_for_build = Arc::clone(&component);
+        let build_started_at = Instant::now();
+        let warm_instance = tokio::task::spawn_blocking(move || {
+            build_warm_instance(&skill_for_build, component_for_build, sqlite_provider, &engine)
+        })
+        .await
+        .map_err(join_error)??;
+        debug!(
+            skill = %skill_ref.skill_name,
+            elapsed_ms = build_started_at.elapsed().as_millis(),
+            "warm instance built",
+        );
+
+        let warm_instance = Arc::new(Mutex::new(warm_instance));
+        let mut cache = self.warm_instance_cache.lock().await;
+        let warm_instance = cache
+            .entry(cache_key)
+            .or_insert_with(|| Arc::clone(&warm_instance))
+            .clone();
+        trace!(
+            skill = %skill_ref.skill_name,
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "warm instance ready",
+        );
+        Ok(warm_instance)
+    }
+
+    pub async fn evict_warm_instance(&self, skill_ref: &ActionSkillRef) {
+        self.warm_instance_cache
+            .lock()
+            .await
+            .remove(&skill_runtime_key(skill_ref));
     }
 
     fn profile_dir(&self, skill_ref: &ActionSkillRef) -> Result<PathBuf, StoreError> {
@@ -358,6 +473,153 @@ fn skill_runtime_engine(root: &Path) -> Result<Engine, StoreError> {
     let cache = Cache::new(skill_runtime_cache_config(root)?).map_err(anyhow_error)?;
     config.cache(Some(cache));
     Engine::new(&config).map_err(anyhow_error)
+}
+
+fn build_warm_instance(
+    skill: &CatalogSkill,
+    component: Arc<Component>,
+    sqlite_provider: SqliteCapabilityProvider,
+    engine: &Engine,
+) -> Result<WarmInstance, StoreError> {
+    let started_at = Instant::now();
+    let linker_started_at = Instant::now();
+    let mut linker = Linker::new(engine);
+    wasmtime_wasi::p2::add_to_linker_sync(&mut linker).map_err(anyhow_error)?;
+    link_imports(&mut linker, skill, Arc::new(sqlite_provider))?;
+    debug!(
+        skill = %skill.metadata.skill_name,
+        elapsed_ms = linker_started_at.elapsed().as_millis(),
+        "wasmtime linker configured",
+    );
+    let store_started_at = Instant::now();
+    let mut store = Store::new(engine, WasmHostState::new());
+    trace!(
+        skill = %skill.metadata.skill_name,
+        elapsed_ms = store_started_at.elapsed().as_millis(),
+        "wasmtime store created",
+    );
+    let instantiate_started_at = Instant::now();
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .map_err(anyhow_error)?;
+    debug!(
+        skill = %skill.metadata.skill_name,
+        elapsed_ms = instantiate_started_at.elapsed().as_millis(),
+        "wasmtime component instantiated",
+    );
+    let export_started_at = Instant::now();
+    let mut function_exports = BTreeMap::new();
+    for export_interface in &skill.world.exports {
+        let instance_export = component
+            .get_export_index(None, &export_interface.name)
+            .ok_or_else(|| {
+                StoreError::new(format!(
+                    "component interface export '{}' was not found",
+                    export_interface.name
+                ))
+            })?;
+        for function in &export_interface.functions {
+            let function_export = component
+                .get_export_index(Some(&instance_export), &function.name)
+                .ok_or_else(|| {
+                    StoreError::new(format!(
+                        "component export '{}.{}' was not found",
+                        export_interface.name, function.name
+                    ))
+                })?;
+            function_exports.insert(function.name.clone(), function_export);
+        }
+    }
+    trace!(
+        skill = %skill.metadata.skill_name,
+        export_count = function_exports.len(),
+        elapsed_ms = export_started_at.elapsed().as_millis(),
+        "wasmtime exports indexed",
+    );
+    debug!(
+        skill = %skill.metadata.skill_name,
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "warm instance lifecycle complete",
+    );
+    Ok(WarmInstance {
+        store,
+        instance,
+        function_exports,
+    })
+}
+
+fn link_imports(
+    linker: &mut Linker<WasmHostState>,
+    skill: &CatalogSkill,
+    sqlite_provider: Arc<SqliteCapabilityProvider>,
+) -> Result<(), StoreError> {
+    for import in &skill.world.imports {
+        if import.functions.is_empty() {
+            let _ = linker.root().instance(&import.name).map_err(anyhow_error)?;
+            continue;
+        }
+
+        if is_sqlite_import(import) {
+            let sqlite = Arc::clone(&sqlite_provider);
+            linker
+                .root()
+                .instance(&import.name)
+                .and_then(|mut instance| {
+                    let sqlite = Arc::clone(&sqlite);
+                    let import_name = import.name.clone();
+                    instance.func_wrap(
+                        "execute",
+                        move |_store,
+                              (sql, params_json): (String, Option<String>)|
+                              -> Result<(String,), anyhow::Error> {
+                            trace!(
+                                import = %import_name,
+                                db = %sqlite.database_path().display(),
+                                sql = ?sql,
+                                params_json = ?params_json,
+                                "sqlite import call",
+                            );
+                            let result = sqlite.execute(&sql, params_json.as_deref()).map_err(
+                                |error| {
+                                    tracing::error!(
+                                        import = %import_name,
+                                        db = %sqlite.database_path().display(),
+                                        sql = ?sql,
+                                        params_json = ?params_json,
+                                        error = %error,
+                                        "sqlite import error",
+                                    );
+                                    anyhow!(error.to_string())
+                                },
+                            )?;
+                            trace!(
+                                import = %import_name,
+                                db = %sqlite.database_path().display(),
+                                result_json = %result,
+                                "sqlite import ok",
+                            );
+                            Ok((result,))
+                        },
+                    )
+                })
+                .map_err(anyhow_error)?;
+            continue;
+        }
+
+        return Err(StoreError::new(format!(
+            "unsupported component import '{}'",
+            import.name
+        )));
+    }
+    Ok(())
+}
+
+fn is_sqlite_import(import: &pera_canonical::CanonicalInterface) -> bool {
+    import
+        .functions
+        .iter()
+        .any(|function| function.name == "execute")
+        && import.name.contains("sqlite")
 }
 
 fn skill_runtime_cache_config(root: &Path) -> Result<wasmtime::CacheConfig, StoreError> {
