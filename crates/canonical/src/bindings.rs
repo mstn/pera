@@ -3,7 +3,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 
-use pera_core::{CanonicalInvocation, CanonicalValue, Value};
+use pera_core::{CanonicalInvocation, CanonicalValue, SkillDatabaseSpec, Value};
 use wasmtime::component::Val;
 
 use crate::ir::{
@@ -42,6 +42,8 @@ impl SkillMetadata {
 pub struct CatalogSkill {
     pub metadata: SkillMetadata,
     pub world: CanonicalWorld,
+    pub capabilities: Vec<String>,
+    pub databases: Vec<SkillDatabaseSpec>,
 }
 
 #[derive(Debug, Clone)]
@@ -120,7 +122,12 @@ impl CanonicalBindings {
             .map(|package| package.name.clone())
             .unwrap_or_else(|| world.name.clone());
         let metadata = SkillMetadata::new(skill_name, world.name.clone());
-        let catalog = SkillCatalog::from_skill(CatalogSkill { metadata, world })?;
+        let catalog = SkillCatalog::from_skill(CatalogSkill {
+            metadata,
+            world,
+            capabilities: Vec::new(),
+            databases: Vec::new(),
+        })?;
         Ok(Self { catalog })
     }
 
@@ -154,7 +161,12 @@ impl ActionRegistry {
             .map(|package| package.name.clone())
             .unwrap_or_else(|| world.name.clone());
         let metadata = SkillMetadata::new(skill_name, world.name.clone());
-        Self::from_skills(vec![CatalogSkill { metadata, world }])
+        Self::from_skills(vec![CatalogSkill {
+            metadata,
+            world,
+            capabilities: Vec::new(),
+            databases: Vec::new(),
+        }])
     }
 
     pub fn from_skills(skills: Vec<CatalogSkill>) -> Result<Self, BindingError> {
@@ -1275,10 +1287,14 @@ mod tests {
             CatalogSkill {
                 metadata: SkillMetadata::new("secret-service", "secret-service-default"),
                 world: secret_world,
+                capabilities: Vec::new(),
+                databases: Vec::new(),
             },
             CatalogSkill {
                 metadata: SkillMetadata::new("weather-brief", "weather-brief-default"),
                 world: weather_world,
+                capabilities: Vec::new(),
+                databases: Vec::new(),
             },
         ])
         .unwrap();
@@ -1313,10 +1329,14 @@ mod tests {
             CatalogSkill {
                 metadata: SkillMetadata::new("alpha", "alpha-default"),
                 world: world_a,
+                capabilities: Vec::new(),
+                databases: Vec::new(),
             },
             CatalogSkill {
                 metadata: SkillMetadata::new("beta", "beta-default"),
                 world: world_b,
+                capabilities: Vec::new(),
+                databases: Vec::new(),
             },
         ])
         .unwrap();

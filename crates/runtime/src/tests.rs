@@ -534,6 +534,8 @@ fn secret_service_catalog() -> SkillCatalog {
             metadata
         },
         world,
+        capabilities: vec!["sqlite".to_owned()],
+        databases: Vec::new(),
     })
     .unwrap()
 }
@@ -550,6 +552,8 @@ fn single_action_catalog_for_skill(skill_name: &str, action_name: &str) -> Skill
             metadata
         },
         world: single_action_world(skill_name, "test-world", action_name),
+        capabilities: Vec::new(),
+        databases: Vec::new(),
     })
     .unwrap()
 }

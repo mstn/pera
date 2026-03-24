@@ -1,10 +1,15 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 mod sqlite;
 
 pub use sqlite::SqliteCapabilityProvider;
+pub(crate) use sqlite::{
+    build_provider as build_sqlite_provider, matches_import as matches_sqlite_import,
+    resolve_database_path as resolve_sqlite_database_path,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityProviderError {
@@ -43,9 +48,28 @@ pub trait CapabilityProvider: Send + Sync + 'static {
     fn capability_name(&self) -> &'static str;
 }
 
+#[derive(Debug, Clone)]
+pub enum CapabilityProviderHandle {
+    Sqlite(Arc<SqliteCapabilityProvider>),
+}
+
+impl CapabilityProviderHandle {
+    pub fn capability_name(&self) -> &'static str {
+        match self {
+            Self::Sqlite(provider) => provider.capability_name(),
+        }
+    }
+
+    pub fn sqlite(&self) -> Option<Arc<SqliteCapabilityProvider>> {
+        match self {
+            Self::Sqlite(provider) => Some(Arc::clone(provider)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CapabilityProviderRegistry {
-    sqlite: Option<Arc<SqliteCapabilityProvider>>,
+    providers: BTreeMap<String, CapabilityProviderHandle>,
 }
 
 impl CapabilityProviderRegistry {
@@ -54,12 +78,21 @@ impl CapabilityProviderRegistry {
     }
 
     pub fn with_sqlite(provider: SqliteCapabilityProvider) -> Self {
-        Self {
-            sqlite: Some(Arc::new(provider)),
-        }
+        let mut registry = Self::new();
+        registry.insert(CapabilityProviderHandle::Sqlite(Arc::new(provider)));
+        registry
+    }
+
+    pub fn insert(&mut self, provider: CapabilityProviderHandle) {
+        self.providers
+            .insert(provider.capability_name().to_owned(), provider);
+    }
+
+    pub fn get(&self, capability_name: &str) -> Option<&CapabilityProviderHandle> {
+        self.providers.get(capability_name)
     }
 
     pub fn sqlite(&self) -> Option<Arc<SqliteCapabilityProvider>> {
-        self.sqlite.clone()
+        self.get("sqlite").and_then(CapabilityProviderHandle::sqlite)
     }
 }

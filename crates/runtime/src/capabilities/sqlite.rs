@@ -1,11 +1,17 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use anyhow::anyhow;
+use pera_canonical::{CanonicalInterface, CatalogSkill};
+use pera_core::{ActionSkillRef, StoreError};
 use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::{Connection, Statement};
+use tracing::trace;
+use wasmtime::component::Linker;
 
 use super::{CapabilityProvider, CapabilityProviderError};
+use crate::catalog::{InvocationErrorSource, InvocationEventSource, WasmHostState};
 
 #[derive(Debug)]
 pub struct SqliteCapabilityProvider {
@@ -91,6 +97,137 @@ impl SqliteCapabilityProvider {
 impl CapabilityProvider for SqliteCapabilityProvider {
     fn capability_name(&self) -> &'static str {
         "sqlite"
+    }
+}
+
+pub(crate) fn matches_import(import: &CanonicalInterface) -> bool {
+    import.functions.iter().any(|function| function.name == "execute")
+        && import.name.contains("sqlite")
+}
+
+pub(crate) fn resolve_database_path(
+    root: &Path,
+    skill_ref: &ActionSkillRef,
+    skill: &CatalogSkill,
+) -> Result<PathBuf, StoreError> {
+    let sqlite_databases = skill
+        .databases
+        .iter()
+        .filter(|database| database.engine == "sqlite")
+        .collect::<Vec<_>>();
+    let database = match sqlite_databases.as_slice() {
+        [database] => *database,
+        [] => {
+            return Err(StoreError::new(format!(
+                "skill '{}' does not define a sqlite database",
+                skill_ref.skill_name
+            )))
+        }
+        _ => {
+            return Err(StoreError::new(format!(
+                "skill '{}' defines multiple sqlite databases; capability mapping is ambiguous",
+                skill_ref.skill_name
+            )))
+        }
+    };
+    let skill_version = skill_ref
+        .skill_version
+        .as_ref()
+        .map(|version| version.as_str())
+        .ok_or_else(|| {
+            StoreError::new(format!(
+                "skill '{}' is missing a version",
+                skill_ref.skill_name
+            ))
+        })?;
+    let profile_name = skill_ref.profile_name.as_deref().ok_or_else(|| {
+        StoreError::new(format!(
+            "skill '{}' is missing a profile name",
+            skill_ref.skill_name
+        ))
+    })?;
+
+    Ok(root
+        .join("state")
+        .join("skills")
+        .join(&skill_ref.skill_name)
+        .join(skill_version)
+        .join(profile_name)
+        .join("databases")
+        .join(format!("{}.sqlite", database.name)))
+}
+
+pub(crate) fn build_provider(
+    database_path: PathBuf,
+) -> Result<SqliteCapabilityProvider, StoreError> {
+    SqliteCapabilityProvider::new(database_path).map_err(|error| StoreError::new(error.to_string()))
+}
+
+impl SqliteCapabilityProvider {
+    pub(crate) fn link_import(
+        self: Arc<Self>,
+        linker: &mut Linker<WasmHostState>,
+        import: &CanonicalInterface,
+    ) -> Result<(), StoreError> {
+        linker
+            .root()
+            .instance(&import.name)
+            .and_then(|mut instance| {
+                let sqlite = Arc::clone(&self);
+                let import_name = import.name.clone();
+                instance.func_wrap(
+                    "execute",
+                    move |mut store,
+                          (sql, params_json): (String, Option<String>)|
+                          -> Result<(String,), anyhow::Error> {
+                        store.data_mut().record_event(
+                            InvocationEventSource::Provider {
+                                name: import_name.clone(),
+                                operation: "execute".to_owned(),
+                            },
+                            format!(
+                                "db={} sql={:?} params_json={:?}",
+                                sqlite.database_path().display(),
+                                sql,
+                                params_json
+                            ),
+                        );
+                        trace!(
+                            import = %import_name,
+                            db = %sqlite.database_path().display(),
+                            sql = ?sql,
+                            params_json = ?params_json,
+                            "sqlite import call",
+                        );
+                        let result = sqlite.execute(&sql, params_json.as_deref()).map_err(|error| {
+                            store.data_mut().fail(
+                                InvocationErrorSource::Provider {
+                                    name: import_name.clone(),
+                                    operation: "execute".to_owned(),
+                                },
+                                error.to_string(),
+                            );
+                            tracing::error!(
+                                import = %import_name,
+                                db = %sqlite.database_path().display(),
+                                sql = ?sql,
+                                params_json = ?params_json,
+                                error = %error,
+                                "sqlite import error",
+                            );
+                            anyhow!(error.to_string())
+                        })?;
+                        trace!(
+                            import = %import_name,
+                            db = %sqlite.database_path().display(),
+                            result_json = %result,
+                            "sqlite import ok",
+                        );
+                        Ok((result,))
+                    },
+                )
+            })
+            .map_err(|error| StoreError::new(error.to_string()))
     }
 }
 
