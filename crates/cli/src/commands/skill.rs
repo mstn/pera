@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
-use pera_core::{SkillDatabaseSpec, SkillManifest, SkillProfileManifest};
+use pera_core::{ActionSkillRef, SkillDatabaseSpec, SkillManifest, SkillProfileManifest, SkillVersion};
 use pera_runtime::{FileSystemSkillRuntimeLoader, SqliteCapabilityProvider};
 
 use crate::commands::bindings::run_componentize_py;
@@ -20,7 +20,7 @@ impl SkillCommand {
             SkillSubcommand::Compile(command) => command.execute(),
             SkillSubcommand::Db(command) => command.execute(),
             SkillSubcommand::Precompile(command) => command.execute().await,
-            SkillSubcommand::Upload(command) => command.execute(),
+            SkillSubcommand::Upload(command) => command.execute().await,
         }
     }
 }
@@ -200,7 +200,14 @@ impl CompileSkillCommand {
 }
 
 impl UploadSkillCommand {
-    fn execute(&self) -> Result<(), CliError> {
+    async fn execute(&self) -> Result<(), CliError> {
+        let root = self
+            .root
+            .canonicalize()
+            .map_err(|source| CliError::ReadFile {
+                path: self.root.clone(),
+                source,
+            })?;
         let compiled_dir =
             self.compiled_dir
                 .canonicalize()
@@ -220,8 +227,7 @@ impl UploadSkillCommand {
             ))
         })?;
 
-        let catalog_dir = self
-            .root
+        let catalog_dir = root
             .join("catalog")
             .join("skills")
             .join(&meta.skill_name)
@@ -237,8 +243,20 @@ impl UploadSkillCommand {
         }
 
         copy_dir_recursive(&compiled_dir, &catalog_dir)?;
+        let skill_runtime = FileSystemSkillRuntimeLoader::new(&root)
+            .load()
+            .map_err(CliError::Store)?;
+        let skill_ref = ActionSkillRef {
+            skill_name: meta.skill_name.clone(),
+            skill_version: Some(SkillVersion::new(meta.skill_version.clone())),
+            profile_name: Some(meta.profile_name.clone()),
+        };
+        skill_runtime
+            .precompile_skill(&skill_ref)
+            .await
+            .map_err(CliError::Store)?;
         println!(
-            "Uploaded skill '{}' profile '{}' to {}",
+            "Uploaded and precompiled skill '{}' profile '{}' to {}",
             meta.skill_name,
             meta.profile_name,
             catalog_dir.display()

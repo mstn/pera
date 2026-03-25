@@ -2,8 +2,11 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::UNIX_EPOCH;
 use std::time::Instant;
 
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tracing::{debug, trace};
 use wasmtime::component::{Component, ComponentExportIndex, Instance, Linker, ResourceTable};
 use wasmtime::{Cache, Config, Engine, Store};
@@ -22,6 +25,7 @@ use crate::capabilities::{
 pub struct SkillRuntime {
     root: PathBuf,
     engine: Engine,
+    cache: Cache,
     catalog: SkillCatalog,
     component_cache: Arc<tokio::sync::Mutex<BTreeMap<String, Arc<Component>>>>,
     sqlite_path_cache: Arc<tokio::sync::Mutex<BTreeMap<String, PathBuf>>>,
@@ -184,11 +188,12 @@ impl WasiView for WasmHostState {
 impl SkillRuntime {
     pub fn new(root: impl Into<PathBuf>, catalog: SkillCatalog) -> Result<Self, StoreError> {
         let root = root.into();
-        let engine = skill_runtime_engine(&root)?;
+        let (engine, cache) = skill_runtime_engine(&root)?;
 
         Ok(Self {
             root,
             engine,
+            cache,
             catalog,
             component_cache: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
             sqlite_path_cache: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
@@ -206,6 +211,10 @@ impl SkillRuntime {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub async fn precompile_skill(&self, skill_ref: &ActionSkillRef) -> Result<(), StoreError> {
+        self.load_component(skill_ref).await.map(|_| ())
     }
 
     pub fn resolve_skill(&self, skill_ref: &ActionSkillRef) -> Option<&CatalogSkill> {
@@ -290,6 +299,14 @@ impl SkillRuntime {
         );
         let read_started_at = Instant::now();
         let component_bytes = tokio::fs::read(artifact_ref).await.map_err(io_error)?;
+        let component_metadata = fs::metadata(artifact_ref).map_err(io_error)?;
+        let current_inputs = CacheInputSnapshot::from_artifact(
+            artifact_ref,
+            &component_bytes,
+            &component_metadata,
+            self.cache.directory(),
+        );
+        let previous_inputs = read_cache_input_snapshot(self.cache.directory(), artifact_ref);
         debug!(
             skill = %skill_ref.skill_name,
             artifact_ref = %artifact_ref,
@@ -298,6 +315,8 @@ impl SkillRuntime {
             "component file read completed",
         );
         let engine = self.engine.clone();
+        let cache_hits_before = self.cache.cache_hits();
+        let cache_misses_before = self.cache.cache_misses();
         let compile_started_at = Instant::now();
         let component = tokio::task::spawn_blocking(move || {
             Component::new(&engine, component_bytes)
@@ -306,12 +325,27 @@ impl SkillRuntime {
         })
         .await
         .map_err(join_error)??;
+        let cache_hits_after = self.cache.cache_hits();
+        let cache_misses_after = self.cache.cache_misses();
+        let cache_hit_delta = cache_hits_after.saturating_sub(cache_hits_before);
+        let cache_miss_delta = cache_misses_after.saturating_sub(cache_misses_before);
         debug!(
             skill = %skill_ref.skill_name,
             artifact_ref = %artifact_ref,
             elapsed_ms = compile_started_at.elapsed().as_millis(),
+            cache_hit_delta,
+            cache_miss_delta,
             "Component::new completed",
         );
+        log_cache_outcome(
+            skill_ref,
+            artifact_ref,
+            cache_hit_delta,
+            cache_miss_delta,
+            &current_inputs,
+            previous_inputs.as_ref(),
+        );
+        write_cache_input_snapshot(self.cache.directory(), artifact_ref, &current_inputs)?;
 
         let mut cache = self.component_cache.lock().await;
         let component = cache
@@ -539,12 +573,13 @@ impl FileSystemSkillRuntimeLoader {
     }
 }
 
-fn skill_runtime_engine(root: &Path) -> Result<Engine, StoreError> {
+fn skill_runtime_engine(root: &Path) -> Result<(Engine, Cache), StoreError> {
     let mut config = Config::new();
     config.wasm_component_model(true);
     let cache = Cache::new(skill_runtime_cache_config(root)?).map_err(anyhow_error)?;
-    config.cache(Some(cache));
-    Engine::new(&config).map_err(anyhow_error)
+    config.cache(Some(cache.clone()));
+    let engine = Engine::new(&config).map_err(anyhow_error)?;
+    Ok((engine, cache))
 }
 
 fn build_warm_instance(
@@ -656,6 +691,144 @@ fn skill_runtime_cache_config(root: &Path) -> Result<wasmtime::CacheConfig, Stor
     let mut config = wasmtime::CacheConfig::new();
     config.with_directory(cache_dir);
     Ok(config)
+}
+
+fn cache_input_metadata_dir(cache_dir: &Path) -> PathBuf {
+    cache_dir.join("pera-inputs")
+}
+
+fn cache_input_metadata_path(cache_dir: &Path, artifact_ref: &str) -> PathBuf {
+    let mut hasher = Sha256::new();
+    hasher.update(artifact_ref.as_bytes());
+    let digest = hasher.finalize();
+    cache_input_metadata_dir(cache_dir).join(format!("{}.json", hex_lower(&digest)))
+}
+
+fn read_cache_input_snapshot(cache_dir: &Path, artifact_ref: &str) -> Option<CacheInputSnapshot> {
+    let path = cache_input_metadata_path(cache_dir, artifact_ref);
+    let bytes = fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn write_cache_input_snapshot(
+    cache_dir: &Path,
+    artifact_ref: &str,
+    snapshot: &CacheInputSnapshot,
+) -> Result<(), StoreError> {
+    let dir = cache_input_metadata_dir(cache_dir);
+    fs::create_dir_all(&dir).map_err(io_error)?;
+    let path = cache_input_metadata_path(cache_dir, artifact_ref);
+    let bytes = serde_json::to_vec_pretty(snapshot).map_err(json_error)?;
+    fs::write(path, bytes).map_err(io_error)
+}
+
+fn log_cache_outcome(
+    skill_ref: &ActionSkillRef,
+    artifact_ref: &str,
+    cache_hit_delta: usize,
+    cache_miss_delta: usize,
+    current: &CacheInputSnapshot,
+    previous: Option<&CacheInputSnapshot>,
+) {
+    if cache_hit_delta > 0 {
+        debug!(
+            skill = %skill_ref.skill_name,
+            artifact_ref = %artifact_ref,
+            cache_hit_delta,
+            cache_miss_delta,
+            component_sha256 = %current.component_sha256,
+            "wasmtime disk cache hit",
+        );
+        return;
+    }
+
+    if cache_miss_delta > 0 {
+        debug!(
+            skill = %skill_ref.skill_name,
+            artifact_ref = %artifact_ref,
+            cache_hit_delta,
+            cache_miss_delta,
+            inferred_reason = %infer_cache_miss_reason(current, previous),
+            component_sha256 = %current.component_sha256,
+            "wasmtime disk cache miss",
+        );
+        return;
+    }
+
+    trace!(
+        skill = %skill_ref.skill_name,
+        artifact_ref = %artifact_ref,
+        cache_hit_delta,
+        cache_miss_delta,
+        component_sha256 = %current.component_sha256,
+        "wasmtime disk cache outcome unavailable",
+    );
+}
+
+fn infer_cache_miss_reason(
+    current: &CacheInputSnapshot,
+    previous: Option<&CacheInputSnapshot>,
+) -> &'static str {
+    let Some(previous) = previous else {
+        return "no prior cache input snapshot for artifact";
+    };
+
+    if previous.component_sha256 != current.component_sha256 {
+        return "component bytes changed";
+    }
+    if previous.byte_len != current.byte_len {
+        return "component byte length changed";
+    }
+    if previous.modified_unix_ms != current.modified_unix_ms {
+        return "component mtime changed";
+    }
+    if previous.cache_dir != current.cache_dir {
+        return "cache directory changed";
+    }
+
+    "same component bytes but cache namespace likely changed (wasmtime version, compiler settings, platform, or cache eviction)"
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct CacheInputSnapshot {
+    component_sha256: String,
+    byte_len: usize,
+    modified_unix_ms: Option<u128>,
+    cache_dir: String,
+}
+
+impl CacheInputSnapshot {
+    fn from_artifact(
+        artifact_ref: &str,
+        component_bytes: &[u8],
+        metadata: &fs::Metadata,
+        cache_dir: &Path,
+    ) -> Self {
+        let _ = artifact_ref;
+        let mut hasher = Sha256::new();
+        hasher.update(component_bytes);
+        let modified_unix_ms = metadata
+            .modified()
+            .ok()
+            .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis());
+        Self {
+            component_sha256: hex_lower(&hasher.finalize()),
+            byte_len: component_bytes.len(),
+            modified_unix_ms,
+            cache_dir: cache_dir.display().to_string(),
+        }
+    }
 }
 
 fn absolute_cache_dir(path: PathBuf) -> Result<PathBuf, StoreError> {
