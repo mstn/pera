@@ -7,7 +7,7 @@ use pera_canonical::{load_canonical_world_from_wit, render_python_stubs};
 
 use crate::error::CliError;
 
-const COMPONENTIZE_PY_VERSION: &str = "0.17.1";
+const COMPONENTIZE_PY_VERSION: &str = "0.21.0";
 
 #[derive(Debug, Args)]
 pub struct BindingsCommand {

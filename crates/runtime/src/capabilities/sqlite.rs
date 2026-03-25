@@ -2,12 +2,12 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use anyhow::anyhow;
 use pera_canonical::{CanonicalInterface, CatalogSkill};
 use pera_core::{ActionSkillRef, StoreError};
 use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::{Connection, Statement};
 use tracing::trace;
+use wasmtime::{Error as WasmtimeError, StoreContextMut};
 use wasmtime::component::Linker;
 
 use super::{CapabilityProvider, CapabilityProviderError};
@@ -177,9 +177,9 @@ impl SqliteCapabilityProvider {
                 let import_name = import.name.clone();
                 instance.func_wrap(
                     "execute",
-                    move |mut store,
+                    move |mut store: StoreContextMut<'_, WasmHostState>,
                           (sql, params_json): (String, Option<String>)|
-                          -> Result<(String,), anyhow::Error> {
+                          -> Result<(String,), WasmtimeError> {
                         store.data_mut().record_event(
                             InvocationEventSource::Provider {
                                 name: import_name.clone(),
@@ -215,7 +215,7 @@ impl SqliteCapabilityProvider {
                                 error = %error,
                                 "sqlite import error",
                             );
-                            anyhow!(error.to_string())
+                            WasmtimeError::msg(error.to_string())
                         })?;
                         trace!(
                             import = %import_name,

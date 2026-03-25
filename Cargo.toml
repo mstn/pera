@@ -14,7 +14,7 @@ edition = "2024"
 [workspace.metadata]
 description = "Trusted execution substrate for agent-generated programs."
 
-[profile.dev.package.wasmtime-cache]
+[profile.dev.package.wasmtime-internal-cache]
 # Wasmtime's cache crate keys debug-build cache directories by the current
 # executable mtime when debug assertions are enabled. Disabling them here keeps
 # the cache namespace stable across normal `cargo run` rebuilds, so component

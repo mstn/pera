@@ -7,7 +7,7 @@ use std::time::Instant;
 use tracing::{debug, trace};
 use wasmtime::component::{Component, ComponentExportIndex, Instance, Linker, ResourceTable};
 use wasmtime::{Cache, Config, Engine, Store};
-use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 use pera_canonical::{CatalogSkill, SkillCatalog, SkillMetadata, load_canonical_world_from_wit};
 use pera_core::{ActionId, ActionSkillRef, RunId, StoreError};
@@ -171,15 +171,12 @@ pub(crate) enum InvocationErrorSource {
     Component,
 }
 
-impl IoView for WasmHostState {
-    fn table(&mut self) -> &mut ResourceTable {
-        &mut self.table
-    }
-}
-
 impl WasiView for WasmHostState {
-    fn ctx(&mut self) -> &mut WasiCtx {
-        &mut self.wasi
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi,
+            table: &mut self.table,
+        }
     }
 }
 
@@ -754,7 +751,7 @@ fn yaml_error(error: serde_yaml::Error) -> StoreError {
     StoreError::new(error.to_string())
 }
 
-fn anyhow_error(error: anyhow::Error) -> StoreError {
+fn anyhow_error(error: impl std::fmt::Display) -> StoreError {
     StoreError::new(error.to_string())
 }
 

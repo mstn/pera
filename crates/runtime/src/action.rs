@@ -238,21 +238,6 @@ impl WasmtimeComponentActionExecutor {
             elapsed_ms = call_started_at.elapsed().as_millis(),
             "wasmtime call completed",
         );
-        let post_return_started_at = Instant::now();
-        func.post_return(&mut instance.store)
-            .map_err(|error| {
-                ActionProcessorError::new(format!(
-                    "component post-return failed for '{}': {error}",
-                    wasm_invocation.locator.canonical_action_id
-                ))
-            })?;
-        trace!(
-            run_id = %action.run_id,
-            action_id = %action.id,
-            elapsed_ms = post_return_started_at.elapsed().as_millis(),
-            "wasmtime post-return completed",
-        );
-
         let result_val = match results.as_slice() {
             [] => Val::Option(None),
             [value] => value.clone(),
