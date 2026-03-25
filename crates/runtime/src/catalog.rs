@@ -287,7 +287,7 @@ impl SkillRuntime {
                 skill = %skill_ref.skill_name,
                 artifact_ref = %artifact_ref,
                 elapsed_ms = started_at.elapsed().as_millis(),
-                "component cache hit",
+                "in-memory component cache hit",
             );
             return Ok(component);
         }
@@ -295,10 +295,18 @@ impl SkillRuntime {
         debug!(
             skill = %skill_ref.skill_name,
             artifact_ref = %artifact_ref,
-            "component cache miss",
+            "in-memory component cache miss",
         );
         let read_started_at = Instant::now();
         let component_bytes = tokio::fs::read(artifact_ref).await.map_err(io_error)?;
+        debug!(
+            skill = %skill_ref.skill_name,
+            artifact_ref = %artifact_ref,
+            elapsed_ms = read_started_at.elapsed().as_millis(),
+            byte_len = component_bytes.len(),
+            "component file read completed",
+        );
+        let snapshot_started_at = Instant::now();
         let component_metadata = fs::metadata(artifact_ref).map_err(io_error)?;
         let current_inputs = CacheInputSnapshot::from_artifact(
             artifact_ref,
@@ -310,9 +318,8 @@ impl SkillRuntime {
         debug!(
             skill = %skill_ref.skill_name,
             artifact_ref = %artifact_ref,
-            elapsed_ms = read_started_at.elapsed().as_millis(),
-            byte_len = component_bytes.len(),
-            "component file read completed",
+            elapsed_ms = snapshot_started_at.elapsed().as_millis(),
+            "component cache input snapshot computed",
         );
         let engine = self.engine.clone();
         let cache_hits_before = self.cache.cache_hits();
@@ -356,7 +363,7 @@ impl SkillRuntime {
             skill = %skill_ref.skill_name,
             artifact_ref = %artifact_ref,
             elapsed_ms = started_at.elapsed().as_millis(),
-            "component ready",
+            "component stored in in-memory cache",
         );
         Ok(component)
     }
@@ -377,14 +384,14 @@ impl SkillRuntime {
             trace!(
                 skill = %skill_ref.skill_name,
                 elapsed_ms = started_at.elapsed().as_millis(),
-                "warm instance cache hit",
+                "in-memory warm instance cache hit",
             );
             return Ok(instance);
         }
 
         debug!(
             skill = %skill_ref.skill_name,
-            "warm instance cache miss",
+            "in-memory warm instance cache miss",
         );
         let component = self.load_component(skill_ref).await?;
         let skill = self.resolve_skill(skill_ref).cloned().ok_or_else(|| {
@@ -417,7 +424,7 @@ impl SkillRuntime {
         debug!(
             skill = %skill_ref.skill_name,
             elapsed_ms = build_started_at.elapsed().as_millis(),
-            "warm instance built",
+            "warm instance created",
         );
 
         let warm_instance = Arc::new(Mutex::new(warm_instance));
@@ -429,7 +436,7 @@ impl SkillRuntime {
         trace!(
             skill = %skill_ref.skill_name,
             elapsed_ms = started_at.elapsed().as_millis(),
-            "warm instance ready",
+            "warm instance stored in in-memory cache",
         );
         Ok(warm_instance)
     }

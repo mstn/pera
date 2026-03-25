@@ -247,7 +247,7 @@ impl WasmtimeComponentActionExecutor {
                 skill = %action.skill.skill_name,
                 export = %wasm_invocation.export_name,
                 elapsed_ms = call_started_at.elapsed().as_millis(),
-                "first call completed",
+                "first invocation on warm instance completed",
             );
         }
         let result_val = match results.as_slice() {
@@ -378,7 +378,7 @@ impl ActionExecutor for WasmtimeComponentActionExecutor {
             action_id = %action.id,
             skill = %action.skill.skill_name,
             elapsed_ms = load_instance_started_at.elapsed().as_millis(),
-            "executor loaded instance",
+            "executor acquired warm instance",
         );
         let run_id = action.run_id;
         let action_id = action.id;
