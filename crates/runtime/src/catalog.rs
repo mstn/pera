@@ -6,7 +6,6 @@ use std::time::UNIX_EPOCH;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tracing::{debug, trace};
 use wasmtime::component::{Component, ComponentExportIndex, Instance, Linker, ResourceTable};
 use wasmtime::{Cache, Config, Engine, Store};
@@ -310,7 +309,6 @@ impl SkillRuntime {
         let component_metadata = fs::metadata(artifact_ref).map_err(io_error)?;
         let current_inputs = CacheInputSnapshot::from_artifact(
             artifact_ref,
-            &component_bytes,
             &component_metadata,
             self.cache.directory(),
         );
@@ -705,10 +703,15 @@ fn cache_input_metadata_dir(cache_dir: &Path) -> PathBuf {
 }
 
 fn cache_input_metadata_path(cache_dir: &Path, artifact_ref: &str) -> PathBuf {
-    let mut hasher = Sha256::new();
-    hasher.update(artifact_ref.as_bytes());
-    let digest = hasher.finalize();
-    cache_input_metadata_dir(cache_dir).join(format!("{}.json", hex_lower(&digest)))
+    let encoded = artifact_ref
+        .bytes()
+        .map(|byte| match byte {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' => (byte as char).to_string(),
+            b'.' | b'-' | b'_' => (byte as char).to_string(),
+            _ => format!("_{byte:02x}"),
+        })
+        .collect::<String>();
+    cache_input_metadata_dir(cache_dir).join(format!("{encoded}.json"))
 }
 
 fn read_cache_input_snapshot(cache_dir: &Path, artifact_ref: &str) -> Option<CacheInputSnapshot> {
@@ -743,7 +746,7 @@ fn log_cache_outcome(
             artifact_ref = %artifact_ref,
             cache_hit_delta,
             cache_miss_delta,
-            component_sha256 = %current.component_sha256,
+            component_signature = %current.component_signature(),
             "wasmtime disk cache hit",
         );
         return;
@@ -756,7 +759,7 @@ fn log_cache_outcome(
             cache_hit_delta,
             cache_miss_delta,
             inferred_reason = %infer_cache_miss_reason(current, previous),
-            component_sha256 = %current.component_sha256,
+            component_signature = %current.component_signature(),
             "wasmtime disk cache miss",
         );
         return;
@@ -767,7 +770,7 @@ fn log_cache_outcome(
         artifact_ref = %artifact_ref,
         cache_hit_delta,
         cache_miss_delta,
-        component_sha256 = %current.component_sha256,
+        component_signature = %current.component_signature(),
         "wasmtime disk cache outcome unavailable",
     );
 }
@@ -780,9 +783,6 @@ fn infer_cache_miss_reason(
         return "no prior cache input snapshot for artifact";
     };
 
-    if previous.component_sha256 != current.component_sha256 {
-        return "component bytes changed";
-    }
     if previous.byte_len != current.byte_len {
         return "component byte length changed";
     }
@@ -793,22 +793,11 @@ fn infer_cache_miss_reason(
         return "cache directory changed";
     }
 
-    "same component bytes but cache namespace likely changed (wasmtime version, compiler settings, platform, or cache eviction)"
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    out
+    "artifact metadata unchanged; cache namespace likely changed (wasmtime version, compiler settings, platform, or cache eviction)"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct CacheInputSnapshot {
-    component_sha256: String,
     byte_len: usize,
     modified_unix_ms: Option<u128>,
     cache_dir: String,
@@ -817,24 +806,30 @@ struct CacheInputSnapshot {
 impl CacheInputSnapshot {
     fn from_artifact(
         artifact_ref: &str,
-        component_bytes: &[u8],
         metadata: &fs::Metadata,
         cache_dir: &Path,
     ) -> Self {
         let _ = artifact_ref;
-        let mut hasher = Sha256::new();
-        hasher.update(component_bytes);
         let modified_unix_ms = metadata
             .modified()
             .ok()
             .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
             .map(|duration| duration.as_millis());
         Self {
-            component_sha256: hex_lower(&hasher.finalize()),
-            byte_len: component_bytes.len(),
+            byte_len: usize::try_from(metadata.len()).unwrap_or(usize::MAX),
             modified_unix_ms,
             cache_dir: cache_dir.display().to_string(),
         }
+    }
+
+    fn component_signature(&self) -> String {
+        format!(
+            "len={} mtime_ms={}",
+            self.byte_len,
+            self.modified_unix_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_owned())
+        )
     }
 }
 
