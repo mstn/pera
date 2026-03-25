@@ -324,6 +324,12 @@ impl SkillRuntime {
         let cache_misses_before = self.cache.cache_misses();
         let compile_started_at = Instant::now();
         let component = tokio::task::spawn_blocking(move || {
+            // Future optimization: install-time precompile could also persist a
+            // Wasmtime-produced artifact and load it with `Component::deserialize_file`
+            // instead of always reconstructing from the source `.wasm` via
+            // `Component::new`. That path is `unsafe` and requires us to enforce
+            // compatibility checks ourselves, so we keep the simpler source-based
+            // loading path for now.
             Component::new(&engine, component_bytes)
                 .map(Arc::new)
                 .map_err(|error| StoreError::new(error.to_string()))
