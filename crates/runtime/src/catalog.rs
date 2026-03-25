@@ -32,6 +32,7 @@ pub(crate) struct WarmInstance {
     pub(crate) store: Store<WasmHostState>,
     pub(crate) instance: Instance,
     pub(crate) function_exports: BTreeMap<String, ComponentExportIndex>,
+    pub(crate) invocation_count: u64,
 }
 
 pub(crate) struct WasmHostState {
@@ -294,7 +295,7 @@ impl SkillRuntime {
             artifact_ref = %artifact_ref,
             elapsed_ms = read_started_at.elapsed().as_millis(),
             byte_len = component_bytes.len(),
-            "component bytes loaded",
+            "component file read completed",
         );
         let engine = self.engine.clone();
         let compile_started_at = Instant::now();
@@ -309,7 +310,7 @@ impl SkillRuntime {
             skill = %skill_ref.skill_name,
             artifact_ref = %artifact_ref,
             elapsed_ms = compile_started_at.elapsed().as_millis(),
-            "component compiled",
+            "Component::new completed",
         );
 
         let mut cache = self.component_cache.lock().await;
@@ -560,7 +561,7 @@ fn build_warm_instance(
     debug!(
         skill = %skill.metadata.skill_name,
         elapsed_ms = linker_started_at.elapsed().as_millis(),
-        "wasmtime linker configured",
+        "linker setup completed",
     );
     let store_started_at = Instant::now();
     let mut store = Store::new(engine, WasmHostState::new());
@@ -576,7 +577,7 @@ fn build_warm_instance(
     debug!(
         skill = %skill.metadata.skill_name,
         elapsed_ms = instantiate_started_at.elapsed().as_millis(),
-        "wasmtime component instantiated",
+        "instantiate completed",
     );
     let export_started_at = Instant::now();
     let mut function_exports = BTreeMap::new();
@@ -616,6 +617,7 @@ fn build_warm_instance(
         store,
         instance,
         function_exports,
+        invocation_count: 0,
     })
 }
 

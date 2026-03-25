@@ -209,6 +209,8 @@ impl WasmtimeComponentActionExecutor {
             pera_canonical::CanonicalFunctionResult::None => Vec::new(),
             _ => vec![Val::Bool(false)],
         };
+        let is_first_call = instance.invocation_count == 0;
+        instance.invocation_count += 1;
         let call_started_at = Instant::now();
         instance.store.data_mut().begin_invocation(InvocationContext::new(
             action.run_id,
@@ -238,6 +240,16 @@ impl WasmtimeComponentActionExecutor {
             elapsed_ms = call_started_at.elapsed().as_millis(),
             "wasmtime call completed",
         );
+        if is_first_call {
+            debug!(
+                run_id = %action.run_id,
+                action_id = %action.id,
+                skill = %action.skill.skill_name,
+                export = %wasm_invocation.export_name,
+                elapsed_ms = call_started_at.elapsed().as_millis(),
+                "first call completed",
+            );
+        }
         let result_val = match results.as_slice() {
             [] => Val::Option(None),
             [value] => value.clone(),

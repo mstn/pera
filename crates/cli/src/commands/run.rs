@@ -37,8 +37,6 @@ impl RunCommand {
         let event_log = FileSystemEventLog::new(&self.root).map_err(CliError::Store)?;
         let recovery_events = event_log.read_events().map_err(CliError::Store)?;
         let publisher = TeeEventPublisher::new(event_log, event_hub.publisher());
-        skill_runtime.warm_components().await.map_err(CliError::Store)?;
-
         let run_executor =
             RunExecutor::with_skill_catalog(interpreter, skill_runtime.catalog().clone());
         let action_executor = WasmtimeComponentActionExecutor::new(skill_runtime)
