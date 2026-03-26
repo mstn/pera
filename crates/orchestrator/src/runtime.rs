@@ -1,15 +1,15 @@
 use async_trait::async_trait;
 pub use pera_runtime::{
     CodeEnvironment, CodeEnvironmentAction as CodeAction, CodeEnvironmentError,
-    CodeEnvironmentObservation as CodeObservation, CodeEnvironmentOutcome as CodeOutcome,
-    CodeEnvironmentSnapshot as CodeSnapshot,
+    CodeEnvironmentEvent, CodeEnvironmentObservation as CodeObservation,
+    CodeEnvironmentOutcome as CodeOutcome, CodeEnvironmentSnapshot as CodeSnapshot,
+    SubmittedCodeAction,
 };
 
 use crate::error::EnvironmentError;
 use crate::traits::Environment;
-use crate::types::TaskSpec;
+use crate::types::{EnvironmentEvent, ParticipantId, SubmittedAction, TaskSpec};
 
-#[derive(Debug, Clone)]
 pub struct RuntimeCodeEnvironment {
     inner: CodeEnvironment,
 }
@@ -47,12 +47,41 @@ impl Environment for RuntimeCodeEnvironment {
 
     async fn step(
         &mut self,
+        _actor: ParticipantId,
         action: Self::Action,
     ) -> Result<Self::Outcome, EnvironmentError> {
         self.inner
             .step(action)
             .await
             .map_err(|error| EnvironmentError::new(error.to_string()))
+    }
+
+    async fn submit(
+        &mut self,
+        actor: ParticipantId,
+        action: Self::Action,
+    ) -> Result<SubmittedAction, EnvironmentError> {
+        self.inner
+            .submit(format_participant_id(&actor), action)
+            .await
+            .map(|submitted| SubmittedAction {
+                action_id: submitted.action_id,
+            })
+            .map_err(|error| EnvironmentError::new(error.to_string()))
+    }
+
+    async fn poll_events(
+        &mut self,
+    ) -> Result<Vec<EnvironmentEvent<Self::Action, Self::Outcome>>, EnvironmentError> {
+        let events = self
+            .inner
+            .poll_events()
+            .await
+            .map_err(|error| EnvironmentError::new(error.to_string()))?;
+        Ok(events
+            .into_iter()
+            .map(runtime_event_to_orchestrator_event)
+            .collect())
     }
 
     async fn snapshot(&self) -> Result<Self::Snapshot, EnvironmentError> {
@@ -71,5 +100,61 @@ impl Environment for RuntimeCodeEnvironment {
 
     async fn terminal_status(&self) -> Result<Option<String>, EnvironmentError> {
         Ok(None)
+    }
+}
+
+fn format_participant_id(participant: &ParticipantId) -> String {
+    match participant {
+        ParticipantId::Agent => "agent".to_owned(),
+        ParticipantId::User => "user".to_owned(),
+        ParticipantId::Custom(value) => value.clone(),
+    }
+}
+
+fn parse_participant_id(value: String) -> ParticipantId {
+    match value.as_str() {
+        "agent" => ParticipantId::Agent,
+        "user" => ParticipantId::User,
+        _ => ParticipantId::Custom(value),
+    }
+}
+
+fn runtime_event_to_orchestrator_event(
+    event: CodeEnvironmentEvent,
+) -> EnvironmentEvent<CodeAction, CodeOutcome> {
+    match event {
+        CodeEnvironmentEvent::ActionAccepted {
+            actor,
+            action_id,
+            action,
+        } => EnvironmentEvent::ActionAccepted {
+            participant: parse_participant_id(actor),
+            action_id,
+            action,
+        },
+        CodeEnvironmentEvent::ActionCompleted {
+            actor,
+            action_id,
+            outcome,
+        } => EnvironmentEvent::ActionCompleted {
+            participant: parse_participant_id(actor),
+            action_id,
+            outcome,
+        },
+        CodeEnvironmentEvent::ActionFailed {
+            actor,
+            action_id,
+            error,
+        } => EnvironmentEvent::ActionFailed {
+            participant: parse_participant_id(actor),
+            action_id,
+            error,
+        },
+        CodeEnvironmentEvent::Notification { actor, message } => {
+            EnvironmentEvent::Notification {
+                participant: parse_participant_id(actor),
+                message,
+            }
+        }
     }
 }

@@ -1,6 +1,20 @@
 use std::time::Duration;
 
-use pera_core::RunId;
+use pera_core::{ActionId, RunId};
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ParticipantId {
+    Agent,
+    User,
+    Custom(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionExecution {
+    Immediate,
+    DeferredBlocking,
+    DeferredNonBlocking,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskSpec {
@@ -42,24 +56,102 @@ pub struct EvalResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FinishReason {
-    AgentFinished,
+    ParticipantsFinished,
     StepLimitExceeded,
     ActionLimitExceeded,
     MessageLimitExceeded,
     TimeLimitExceeded,
-    AgentError(String),
+    ParticipantError {
+        participant: ParticipantId,
+        message: String,
+    },
     EnvironmentError(String),
     EnvironmentTerminated(String),
+    Deadlocked,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParticipantInboxEvent<A, U> {
+    ActionAccepted {
+        action_id: ActionId,
+        action: A,
+    },
+    ActionCompleted {
+        action_id: ActionId,
+        outcome: U,
+    },
+    ActionFailed {
+        action_id: ActionId,
+        error: String,
+    },
+    Notification {
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubmittedAction {
+    pub action_id: ActionId,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum EnvironmentEvent<A, U> {
+    ActionAccepted {
+        participant: ParticipantId,
+        action_id: ActionId,
+        action: A,
+    },
+    ActionCompleted {
+        participant: ParticipantId,
+        action_id: ActionId,
+        outcome: U,
+    },
+    ActionFailed {
+        participant: ParticipantId,
+        action_id: ActionId,
+        error: String,
+    },
+    Notification {
+        participant: ParticipantId,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TrajectoryEvent<O, A, U> {
     SessionStarted { task: TaskSpec },
     ObservationRecorded { observation: O },
-    AgentMessage { content: String },
-    AgentActionRequested { action: A },
-    EnvironmentActionCompleted { action: A, outcome: U },
-    EnvironmentActionFailed { action: A, error: String },
+    ParticipantMessage {
+        participant: ParticipantId,
+        content: String,
+    },
+    ActionRequested {
+        participant: ParticipantId,
+        action: A,
+        execution: ActionExecution,
+    },
+    ActionSubmitted {
+        participant: ParticipantId,
+        action_id: ActionId,
+        action: A,
+        execution: ActionExecution,
+    },
+    ActionCompleted {
+        participant: ParticipantId,
+        action_id: ActionId,
+        outcome: U,
+    },
+    ActionFailed {
+        participant: ParticipantId,
+        action_id: ActionId,
+        error: String,
+    },
+    ParticipantYielded {
+        participant: ParticipantId,
+    },
+    ParticipantFinished {
+        participant: ParticipantId,
+    },
     SessionFinished { reason: FinishReason },
     EvaluationCompleted { result: EvalResult },
 }
@@ -80,19 +172,25 @@ impl<O, A, U> Trajectory<O, A, U> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct AgentTurnInput<O, A, U> {
+pub struct ParticipantTurnInput<O, A, U> {
     pub run_id: RunId,
+    pub participant: ParticipantId,
     pub task: TaskSpec,
     pub limits: RunLimits,
     pub observation: O,
+    pub inbox: Vec<ParticipantInboxEvent<A, U>>,
     pub trajectory: Trajectory<O, A, U>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AgentDecision<A> {
+pub enum ParticipantDecision<A> {
     Message { content: String },
-    EnvironmentAction { action: A },
-    Finish { reason: FinishReason },
+    Action {
+        action: A,
+        execution: ActionExecution,
+    },
+    Yield,
+    Finish,
 }
 
 #[derive(Debug, Clone, PartialEq)]

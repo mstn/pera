@@ -21,8 +21,9 @@ pub use capabilities::{
     SqliteCapabilityProvider,
 };
 pub use code_environment::{
-    CodeEnvironment, CodeEnvironmentAction, CodeEnvironmentError, CodeEnvironmentObservation,
-    CodeEnvironmentOutcome, CodeEnvironmentSnapshot, CodeToolExecutor,
+    CodeEnvironment, CodeEnvironmentAction, CodeEnvironmentError, CodeEnvironmentEvent,
+    CodeEnvironmentObservation, CodeEnvironmentOutcome, CodeEnvironmentSnapshot, CodeToolExecutor,
+    SubmittedCodeAction,
 };
 
 pub(crate) use action::ActionWorker;

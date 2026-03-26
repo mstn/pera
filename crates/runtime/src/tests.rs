@@ -14,9 +14,9 @@ use pera_core::{
 
 use crate::{
     ActionExecutionUpdate, ActionExecutor, ActionProcessorError, CodeEnvironment,
-    CodeEnvironmentAction, CodeEnvironmentOutcome, CodeToolExecutor, EventHub, ExecutionEngine,
-    FileSystemEventLog, FileSystemRunStore, InMemoryRunStore, RecordingEventPublisher, RunExecutor,
-    RunTransitionTrigger, TeeEventPublisher,
+    CodeEnvironmentAction, CodeEnvironmentEvent, CodeEnvironmentOutcome, CodeToolExecutor,
+    EventHub, ExecutionEngine, FileSystemEventLog, FileSystemRunStore, InMemoryRunStore,
+    RecordingEventPublisher, RunExecutor, RunTransitionTrigger, TeeEventPublisher,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -634,6 +634,56 @@ async fn code_environment_rejects_paths_outside_workspace() {
         .unwrap_err();
 
     assert!(error.to_string().contains("escapes the workspace root"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn code_environment_submits_and_polls_deferred_actions() {
+    let root = temp_root("code-env-submit");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut environment = CodeEnvironment::with_tool_executor(
+        &root,
+        None,
+        Arc::new(FakeCodeToolExecutor),
+    );
+    environment.reset().await.unwrap();
+
+    let submitted = environment
+        .submit(
+            "agent".to_owned(),
+            CodeEnvironmentAction::CallTool {
+                skill: pera_core::ActionSkillRef {
+                    skill_name: "test-skill".to_owned(),
+                    skill_version: None,
+                    profile_name: None,
+                },
+                invocation: pera_core::CanonicalInvocation {
+                    action_name: ActionName::new("echo"),
+                    arguments: BTreeMap::from([("value".to_owned(), CanonicalValue::S64(17))]),
+                },
+            },
+        )
+        .await
+        .unwrap();
+
+    let mut events = Vec::new();
+    for _ in 0..200 {
+        events = environment.poll_events().await.unwrap();
+        if !events.is_empty() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+
+    assert!(events.iter().any(|event| matches!(
+        event,
+        CodeEnvironmentEvent::ActionCompleted {
+            actor,
+            action_id,
+            outcome: CodeEnvironmentOutcome::ToolCall { value, .. },
+        } if actor == "agent" && *action_id == submitted.action_id && *value == CanonicalValue::S64(17)
+    )), "events: {:?}", events);
 
     let _ = std::fs::remove_dir_all(root);
 }

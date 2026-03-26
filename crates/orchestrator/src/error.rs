@@ -22,6 +22,8 @@ impl Display for AgentError {
 
 impl Error for AgentError {}
 
+pub type ParticipantError = AgentError;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvironmentError {
     message: String,

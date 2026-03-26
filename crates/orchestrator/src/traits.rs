@@ -1,18 +1,23 @@
 use async_trait::async_trait;
 
-use crate::error::{AgentError, EnvironmentError, EvaluatorError};
-use crate::types::{AgentDecision, AgentTurnInput, EvalResult, TaskSpec, Trajectory};
+use crate::error::{EnvironmentError, EvaluatorError, ParticipantError};
+use crate::types::{
+    EnvironmentEvent, EvalResult, ParticipantDecision, ParticipantId, ParticipantTurnInput,
+    SubmittedAction, TaskSpec, Trajectory,
+};
 
 #[async_trait]
-pub trait Agent: Send {
+pub trait Participant: Send {
     type Observation: Clone + Send + Sync + 'static;
     type Action: Clone + Send + Sync + 'static;
     type Outcome: Clone + Send + Sync + 'static;
 
+    fn id(&self) -> ParticipantId;
+
     async fn next_decision(
         &mut self,
-        input: AgentTurnInput<Self::Observation, Self::Action, Self::Outcome>,
-    ) -> Result<AgentDecision<Self::Action>, AgentError>;
+        input: ParticipantTurnInput<Self::Observation, Self::Action, Self::Outcome>,
+    ) -> Result<ParticipantDecision<Self::Action>, ParticipantError>;
 }
 
 #[async_trait]
@@ -26,8 +31,17 @@ pub trait Environment: Send {
     async fn observe(&self) -> Result<Self::Observation, EnvironmentError>;
     async fn step(
         &mut self,
+        actor: ParticipantId,
         action: Self::Action,
     ) -> Result<Self::Outcome, EnvironmentError>;
+    async fn submit(
+        &mut self,
+        actor: ParticipantId,
+        action: Self::Action,
+    ) -> Result<SubmittedAction, EnvironmentError>;
+    async fn poll_events(
+        &mut self,
+    ) -> Result<Vec<EnvironmentEvent<Self::Action, Self::Outcome>>, EnvironmentError>;
     async fn snapshot(&self) -> Result<Self::Snapshot, EnvironmentError>;
     async fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), EnvironmentError>;
     async fn terminal_status(&self) -> Result<Option<String>, EnvironmentError>;
