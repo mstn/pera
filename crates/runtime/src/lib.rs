@@ -3,6 +3,7 @@
 mod action;
 mod catalog;
 mod capabilities;
+mod code_environment;
 mod engine;
 mod events;
 mod fs;
@@ -18,6 +19,10 @@ pub use catalog::{FileSystemSkillCatalogLoader, FileSystemSkillRuntimeLoader, Sk
 pub use capabilities::{
     CapabilityProvider, CapabilityProviderError, CapabilityProviderRegistry,
     SqliteCapabilityProvider,
+};
+pub use code_environment::{
+    CodeEnvironment, CodeEnvironmentAction, CodeEnvironmentError, CodeEnvironmentObservation,
+    CodeEnvironmentOutcome, CodeEnvironmentSnapshot, CodeToolExecutor,
 };
 
 pub(crate) use action::ActionWorker;

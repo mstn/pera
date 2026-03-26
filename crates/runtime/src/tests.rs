@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use pera_canonical::{CatalogSkill, SkillCatalog, SkillMetadata};
@@ -12,9 +13,10 @@ use pera_core::{
 };
 
 use crate::{
-    ActionExecutionUpdate, ActionExecutor, ActionProcessorError, EventHub, ExecutionEngine,
-    FileSystemEventLog, FileSystemRunStore, InMemoryRunStore, RecordingEventPublisher,
-    RunExecutor, RunTransitionTrigger, TeeEventPublisher,
+    ActionExecutionUpdate, ActionExecutor, ActionProcessorError, CodeEnvironment,
+    CodeEnvironmentAction, CodeEnvironmentOutcome, CodeToolExecutor, EventHub, ExecutionEngine,
+    FileSystemEventLog, FileSystemRunStore, InMemoryRunStore, RecordingEventPublisher, RunExecutor,
+    RunTransitionTrigger, TeeEventPublisher,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -125,6 +127,24 @@ impl ActionExecutor for RejectingActionExecutor {
                 action.invocation.action_name.as_str()
             ),
         }
+    }
+}
+
+#[derive(Debug, Default)]
+struct FakeCodeToolExecutor;
+
+#[async_trait]
+impl CodeToolExecutor for FakeCodeToolExecutor {
+    async fn execute_tool(
+        &self,
+        request: pera_core::ActionRequest,
+    ) -> Result<CanonicalValue, crate::CodeEnvironmentError> {
+        Ok(request
+            .invocation
+            .arguments
+            .get("value")
+            .cloned()
+            .unwrap_or(CanonicalValue::Null))
     }
 }
 
@@ -256,7 +276,11 @@ fn run_executor_suspends_and_resumes() {
 fn run_executor_annotates_actions_from_skill_catalog() {
     let executor = RunExecutor::with_skill_catalog(
         FakeInterpreter,
-        single_action_catalog_for_skill("secret-service", "resolve-mission"),
+        single_action_catalog_for_skill_with_profile(
+            "secret-service",
+            "secret-service-default",
+            "resolve-mission",
+        ),
     );
 
     let transition = executor
@@ -496,6 +520,124 @@ async fn execution_engine_recovers_waiting_runs_from_event_log() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[tokio::test]
+async fn code_environment_runs_shell_commands() {
+    let root = temp_root("code-env-shell");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut environment = CodeEnvironment::new(&root, None).unwrap();
+
+    let observation = environment.reset().await.unwrap();
+    assert_eq!(observation.workspace_root, root);
+
+    let outcome = environment
+        .step(CodeEnvironmentAction::Shell {
+            command: "printf 'hello'".to_owned(),
+        })
+        .await
+        .unwrap();
+
+    match outcome {
+        CodeEnvironmentOutcome::Shell { stdout, exit_code, .. } => {
+            assert_eq!(stdout, "hello");
+            assert_eq!(exit_code, 0);
+        }
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn code_environment_reads_and_writes_files() {
+    let root = temp_root("code-env-fs");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut environment = CodeEnvironment::new(&root, None).unwrap();
+    environment.reset().await.unwrap();
+
+    let write_outcome = environment
+        .step(CodeEnvironmentAction::WriteFile {
+            path: PathBuf::from("notes/output.txt"),
+            content: b"content".to_vec(),
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        write_outcome,
+        CodeEnvironmentOutcome::WriteFile { bytes_written: 7, .. }
+    ));
+
+    let read_outcome = environment
+        .step(CodeEnvironmentAction::ReadFile {
+            path: PathBuf::from("notes/output.txt"),
+        })
+        .await
+        .unwrap();
+
+    match read_outcome {
+        CodeEnvironmentOutcome::ReadFile { content, .. } => {
+            assert_eq!(content, b"content");
+        }
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn code_environment_executes_tools_through_async_executor() {
+    let root = temp_root("code-env-tool");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut environment = CodeEnvironment::with_tool_executor(
+        &root,
+        None,
+        Arc::new(FakeCodeToolExecutor),
+    );
+    environment.reset().await.unwrap();
+
+    let outcome = environment
+        .step(CodeEnvironmentAction::CallTool {
+            skill: pera_core::ActionSkillRef {
+                skill_name: "test-skill".to_owned(),
+                skill_version: None,
+                profile_name: None,
+            },
+            invocation: pera_core::CanonicalInvocation {
+                action_name: ActionName::new("echo"),
+                arguments: BTreeMap::from([("value".to_owned(), CanonicalValue::S64(17))]),
+            },
+        })
+        .await
+        .unwrap();
+
+    match outcome {
+        CodeEnvironmentOutcome::ToolCall { value, .. } => {
+            assert_eq!(value, CanonicalValue::S64(17));
+        }
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn code_environment_rejects_paths_outside_workspace() {
+    let root = temp_root("code-env-paths");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut environment = CodeEnvironment::new(&root, None).unwrap();
+    environment.reset().await.unwrap();
+
+    let error = environment
+        .step(CodeEnvironmentAction::ReadFile {
+            path: PathBuf::from("../secret.txt"),
+        })
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("escapes the workspace root"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
 fn temp_root(prefix: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -545,10 +687,18 @@ fn single_action_catalog(action_name: &str) -> SkillCatalog {
 }
 
 fn single_action_catalog_for_skill(skill_name: &str, action_name: &str) -> SkillCatalog {
+    single_action_catalog_for_skill_with_profile(skill_name, "test-profile", action_name)
+}
+
+fn single_action_catalog_for_skill_with_profile(
+    skill_name: &str,
+    profile_name: &str,
+    action_name: &str,
+) -> SkillCatalog {
     SkillCatalog::from_skill(CatalogSkill {
         metadata: {
             let mut metadata = SkillMetadata::new(skill_name, "test-world");
-            metadata.profile_name = Some("test-profile".to_owned());
+            metadata.profile_name = Some(profile_name.to_owned());
             metadata
         },
         world: single_action_world(skill_name, "test-world", action_name),
