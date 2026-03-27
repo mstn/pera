@@ -76,6 +76,7 @@ pub async fn run_repl(agent_config: AgentConfig) -> Result<(), CliError> {
                 },
                 limits: RunLimits {
                     max_steps: usize::MAX,
+                    max_steps_per_agent_loop: usize::MAX,
                     max_actions: usize::MAX,
                     max_messages: usize::MAX,
                     max_duration: None,

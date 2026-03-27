@@ -52,6 +52,7 @@ struct AgentLoop<O, A, U> {
     inbox: Vec<ParticipantInboxEvent<A, U>>,
     work_item: WorkItem,
     status: AgentLoopStatus,
+    step_count: usize,
 }
 
 impl<O, A, U> AgentLoop<O, A, U>
@@ -70,6 +71,7 @@ where
             inbox,
             work_item: WorkItem { initial_message },
             status: AgentLoopStatus::Ready,
+            step_count: 0,
         }
     }
 
@@ -97,6 +99,14 @@ where
 
     fn block_on_action(&mut self, action_id: ActionId) {
         self.status = AgentLoopStatus::WaitingOnEnvironment { action_id };
+    }
+
+    fn step_count(&self) -> usize {
+        self.step_count
+    }
+
+    fn record_step(&mut self) {
+        self.step_count += 1;
     }
 
     fn into_participant(self) -> BoxedParticipant<O, A, U> {
@@ -529,6 +539,11 @@ where
             let Some(agent_loop) = participant.get_or_start_loop() else {
                 continue;
             };
+            if agent_loop.step_count() >= request.limits.max_steps_per_agent_loop {
+                break FinishReason::AgentLoopStepLimitExceeded {
+                    participant: participant_id,
+                };
+            }
 
             let decision = agent_loop
                 .continue_with(
@@ -671,6 +686,11 @@ where
             ParticipantDecision::Message { content } => {
                 counters.step_count += 1;
                 counters.message_count += 1;
+                if let Some(participant) = state.participant_mut(&participant_id)
+                    && let Some(agent_loop) = participant.agent_loop.as_mut()
+                {
+                    agent_loop.record_step();
+                }
                 state.trajectory.push(TrajectoryEvent::ParticipantMessage {
                     participant: participant_id.clone(),
                     content: content.clone(),
@@ -683,6 +703,11 @@ where
             ParticipantDecision::FinalMessage { content } => {
                 counters.step_count += 1;
                 counters.message_count += 1;
+                if let Some(participant) = state.participant_mut(&participant_id)
+                    && let Some(agent_loop) = participant.agent_loop.as_mut()
+                {
+                    agent_loop.record_step();
+                }
                 state.trajectory.push(TrajectoryEvent::ParticipantMessage {
                     participant: participant_id.clone(),
                     content: content.clone(),
@@ -698,6 +723,11 @@ where
             ParticipantDecision::Action { action, execution } => {
                 counters.step_count += 1;
                 counters.action_count += 1;
+                if let Some(participant) = state.participant_mut(&participant_id)
+                    && let Some(agent_loop) = participant.agent_loop.as_mut()
+                {
+                    agent_loop.record_step();
+                }
                 state.trajectory.push(TrajectoryEvent::ActionRequested {
                     participant: participant_id.clone(),
                     action: action.clone(),
@@ -788,6 +818,11 @@ where
             }
             ParticipantDecision::Yield => {
                 counters.step_count += 1;
+                if let Some(participant) = state.participant_mut(&participant_id)
+                    && let Some(agent_loop) = participant.agent_loop.as_mut()
+                {
+                    agent_loop.record_step();
+                }
                 state.trajectory.push(TrajectoryEvent::ParticipantYielded {
                     participant: participant_id,
                 });

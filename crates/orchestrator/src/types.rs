@@ -32,6 +32,7 @@ pub struct TaskSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunLimits {
     pub max_steps: usize,
+    pub max_steps_per_agent_loop: usize,
     pub max_actions: usize,
     pub max_messages: usize,
     pub max_duration: Option<Duration>,
@@ -41,6 +42,7 @@ impl Default for RunLimits {
     fn default() -> Self {
         Self {
             max_steps: 64,
+            max_steps_per_agent_loop: 64,
             max_actions: 64,
             max_messages: 64,
             max_duration: None,
@@ -77,6 +79,9 @@ pub enum FinishReason {
         participant: ParticipantId,
     },
     StepLimitExceeded,
+    AgentLoopStepLimitExceeded {
+        participant: ParticipantId,
+    },
     ActionLimitExceeded,
     MessageLimitExceeded,
     TimeLimitExceeded,

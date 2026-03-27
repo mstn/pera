@@ -145,6 +145,7 @@ fn test_request() -> RunRequest {
         },
         limits: RunLimits {
             max_steps: 12,
+            max_steps_per_agent_loop: 12,
             max_actions: 12,
             max_messages: 12,
             max_duration: None,
