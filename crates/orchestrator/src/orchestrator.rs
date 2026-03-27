@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use pera_core::{ActionId, RunId, WorkItemId};
@@ -120,7 +120,7 @@ where
     async fn continue_with(
         &mut self,
         input: AgentLoopInput<O, A, U>,
-        output: &mut dyn ParticipantOutput<A>,
+        output: &mut dyn ParticipantOutput<A, U>,
     ) -> Result<ParticipantDecision<A>, crate::error::ParticipantError> {
         self.on_mailbox_updated();
         let _ = (
@@ -243,6 +243,7 @@ struct RunState<O, A, U> {
     observation: O,
     trajectory: Trajectory<O, A, U>,
     pending_actions: BTreeSet<ActionId>,
+    submitted_actions: BTreeMap<ActionId, (ParticipantId, A)>,
     participants: Vec<ParticipantState<O, A, U>>,
 }
 
@@ -269,6 +270,7 @@ where
             observation,
             trajectory,
             pending_actions: BTreeSet::new(),
+            submitted_actions: BTreeMap::new(),
             participants: participants
                 .into_iter()
                 .map(ParticipantState::new)
@@ -337,6 +339,10 @@ where
         }
     }
 
+    fn take_submitted_action(&mut self, action_id: &ActionId) -> Option<(ParticipantId, A)> {
+        self.submitted_actions.remove(action_id)
+    }
+
     fn apply_environment_event(&mut self, event: EnvironmentEvent<A, U>) {
         match event {
             EnvironmentEvent::ActionAccepted {
@@ -355,6 +361,7 @@ where
                 outcome,
             } => {
                 self.pending_actions.remove(&action_id);
+                self.submitted_actions.remove(&action_id);
                 self.trajectory.push(TrajectoryEvent::ActionCompleted {
                     participant: participant.clone(),
                     action_id,
@@ -371,6 +378,7 @@ where
                 error,
             } => {
                 self.pending_actions.remove(&action_id);
+                self.submitted_actions.remove(&action_id);
                 self.trajectory.push(TrajectoryEvent::ActionFailed {
                     participant: participant.clone(),
                     action_id,
@@ -482,7 +490,7 @@ where
     pub async fn run_with_output(
         &mut self,
         request: RunRequest,
-        output: &mut dyn ParticipantOutput<E::Action>,
+        output: &mut dyn ParticipantOutput<E::Action, E::Outcome>,
     ) -> Result<RunResult<E::Observation, E::Action, E::Outcome>, EvaluatorError> {
         let run_id = RunId::generate();
         let started_at = Instant::now();
@@ -523,7 +531,7 @@ where
                 break reason;
             }
 
-            if let Some(reason) = self.poll_environment_phase(&mut state).await? {
+            if let Some(reason) = self.poll_environment_phase(&mut state, output).await? {
                 break reason;
             }
 
@@ -636,6 +644,7 @@ where
     async fn poll_environment_phase(
         &mut self,
         state: &mut RunState<E::Observation, E::Action, E::Outcome>,
+        output: &mut dyn ParticipantOutput<E::Action, E::Outcome>,
     ) -> Result<Option<FinishReason>, EvaluatorError> {
         if let Some(reason) = self.environment.terminal_status().await.map_err(|error| {
             EvaluatorError::new(format!("failed to query terminal status: {error}"))
@@ -651,6 +660,41 @@ where
         }
 
         for event in events {
+            match &event {
+                EnvironmentEvent::ActionCompleted {
+                    participant,
+                    action_id,
+                    outcome,
+                } => {
+                    if let Some((_, action)) = state.take_submitted_action(action_id) {
+                        output
+                            .action_completed(participant, &action, outcome)
+                            .await
+                            .map_err(|error| {
+                                EvaluatorError::new(format!(
+                                    "failed to emit deferred action completion output: {error}"
+                                ))
+                            })?;
+                    }
+                }
+                EnvironmentEvent::ActionFailed {
+                    participant,
+                    action_id,
+                    error,
+                } => {
+                    if let Some((_, action)) = state.take_submitted_action(action_id) {
+                        output
+                            .action_failed(participant, &action, error)
+                            .await
+                            .map_err(|emit_error| {
+                                EvaluatorError::new(format!(
+                                    "failed to emit deferred action failure output: {emit_error}"
+                                ))
+                            })?;
+                    }
+                }
+                EnvironmentEvent::ActionAccepted { .. } | EnvironmentEvent::Notification { .. } => {}
+            }
             state.apply_environment_event(event);
         }
         let observation = self.environment.observe().await.map_err(|error| {
@@ -690,7 +734,7 @@ where
         decision: ParticipantDecision<E::Action>,
         state: &mut RunState<E::Observation, E::Action, E::Outcome>,
         counters: &mut RunCounters,
-        output: &mut dyn ParticipantOutput<E::Action>,
+        output: &mut dyn ParticipantOutput<E::Action, E::Outcome>,
     ) -> Result<Option<FinishReason>, EvaluatorError> {
         match decision {
             ParticipantDecision::Message { content } => {
@@ -758,8 +802,20 @@ where
                                 ))
                             })?;
                         let action_id = ActionId::generate();
-                        match self.environment.step(participant_id.clone(), action).await {
+                        match self
+                            .environment
+                            .step(participant_id.clone(), action.clone())
+                            .await
+                        {
                             Ok(outcome) => {
+                                output
+                                    .action_completed(&participant_id, &action, &outcome)
+                                    .await
+                                    .map_err(|error| {
+                                        EvaluatorError::new(format!(
+                                            "failed to emit action completion output: {error}"
+                                        ))
+                                    })?;
                                 state.trajectory.push(TrajectoryEvent::ActionCompleted {
                                     participant: participant_id,
                                     action_id,
@@ -773,6 +829,14 @@ where
                                 state.record_observation(observation);
                             }
                             Err(error) => {
+                                output
+                                    .action_failed(&participant_id, &action, &error.to_string())
+                                    .await
+                                    .map_err(|emit_error| {
+                                        EvaluatorError::new(format!(
+                                            "failed to emit action failure output: {emit_error}"
+                                        ))
+                                    })?;
                                 state.trajectory.push(TrajectoryEvent::ActionFailed {
                                     participant: participant_id,
                                     action_id,
@@ -807,7 +871,7 @@ where
                                 if let Some(participant) = state.participant_mut(&participant_id) {
                                     participant.deliver(ParticipantInboxEvent::ActionAccepted {
                                         action_id,
-                                        action,
+                                        action: action.clone(),
                                     });
                                     if blocking {
                                         participant
@@ -818,6 +882,10 @@ where
                                     }
                                 }
                                 state.pending_actions.insert(action_id);
+                                state.submitted_actions.insert(
+                                    action_id,
+                                    (participant_id.clone(), action.clone()),
+                                );
                             }
                             Err(error) => {
                                 return Ok(Some(FinishReason::EnvironmentError(error.to_string())));

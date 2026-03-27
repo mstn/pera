@@ -4,7 +4,7 @@ use crate::error::ParticipantError;
 use crate::types::ParticipantId;
 
 #[async_trait]
-pub trait ParticipantOutput<A>: Send {
+pub trait ParticipantOutput<A, U = ()>: Send {
     async fn message_start(
         &mut self,
         participant: &ParticipantId,
@@ -66,15 +66,36 @@ pub trait ParticipantOutput<A>: Send {
         let _ = participant;
         Ok(())
     }
+
+    async fn action_completed(
+        &mut self,
+        participant: &ParticipantId,
+        _action: &A,
+        _outcome: &U,
+    ) -> Result<(), ParticipantError> {
+        let _ = participant;
+        Ok(())
+    }
+
+    async fn action_failed(
+        &mut self,
+        participant: &ParticipantId,
+        _action: &A,
+        _error: &str,
+    ) -> Result<(), ParticipantError> {
+        let _ = participant;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default)]
 pub struct NoopParticipantOutput;
 
 #[async_trait]
-impl<A> ParticipantOutput<A> for NoopParticipantOutput
+impl<A, U> ParticipantOutput<A, U> for NoopParticipantOutput
 where
     A: Send + Sync + 'static,
+    U: Send + Sync + 'static,
 {
     async fn message_start(
         &mut self,

@@ -24,7 +24,7 @@ impl Participant for HumanParticipant {
     async fn respond(
         &mut self,
         _input: ParticipantInput<Self::Observation, Self::Action, Self::Outcome>,
-        _output: &mut dyn ParticipantOutput<Self::Action>,
+        _output: &mut dyn ParticipantOutput<Self::Action, Self::Outcome>,
     ) -> Result<ParticipantDecision<Self::Action>, ParticipantError> {
         let mut buffer = String::new();
         loop {

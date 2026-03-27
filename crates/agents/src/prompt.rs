@@ -161,13 +161,18 @@ fn inbox_message(event: &ParticipantInboxEvent<CodeAction, CodeOutcome>) -> Opti
             role: role_for_participant(from),
             content: content.clone(),
         }),
+        ParticipantInboxEvent::ActionCompleted { outcome, .. } => {
+            action_completed_message(outcome)
+        }
+        ParticipantInboxEvent::ActionFailed { error, .. } => Some(PromptMessage {
+            role: "system".to_owned(),
+            content: format!("Action failed: {error}"),
+        }),
         ParticipantInboxEvent::Notification { message } => Some(PromptMessage {
             role: "system".to_owned(),
             content: message.clone(),
         }),
-        ParticipantInboxEvent::ActionAccepted { .. }
-        | ParticipantInboxEvent::ActionCompleted { .. }
-        | ParticipantInboxEvent::ActionFailed { .. } => None,
+        ParticipantInboxEvent::ActionAccepted { .. } => None,
     }
 }
 
@@ -191,6 +196,27 @@ fn role_for_participant(participant: &ParticipantId) -> String {
         ParticipantId::Agent => "assistant".to_owned(),
         ParticipantId::User => "user".to_owned(),
         ParticipantId::Custom(name) => name.clone(),
+    }
+}
+
+fn action_completed_message(outcome: &CodeOutcome) -> Option<PromptMessage> {
+    match outcome {
+        CodeOutcome::CodeExecuted { language, result } => Some(PromptMessage {
+            role: "system".to_owned(),
+            content: format!(
+                "Code execution completed.\nLanguage: {language}\nResult:\n{}",
+                serde_json::to_string_pretty(result).unwrap_or_else(|_| format!("{result:?}"))
+            ),
+        }),
+        CodeOutcome::SkillLoaded { skill_name } => Some(PromptMessage {
+            role: "system".to_owned(),
+            content: format!("Skill loaded: {skill_name}"),
+        }),
+        CodeOutcome::SkillUnloaded { skill_name } => Some(PromptMessage {
+            role: "system".to_owned(),
+            content: format!("Skill unloaded: {skill_name}"),
+        }),
+        CodeOutcome::ToolCall { .. } => None,
     }
 }
 

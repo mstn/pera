@@ -9,9 +9,16 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use pera_canonical::CatalogSkill;
 use pera_canonical::render_python_stubs;
+#[cfg(feature = "monty")]
+use pera_core::{
+    ActionId, ActionRequest, ActionResult, ActionSkillRef, CanonicalInvocation, CanonicalValue,
+    CodeArtifact, CodeArtifactId, CodeLanguage, InputValues, RunId, ScriptName, SkillManifest,
+    Value,
+};
+#[cfg(not(feature = "monty"))]
 use pera_core::{
     ActionId, ActionRequest, ActionSkillRef, CanonicalInvocation, CanonicalValue, RunId,
-    SkillManifest,
+    SkillManifest, Value,
 };
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -19,6 +26,8 @@ use tracing::debug;
 use crate::{ActionExecutionUpdate, ActionExecutor, SkillRuntime, WasmtimeComponentActionExecutor};
 use crate::code_tools::default_code_environment_tools;
 use crate::CodeEnvironmentTool;
+#[cfg(feature = "monty")]
+use crate::{RunExecutor, interpreter::MontyInterpreter};
 
 fn catalog_skills_root(runtime_root: &std::path::Path) -> PathBuf {
     runtime_root.join("catalog").join("skills")
@@ -46,6 +55,10 @@ pub struct CodeEnvironmentActiveSkill {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodeEnvironmentAction {
+    ExecuteCode {
+        language: String,
+        source: String,
+    },
     LoadSkill {
         skill_name: String,
     },
@@ -60,6 +73,10 @@ pub enum CodeEnvironmentAction {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodeEnvironmentOutcome {
+    CodeExecuted {
+        language: String,
+        result: Value,
+    },
     SkillLoaded {
         skill_name: String,
     },
@@ -356,6 +373,9 @@ impl CodeEnvironment {
         action: CodeEnvironmentAction,
     ) -> Result<CodeEnvironmentOutcome, CodeEnvironmentError> {
         match action {
+            CodeEnvironmentAction::ExecuteCode { language, source } => {
+                self.execute_code(language, source).await
+            }
             CodeEnvironmentAction::LoadSkill { skill_name } => self.load_skill(skill_name),
             CodeEnvironmentAction::UnloadSkill { skill_name } => Ok(self.unload_skill(skill_name)),
             CodeEnvironmentAction::CallTool { skill, invocation } => {
@@ -389,6 +409,91 @@ impl CodeEnvironment {
                 .skills()
                 .any(|skill| skill.metadata.skill_name == skill_name)
         })
+    }
+
+    #[cfg(feature = "monty")]
+    async fn execute_code(
+        &self,
+        language: String,
+        source: String,
+    ) -> Result<CodeEnvironmentOutcome, CodeEnvironmentError> {
+        let runtime = self
+            .skill_runtime
+            .as_ref()
+            .ok_or_else(|| CodeEnvironmentError::new("no skill runtime is configured"))?;
+        let tool_executor = self
+            .tool_executor
+            .as_ref()
+            .ok_or_else(|| CodeEnvironmentError::new("no tool executor is configured"))?;
+
+        let code_language = match language.as_str() {
+            "python" => CodeLanguage::Python,
+            other => {
+                return Err(CodeEnvironmentError::new(format!(
+                    "unsupported execute_code language '{other}'"
+                )));
+            }
+        };
+
+        let executor = RunExecutor::with_skill_catalog(MontyInterpreter::new(), runtime.catalog().clone());
+        let mut transition = executor
+            .start_run(
+                pera_core::StartExecutionRequest {
+                    code: CodeArtifact {
+                        id: CodeArtifactId::generate(),
+                        language: code_language,
+                        script_name: ScriptName::new("execute_code"),
+                        source,
+                        inputs: Vec::new(),
+                    },
+                    inputs: InputValues::new(),
+                },
+                RunId::generate(),
+                CodeArtifactId::generate(),
+                ActionId::generate,
+            )
+            .map_err(|error| CodeEnvironmentError::new(error.to_string()))?;
+
+        loop {
+            if let Some(action_request) = transition.action_to_enqueue.clone() {
+                let action_id = action_request.id;
+                let value = tool_executor.execute_tool(action_request.clone()).await?;
+                transition = executor
+                    .complete_action(
+                        transition.session,
+                        action_request,
+                        ActionResult {
+                            action_id,
+                            value,
+                        },
+                        ActionId::generate,
+                    )
+                    .map_err(|error| CodeEnvironmentError::new(error.to_string()))?;
+                continue;
+            }
+
+            return match transition.session.status {
+                pera_core::ExecutionStatus::Completed(output) => Ok(CodeEnvironmentOutcome::CodeExecuted {
+                    language,
+                    result: output.value,
+                }),
+                pera_core::ExecutionStatus::Failed(message) => Err(CodeEnvironmentError::new(message)),
+                other => Err(CodeEnvironmentError::new(format!(
+                    "unexpected execution status after execute_code: {other:?}"
+                ))),
+            };
+        }
+    }
+
+    #[cfg(not(feature = "monty"))]
+    async fn execute_code(
+        &self,
+        _language: String,
+        _source: String,
+    ) -> Result<CodeEnvironmentOutcome, CodeEnvironmentError> {
+        Err(CodeEnvironmentError::new(
+            "execute_code requires the 'monty' feature",
+        ))
     }
 }
 

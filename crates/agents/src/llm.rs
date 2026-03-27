@@ -179,7 +179,7 @@ where
     async fn respond(
         &mut self,
         input: ParticipantInput<Self::Observation, Self::Action, Self::Outcome>,
-        output: &mut dyn ParticipantOutput<Self::Action>,
+        output: &mut dyn ParticipantOutput<Self::Action, Self::Outcome>,
     ) -> Result<ParticipantDecision<Self::Action>, ParticipantError> {
         let context = self.prompt_builder.build_context(&input);
         let request = LlmRequest {
@@ -259,6 +259,12 @@ where
         }
 
         if let Some(tool_call) = tool_call {
+            if tool_call.name == "execute_code" {
+                let handoff = required_string_argument(&tool_call.arguments, "handoff_user_message")?;
+                output.message_start(&ParticipantId::Agent).await?;
+                output.message_delta(&ParticipantId::Agent, &handoff).await?;
+                output.message_end(&ParticipantId::Agent).await?;
+            }
             let decision = map_tool_call_to_decision(tool_call)?;
             output
                 .status_update(
@@ -297,9 +303,14 @@ fn map_tool_call_to_decision(
                 execution: pera_orchestrator::ActionExecution::Immediate,
             })
         }
-        "execute_code" => Err(ParticipantError::new(
-            "execute_code tool parsing is not implemented yet",
-        )),
+        "execute_code" => {
+            let language = required_string_argument(&tool_call.arguments, "language")?;
+            let source = required_string_argument(&tool_call.arguments, "source")?;
+            Ok(ParticipantDecision::Action {
+                action: CodeAction::ExecuteCode { language, source },
+                execution: pera_orchestrator::ActionExecution::DeferredBlocking,
+            })
+        }
         other => Err(ParticipantError::new(format!(
             "unsupported tool call '{other}'"
         ))),
@@ -342,6 +353,10 @@ fn status_for_action_decision(decision: &ParticipantDecision<CodeAction>) -> Str
             action: CodeAction::UnloadSkill { skill_name },
             ..
         } => format!("unloading skill {skill_name}"),
+        ParticipantDecision::Action {
+            action: CodeAction::ExecuteCode { .. },
+            ..
+        } => "executing code".to_owned(),
         ParticipantDecision::Action { .. } => "planning action".to_owned(),
         ParticipantDecision::Message { .. }
         | ParticipantDecision::FinalMessage { .. }
@@ -403,6 +418,31 @@ mod tests {
                     skill_name: "secret-service".to_owned(),
                 },
                 execution: pera_orchestrator::ActionExecution::Immediate,
+            }
+        );
+    }
+
+    #[test]
+    fn maps_execute_code_tool_call_to_action() {
+        let decision = map_tool_call_to_decision(LlmToolCall {
+            call_id: None,
+            name: "execute_code".to_owned(),
+            arguments: json!({
+                "language": "python",
+                "source": "print(1)",
+                "handoff_user_message": "Running a quick check."
+            }),
+        })
+        .unwrap();
+
+        assert_eq!(
+            decision,
+            ParticipantDecision::Action {
+                action: CodeAction::ExecuteCode {
+                    language: "python".to_owned(),
+                    source: "print(1)".to_owned(),
+                },
+                execution: pera_orchestrator::ActionExecution::DeferredBlocking,
             }
         );
     }

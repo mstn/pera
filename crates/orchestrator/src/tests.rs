@@ -46,7 +46,7 @@ impl Participant for FakeParticipant {
     async fn respond(
         &mut self,
         input: ParticipantInput<Self::Observation, Self::Action, Self::Outcome>,
-        _output: &mut dyn ParticipantOutput<Self::Action>,
+        _output: &mut dyn ParticipantOutput<Self::Action, Self::Outcome>,
     ) -> Result<ParticipantDecision<Self::Action>, ParticipantError> {
         self.seen_inboxes.lock().unwrap().push(input.inbox);
         self.decisions

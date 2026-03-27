@@ -18,7 +18,7 @@ pub trait Participant: Send {
     async fn respond(
         &mut self,
         input: ParticipantInput<Self::Observation, Self::Action, Self::Outcome>,
-        output: &mut dyn ParticipantOutput<Self::Action>,
+        output: &mut dyn ParticipantOutput<Self::Action, Self::Outcome>,
     ) -> Result<ParticipantDecision<Self::Action>, ParticipantError>;
 }
 
