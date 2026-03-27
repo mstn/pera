@@ -40,7 +40,7 @@ impl Participant for HumanParticipant {
                     if message == "/exit" {
                         return Ok(ParticipantDecision::Finish);
                     }
-                    return Ok(ParticipantDecision::Message { content: message });
+                    return Ok(ParticipantDecision::FinalMessage { content: message });
                 }
                 Some(InboundTransportEvent::Shutdown) | None => {
                     return Ok(ParticipantDecision::Finish);
