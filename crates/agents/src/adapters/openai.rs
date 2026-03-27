@@ -2,9 +2,13 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde::Serialize;
 
-use crate::llm::{LlmProvider, LlmRequest, LlmTextStream, LlmToolDefinition};
+use crate::llm::{
+    LlmProvider, LlmRequest, LlmStream, LlmStreamEvent, LlmToolCall, LlmToolDefinition,
+};
 use crate::prompt::PromptMessage;
-use crate::providers::openai::{Message, OpenAiClient, OpenAiConfig};
+use crate::providers::openai::{
+    Message, OpenAiClient, OpenAiConfig, OpenAiResponseEvent,
+};
 
 pub struct OpenAiProvider {
     client: OpenAiClient,
@@ -23,7 +27,7 @@ impl LlmProvider for OpenAiProvider {
     async fn stream(
         &self,
         request: LlmRequest,
-    ) -> Result<LlmTextStream, pera_orchestrator::ParticipantError> {
+    ) -> Result<LlmStream, pera_orchestrator::ParticipantError> {
         let LlmRequest {
             system_prompt,
             messages: prompt_messages,
@@ -44,7 +48,11 @@ impl LlmProvider for OpenAiProvider {
             .map_err(to_participant_error)?;
 
         Ok(Box::pin(
-            stream.map(|chunk| chunk.map_err(to_participant_error)),
+            stream.map(|event| {
+                event
+                    .map(event_from_openai)
+                    .map_err(to_participant_error)
+            }),
         ))
     }
 }
@@ -73,6 +81,29 @@ fn message_from_prompt(message: PromptMessage) -> Message {
         "developer" => Message::developer(message.content),
         "assistant" => Message::assistant(message.content),
         _ => Message::user(message.content),
+    }
+}
+
+fn event_from_openai(event: OpenAiResponseEvent) -> LlmStreamEvent {
+    match event {
+        OpenAiResponseEvent::Text(text) => LlmStreamEvent::Text(text),
+        OpenAiResponseEvent::ToolCallStart { call_id, name } => {
+            LlmStreamEvent::ToolCallStart { call_id, name }
+        }
+        OpenAiResponseEvent::ToolCallDelta {
+            call_id,
+            name,
+            arguments_delta,
+        } => LlmStreamEvent::ToolCallDelta {
+            call_id,
+            name,
+            arguments_delta,
+        },
+        OpenAiResponseEvent::ToolCall(call) => LlmStreamEvent::ToolCall(LlmToolCall {
+            call_id: call.call_id,
+            name: call.name,
+            arguments: call.arguments,
+        }),
     }
 }
 

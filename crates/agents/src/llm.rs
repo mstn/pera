@@ -24,6 +24,7 @@ pub struct LlmRequest {
 #[derive(Debug, Clone)]
 pub struct LlmResponse {
     pub content: String,
+    pub tool_call: Option<LlmToolCall>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +32,13 @@ pub struct LlmToolDefinition {
     pub name: String,
     pub description: String,
     pub input_schema: Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LlmToolCall {
+    pub call_id: Option<String>,
+    pub name: String,
+    pub arguments: Value,
 }
 
 #[derive(Debug, Clone)]
@@ -63,19 +71,43 @@ impl PromptDebugSink for NoopPromptDebugSink {
     }
 }
 
-pub type LlmTextStream = Pin<Box<dyn Stream<Item = Result<String, ParticipantError>> + Send>>;
+#[derive(Debug, Clone, PartialEq)]
+pub enum LlmStreamEvent {
+    Text(String),
+    ToolCallStart {
+        call_id: String,
+        name: String,
+    },
+    ToolCallDelta {
+        call_id: String,
+        name: String,
+        arguments_delta: String,
+    },
+    ToolCall(LlmToolCall),
+}
+
+pub type LlmStream = Pin<Box<dyn Stream<Item = Result<LlmStreamEvent, ParticipantError>> + Send>>;
 
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
-    async fn stream(&self, request: LlmRequest) -> Result<LlmTextStream, ParticipantError>;
+    async fn stream(&self, request: LlmRequest) -> Result<LlmStream, ParticipantError>;
 
     async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, ParticipantError> {
         let mut stream = self.stream(request).await?;
         let mut content = String::new();
+        let mut tool_call = None;
         while let Some(chunk) = stream.next().await {
-            content.push_str(&chunk?);
+            match chunk? {
+                LlmStreamEvent::Text(text) => content.push_str(&text),
+                LlmStreamEvent::ToolCallStart { .. } | LlmStreamEvent::ToolCallDelta { .. } => {}
+                LlmStreamEvent::ToolCall(call) => {
+                    if tool_call.is_none() {
+                        tool_call = Some(call);
+                    }
+                }
+            }
         }
-        Ok(LlmResponse { content })
+        Ok(LlmResponse { content, tool_call })
     }
 }
 
@@ -84,9 +116,11 @@ pub struct UnconfiguredLlmProvider;
 
 #[async_trait]
 impl LlmProvider for UnconfiguredLlmProvider {
-    async fn stream(&self, _request: LlmRequest) -> Result<LlmTextStream, ParticipantError> {
+    async fn stream(&self, _request: LlmRequest) -> Result<LlmStream, ParticipantError> {
         let chunk = "LLM provider is not configured yet.".to_owned();
-        Ok(Box::pin(futures_util::stream::once(async move { Ok(chunk) })))
+        Ok(Box::pin(futures_util::stream::once(async move {
+            Ok(LlmStreamEvent::Text(chunk))
+        })))
     }
 }
 
@@ -164,24 +198,160 @@ where
             &request,
         )?;
 
-        output.message_start(&ParticipantId::Agent).await?;
         let mut stream = self.provider.stream(request).await?;
         let mut content = String::new();
+        let mut tool_call = None;
+        let mut started_message = false;
+        let mut pending_tool_name = None;
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            content.push_str(&chunk);
-            output.message_delta(&ParticipantId::Agent, &chunk).await?;
+            match chunk? {
+                LlmStreamEvent::Text(chunk) => {
+                    if !started_message {
+                        output.message_start(&ParticipantId::Agent).await?;
+                        started_message = true;
+                    }
+                    content.push_str(&chunk);
+                    output.message_delta(&ParticipantId::Agent, &chunk).await?;
+                }
+                LlmStreamEvent::ToolCallStart { name, .. } => {
+                    pending_tool_name = Some(name.clone());
+                    output
+                        .tool_call_start(&ParticipantId::Agent, &name)
+                        .await?;
+                }
+                LlmStreamEvent::ToolCallDelta {
+                    name,
+                    arguments_delta,
+                    ..
+                } => {
+                    pending_tool_name = Some(name.clone());
+                    output
+                        .tool_call_delta(&ParticipantId::Agent, &name, &arguments_delta)
+                        .await?;
+                }
+                LlmStreamEvent::ToolCall(call) => {
+                    if let Some(tool_name) = pending_tool_name.take().or_else(|| Some(call.name.clone()))
+                    {
+                        output
+                            .tool_call_end(&ParticipantId::Agent, &tool_name)
+                            .await?;
+                    }
+                    if tool_call.is_none() {
+                        tool_call = Some(call);
+                    }
+                }
+            }
         }
-        if content.trim().is_empty() {
+        if content.trim().is_empty() && tool_call.is_none() {
+            if !started_message {
+                output.message_start(&ParticipantId::Agent).await?;
+                started_message = true;
+            }
             let fallback = "[empty response]";
             content.push_str(fallback);
             output
                 .message_delta(&ParticipantId::Agent, fallback)
                 .await?;
         }
-        output.message_end(&ParticipantId::Agent).await?;
+        if started_message {
+            output.message_end(&ParticipantId::Agent).await?;
+        }
+
+        if let Some(tool_call) = tool_call {
+            let decision = map_tool_call_to_decision(tool_call)?;
+            output
+                .action_planned(&ParticipantId::Agent, match &decision {
+                    ParticipantDecision::Action { action, .. } => action,
+                    _ => unreachable!(),
+                })
+                .await?;
+            return Ok(decision);
+        }
 
         Ok(ParticipantDecision::FinalMessage { content })
+    }
+}
+
+fn map_tool_call_to_decision(
+    tool_call: LlmToolCall,
+) -> Result<ParticipantDecision<CodeAction>, ParticipantError> {
+    match tool_call.name.as_str() {
+        "load_skill" => {
+            let skill_name = required_string_argument(&tool_call.arguments, "skill_name")?;
+            Ok(ParticipantDecision::Action {
+                action: CodeAction::LoadSkill { skill_name },
+                execution: pera_orchestrator::ActionExecution::Immediate,
+            })
+        }
+        "unload_skill" => {
+            let skill_name = required_string_argument(&tool_call.arguments, "skill_name")?;
+            Ok(ParticipantDecision::Action {
+                action: CodeAction::UnloadSkill { skill_name },
+                execution: pera_orchestrator::ActionExecution::Immediate,
+            })
+        }
+        "execute_code" => Err(ParticipantError::new(
+            "execute_code tool parsing is not implemented yet",
+        )),
+        other => Err(ParticipantError::new(format!(
+            "unsupported tool call '{other}'"
+        ))),
+    }
+}
+
+fn required_string_argument(arguments: &Value, field: &str) -> Result<String, ParticipantError> {
+    arguments
+        .get(field)
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| ParticipantError::new(format!("tool call is missing string field '{field}'")))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{LlmToolCall, map_tool_call_to_decision};
+    use pera_orchestrator::{CodeAction, ParticipantDecision};
+
+    #[test]
+    fn maps_load_skill_tool_call_to_action() {
+        let decision = map_tool_call_to_decision(LlmToolCall {
+            call_id: None,
+            name: "load_skill".to_owned(),
+            arguments: json!({ "skill_name": "secret-service" }),
+        })
+        .unwrap();
+
+        assert_eq!(
+            decision,
+            ParticipantDecision::Action {
+                action: CodeAction::LoadSkill {
+                    skill_name: "secret-service".to_owned(),
+                },
+                execution: pera_orchestrator::ActionExecution::Immediate,
+            }
+        );
+    }
+
+    #[test]
+    fn maps_unload_skill_tool_call_to_action() {
+        let decision = map_tool_call_to_decision(LlmToolCall {
+            call_id: None,
+            name: "unload_skill".to_owned(),
+            arguments: json!({ "skill_name": "secret-service" }),
+        })
+        .unwrap();
+
+        assert_eq!(
+            decision,
+            ParticipantDecision::Action {
+                action: CodeAction::UnloadSkill {
+                    skill_name: "secret-service".to_owned(),
+                },
+                execution: pera_orchestrator::ActionExecution::Immediate,
+            }
+        );
     }
 }
 

@@ -20,6 +20,19 @@ pub enum OutboundTransportEvent {
     MessageCompleted {
         participant: ParticipantId,
     },
+    ToolCallStarted {
+        participant: ParticipantId,
+        tool_name: String,
+    },
+    ToolCallDelta {
+        participant: ParticipantId,
+        tool_name: String,
+        delta: String,
+    },
+    ToolCallCompleted {
+        participant: ParticipantId,
+        tool_name: String,
+    },
     ActionPlanned {
         participant: ParticipantId,
         action: String,

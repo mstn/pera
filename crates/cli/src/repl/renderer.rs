@@ -44,6 +44,36 @@ pub async fn render_transport_output(
                         print!("you> ");
                         flush_stdout()?;
                     }
+                    OutboundTransportEvent::ToolCallStarted { participant, tool_name } => {
+                        loading_participant = None;
+                        current_message_has_delta = false;
+                        println!("\r{} tool> {} ...", participant_label(&participant), tool_name);
+                        print!("you> ");
+                        flush_stdout()?;
+                    }
+                    OutboundTransportEvent::ToolCallDelta {
+                        participant,
+                        tool_name,
+                        delta,
+                    } => {
+                        println!(
+                            "\r{} tool> {} {}",
+                            participant_label(&participant),
+                            tool_name,
+                            delta
+                        );
+                        print!("you> ");
+                        flush_stdout()?;
+                    }
+                    OutboundTransportEvent::ToolCallCompleted { participant, tool_name } => {
+                        println!(
+                            "\r{} tool> {} ready",
+                            participant_label(&participant),
+                            tool_name
+                        );
+                        print!("you> ");
+                        flush_stdout()?;
+                    }
                     OutboundTransportEvent::ActionPlanned { participant, action } => {
                         println!("\r{} action> {action}", participant_label(&participant));
                         print!("you> ");

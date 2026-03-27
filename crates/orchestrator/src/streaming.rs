@@ -21,6 +21,34 @@ pub trait ParticipantOutput<A>: Send {
         participant: &ParticipantId,
     ) -> Result<(), ParticipantError>;
 
+    async fn tool_call_start(
+        &mut self,
+        participant: &ParticipantId,
+        _tool_name: &str,
+    ) -> Result<(), ParticipantError> {
+        let _ = participant;
+        Ok(())
+    }
+
+    async fn tool_call_delta(
+        &mut self,
+        participant: &ParticipantId,
+        _tool_name: &str,
+        _delta: &str,
+    ) -> Result<(), ParticipantError> {
+        let _ = participant;
+        Ok(())
+    }
+
+    async fn tool_call_end(
+        &mut self,
+        participant: &ParticipantId,
+        _tool_name: &str,
+    ) -> Result<(), ParticipantError> {
+        let _ = participant;
+        Ok(())
+    }
+
     async fn action_planned(
         &mut self,
         participant: &ParticipantId,

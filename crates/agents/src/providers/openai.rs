@@ -11,7 +11,7 @@ use serde_json::Value;
 
 const RESPONSES_API_URL: &str = "https://api.openai.com/v1/responses";
 
-pub type TextStream = Pin<Box<dyn Stream<Item = Result<String>> + Send>>;
+pub type OpenAiEventStream = Pin<Box<dyn Stream<Item = Result<OpenAiResponseEvent>> + Send>>;
 
 #[derive(Debug, Clone)]
 pub struct OpenAiConfig {
@@ -46,7 +46,11 @@ impl OpenAiClient {
         })
     }
 
-    pub async fn stream_messages<T>(&self, messages: &[Message], tools: &[T]) -> Result<TextStream>
+    pub async fn stream_messages<T>(
+        &self,
+        messages: &[Message],
+        tools: &[T],
+    ) -> Result<OpenAiEventStream>
     where
         T: Serialize,
     {
@@ -78,15 +82,15 @@ impl OpenAiClient {
                     let block = buffer[..block_end].to_owned();
                     buffer.drain(..block_end + 2);
 
-                    if let Some(delta) = parse_sse_block(&block)? {
-                        yield delta;
+                    if let Some(event) = parse_sse_block(&block)? {
+                        yield event;
                     }
                 }
             }
 
             if !buffer.trim().is_empty() {
-                if let Some(delta) = parse_sse_block(buffer.trim())? {
-                    yield delta;
+                if let Some(event) = parse_sse_block(buffer.trim())? {
+                    yield event;
                 }
             }
         };
@@ -194,7 +198,26 @@ struct ApiContentPart {
     text: String,
 }
 
-fn parse_sse_block(block: &str) -> Result<Option<String>> {
+#[derive(Debug, Clone, PartialEq)]
+pub enum OpenAiResponseEvent {
+    Text(String),
+    ToolCallStart { call_id: String, name: String },
+    ToolCallDelta {
+        call_id: String,
+        name: String,
+        arguments_delta: String,
+    },
+    ToolCall(OpenAiToolCall),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenAiToolCall {
+    pub call_id: Option<String>,
+    pub name: String,
+    pub arguments: Value,
+}
+
+fn parse_sse_block(block: &str) -> Result<Option<OpenAiResponseEvent>> {
     let mut data_lines = Vec::new();
 
     for line in block.lines() {
@@ -224,16 +247,115 @@ fn parse_sse_block(block: &str) -> Result<Option<String>> {
         "response.output_text.delta" => Ok(event
             .get("delta")
             .and_then(Value::as_str)
-            .map(ToOwned::to_owned)),
-        "response.completed" => Ok(None),
+            .map(|delta| OpenAiResponseEvent::Text(delta.to_owned()))),
+        "response.output_item.added" => parse_output_item_added(&event),
+        "response.function_call_arguments.delta" => parse_function_call_arguments_delta(&event),
+        "response.output_item.done" => parse_output_item_done(&event),
+        "response.completed" => parse_response_completed(&event),
         "error" => {
             let message = event
-                .get("error")
-                .and_then(|error| error.get("message"))
+            .get("error")
+            .and_then(|error| error.get("message"))
                 .and_then(Value::as_str)
                 .unwrap_or("unknown streaming error");
             bail!(message.to_string())
         }
         _ => Ok(None),
     }
+}
+
+fn parse_output_item_added(event: &Value) -> Result<Option<OpenAiResponseEvent>> {
+    let Some(item) = event.get("item") else {
+        return Ok(None);
+    };
+    if item.get("type").and_then(Value::as_str) != Some("function_call") {
+        return Ok(None);
+    }
+    let call_id = item
+        .get("call_id")
+        .or_else(|| item.get("id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("function_call item missing call_id"))?;
+    let name = item
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("function_call item missing name"))?;
+    Ok(Some(OpenAiResponseEvent::ToolCallStart {
+        call_id: call_id.to_owned(),
+        name: name.to_owned(),
+    }))
+}
+
+fn parse_function_call_arguments_delta(event: &Value) -> Result<Option<OpenAiResponseEvent>> {
+    let delta = event
+        .get("delta")
+        .and_then(Value::as_str)
+        .filter(|delta| !delta.is_empty());
+    let Some(arguments_delta) = delta else {
+        return Ok(None);
+    };
+    let call_id = event
+        .get("call_id")
+        .or_else(|| event.get("item_id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("function_call_arguments.delta missing call_id"))?;
+    let name = event
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("tool");
+    Ok(Some(OpenAiResponseEvent::ToolCallDelta {
+        call_id: call_id.to_owned(),
+        name: name.to_owned(),
+        arguments_delta: arguments_delta.to_owned(),
+    }))
+}
+
+fn parse_output_item_done(event: &Value) -> Result<Option<OpenAiResponseEvent>> {
+    let Some(item) = event.get("item") else {
+        return Ok(None);
+    };
+    parse_function_call_item(item)
+}
+
+fn parse_response_completed(event: &Value) -> Result<Option<OpenAiResponseEvent>> {
+    let Some(output) = event
+        .get("response")
+        .and_then(|response| response.get("output"))
+        .and_then(Value::as_array)
+    else {
+        return Ok(None);
+    };
+
+    for item in output {
+        if let Some(tool_call) = parse_function_call_item(item)? {
+            return Ok(Some(tool_call));
+        }
+    }
+
+    Ok(None)
+}
+
+fn parse_function_call_item(item: &Value) -> Result<Option<OpenAiResponseEvent>> {
+    if item.get("type").and_then(Value::as_str) != Some("function_call") {
+        return Ok(None);
+    }
+    let name = item
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("function_call item missing name"))?;
+    let arguments = item
+        .get("arguments")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("function_call item missing arguments"))?;
+    let arguments = serde_json::from_str(arguments)
+        .with_context(|| format!("failed to parse function_call arguments for '{name}'"))?;
+    Ok(Some(OpenAiResponseEvent::ToolCall(OpenAiToolCall {
+        call_id: item
+            .get("call_id")
+            .or_else(|| item.get("id"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        name: name.to_owned(),
+        arguments,
+    })))
 }

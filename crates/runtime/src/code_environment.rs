@@ -46,6 +46,12 @@ pub struct CodeEnvironmentActiveSkill {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodeEnvironmentAction {
+    LoadSkill {
+        skill_name: String,
+    },
+    UnloadSkill {
+        skill_name: String,
+    },
     CallTool {
         skill: ActionSkillRef,
         invocation: CanonicalInvocation,
@@ -54,6 +60,12 @@ pub enum CodeEnvironmentAction {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodeEnvironmentOutcome {
+    SkillLoaded {
+        skill_name: String,
+    },
+    SkillUnloaded {
+        skill_name: String,
+    },
     ToolCall {
         skill: ActionSkillRef,
         invocation: CanonicalInvocation,
@@ -276,7 +288,7 @@ impl CodeEnvironment {
         &mut self,
         action: CodeEnvironmentAction,
     ) -> Result<CodeEnvironmentOutcome, CodeEnvironmentError> {
-        run_action(self.tool_executor.clone(), action).await
+        self.run_action(action).await
     }
 
     pub async fn submit(
@@ -285,8 +297,8 @@ impl CodeEnvironment {
         action: CodeEnvironmentAction,
     ) -> Result<SubmittedCodeAction, CodeEnvironmentError> {
         let action_id = ActionId::generate();
-        let tool_executor = self.tool_executor.clone();
-        let handle = tokio::spawn(async move { run_action(tool_executor, action).await });
+        let outcome = self.run_action(action).await?;
+        let handle = tokio::spawn(async move { Ok(outcome) });
         self.pending_actions.insert(
             action_id,
             PendingCodeAction {
@@ -338,16 +350,45 @@ impl CodeEnvironment {
 
         Ok(events)
     }
-}
 
-async fn run_action(
-    tool_executor: Option<Arc<dyn CodeToolExecutor>>,
-    action: CodeEnvironmentAction,
-) -> Result<CodeEnvironmentOutcome, CodeEnvironmentError> {
-    match action {
-        CodeEnvironmentAction::CallTool { skill, invocation } => {
-            call_tool(tool_executor, skill, invocation).await
+    async fn run_action(
+        &mut self,
+        action: CodeEnvironmentAction,
+    ) -> Result<CodeEnvironmentOutcome, CodeEnvironmentError> {
+        match action {
+            CodeEnvironmentAction::LoadSkill { skill_name } => self.load_skill(skill_name),
+            CodeEnvironmentAction::UnloadSkill { skill_name } => Ok(self.unload_skill(skill_name)),
+            CodeEnvironmentAction::CallTool { skill, invocation } => {
+                call_tool(self.tool_executor.clone(), skill, invocation).await
+            }
         }
+    }
+
+    fn load_skill(
+        &mut self,
+        skill_name: String,
+    ) -> Result<CodeEnvironmentOutcome, CodeEnvironmentError> {
+        if !self.skill_exists(&skill_name) {
+            return Err(CodeEnvironmentError::new(format!(
+                "skill '{skill_name}' does not exist in the catalog"
+            )));
+        }
+        self.active_skill_names.insert(skill_name.clone());
+        Ok(CodeEnvironmentOutcome::SkillLoaded { skill_name })
+    }
+
+    fn unload_skill(&mut self, skill_name: String) -> CodeEnvironmentOutcome {
+        self.active_skill_names.remove(&skill_name);
+        CodeEnvironmentOutcome::SkillUnloaded { skill_name }
+    }
+
+    fn skill_exists(&self, skill_name: &str) -> bool {
+        self.skill_runtime.as_ref().is_some_and(|runtime| {
+            runtime
+                .catalog()
+                .skills()
+                .any(|skill| skill.metadata.skill_name == skill_name)
+        })
     }
 }
 

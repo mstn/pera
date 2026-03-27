@@ -553,6 +553,10 @@ async fn code_environment_executes_tools_through_async_executor() {
         CodeEnvironmentOutcome::ToolCall { value, .. } => {
             assert_eq!(value, CanonicalValue::S64(17));
         }
+        CodeEnvironmentOutcome::SkillLoaded { .. }
+        | CodeEnvironmentOutcome::SkillUnloaded { .. } => {
+            panic!("expected tool call outcome");
+        }
     }
 
     let _ = std::fs::remove_dir_all(root);
