@@ -9,7 +9,7 @@ pub use error::{AgentError, EnvironmentError, EvaluatorError, ParticipantError};
 pub use orchestrator::Orchestrator;
 pub use runtime::{
     CodeAction, CodeEnvironment, CodeEnvironmentError, CodeEnvironmentEvent, CodeObservation,
-    CodeOutcome, CodeSnapshot, SubmittedCodeAction, RuntimeCodeEnvironment,
+    CodeOutcome, CodeSnapshot, CodeToolDefinition, SubmittedCodeAction, RuntimeCodeEnvironment,
 };
 pub use streaming::{NoopParticipantOutput, ParticipantOutput};
 pub use traits::{Environment, Evaluator, NoopEvaluator, Participant};

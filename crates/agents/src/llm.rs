@@ -4,9 +4,10 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use futures_util::stream::Stream;
 use pera_orchestrator::{
-    CodeAction, CodeObservation, CodeOutcome, Participant, ParticipantDecision, ParticipantError,
-    ParticipantId, ParticipantInput, ParticipantOutput,
+    CodeAction, CodeObservation, CodeOutcome, Participant, ParticipantDecision,
+    ParticipantError, ParticipantId, ParticipantInput, ParticipantOutput,
 };
+use serde_json::Value;
 
 use crate::prompt::{CodePromptBuilder, PromptContext, PromptMessage, ProviderBackedPromptBuilder};
 
@@ -14,11 +15,19 @@ use crate::prompt::{CodePromptBuilder, PromptContext, PromptMessage, ProviderBac
 pub struct LlmRequest {
     pub system_prompt: String,
     pub messages: Vec<PromptMessage>,
+    pub tools: Vec<LlmToolDefinition>,
 }
 
 #[derive(Debug, Clone)]
 pub struct LlmResponse {
     pub content: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct LlmToolDefinition {
+    pub name: String,
+    pub description: String,
+    pub input_schema: Value,
 }
 
 pub type LlmTextStream = Pin<Box<dyn Stream<Item = Result<String, ParticipantError>> + Send>>;
@@ -94,6 +103,7 @@ where
         let request = LlmRequest {
             system_prompt: self.prompt_builder.build_system_prompt(&context),
             messages: prompt_messages(&context),
+            tools: context.tools.clone(),
         };
 
         output.message_start(&ParticipantId::Agent).await?;

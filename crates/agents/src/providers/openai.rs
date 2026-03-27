@@ -46,7 +46,10 @@ impl OpenAiClient {
         })
     }
 
-    pub async fn stream_messages(&self, messages: &[Message]) -> Result<TextStream> {
+    pub async fn stream_messages<T>(&self, messages: &[Message], tools: &[T]) -> Result<TextStream>
+    where
+        T: Serialize,
+    {
         let response = self
             .http
             .post(RESPONSES_API_URL)
@@ -54,6 +57,7 @@ impl OpenAiClient {
                 model: self.model.clone(),
                 input: messages.iter().cloned().map(ApiMessage::from).collect(),
                 stream: true,
+                tools,
             })
             .send()
             .await
@@ -156,10 +160,12 @@ impl MessageRole {
 }
 
 #[derive(Serialize)]
-struct ResponsesRequest {
+struct ResponsesRequest<'a, T> {
     model: String,
     input: Vec<ApiMessage>,
     stream: bool,
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    tools: &'a [T],
 }
 
 #[derive(Serialize)]

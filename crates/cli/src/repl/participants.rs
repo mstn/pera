@@ -169,8 +169,7 @@ mod tests {
             },
             limits: RunLimits::default(),
             observation: CodeObservation {
-                cwd: std::path::PathBuf::from("."),
-                workspace_root: std::path::PathBuf::from("."),
+                available_tools: Vec::new(),
                 available_skills: Vec::new(),
             },
             inbox: Vec::<

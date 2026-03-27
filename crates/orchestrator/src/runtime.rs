@@ -6,6 +6,8 @@ pub use pera_runtime::{
     SubmittedCodeAction,
 };
 
+pub type CodeToolDefinition = pera_runtime::CodeEnvironmentTool;
+
 use crate::error::EnvironmentError;
 use crate::traits::Environment;
 use crate::types::{EnvironmentEvent, ParticipantId, SubmittedAction, TaskSpec};

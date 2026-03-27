@@ -4,6 +4,7 @@ mod action;
 mod catalog;
 mod capabilities;
 mod code_environment;
+mod code_tools;
 mod engine;
 mod events;
 mod fs;
@@ -25,6 +26,7 @@ pub use code_environment::{
     CodeEnvironmentObservation, CodeEnvironmentOutcome, CodeEnvironmentSnapshot, CodeToolExecutor,
     SubmittedCodeAction,
 };
+pub use code_tools::{CodeEnvironmentTool, default_code_environment_tools};
 
 pub(crate) use action::ActionWorker;
 pub use engine::{ExecutionEngine, ExecutionEngineError};

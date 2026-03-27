@@ -3,6 +3,8 @@ use pera_orchestrator::{
     ParticipantInput, TrajectoryEvent,
 };
 
+use crate::llm::LlmToolDefinition;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptMessage {
     pub role: String,
@@ -13,6 +15,7 @@ pub struct PromptMessage {
 pub struct PromptContext {
     pub task_id: String,
     pub task_instructions: String,
+    pub tools: Vec<LlmToolDefinition>,
     pub available_skills: Vec<String>,
     pub inbox: Vec<PromptMessage>,
     pub transcript: Vec<PromptMessage>,
@@ -50,6 +53,16 @@ impl CodePromptBuilder for ProviderBackedPromptBuilder {
         PromptContext {
             task_id: input.task.id.clone(),
             task_instructions: input.task.instructions.clone(),
+            tools: input
+                .observation
+                .available_tools
+                .iter()
+                .map(|tool| LlmToolDefinition {
+                    name: tool.name.clone(),
+                    description: tool.description.clone(),
+                    input_schema: tool.input_schema.clone(),
+                })
+                .collect(),
             available_skills: input.observation.available_skills.clone(),
             inbox,
             transcript,
@@ -59,6 +72,13 @@ impl CodePromptBuilder for ProviderBackedPromptBuilder {
     fn build_system_prompt(&self, context: &PromptContext) -> String {
         let mut prompt = String::from("You are a coding agent operating in a tool loop.\n");
         prompt.push_str("Respond to the latest relevant message.\n");
+        prompt.push_str("Use tools when they are the most direct way to make progress.\n");
+        prompt.push_str(
+            "Use skills to gain reusable capabilities before attempting work that depends on them.\n",
+        );
+        prompt.push_str(
+            "Load a skill before relying on it, and unload it when it is no longer needed.\n",
+        );
         prompt.push_str("Current task:\n");
         prompt.push_str(&context.task_instructions);
         prompt.push('\n');

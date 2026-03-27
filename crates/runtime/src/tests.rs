@@ -521,69 +521,6 @@ async fn execution_engine_recovers_waiting_runs_from_event_log() {
 }
 
 #[tokio::test]
-async fn code_environment_runs_shell_commands() {
-    let root = temp_root("code-env-shell");
-    std::fs::create_dir_all(&root).unwrap();
-    let mut environment = CodeEnvironment::new(&root, None).unwrap();
-
-    let observation = environment.reset().await.unwrap();
-    assert_eq!(observation.workspace_root, root);
-
-    let outcome = environment
-        .step(CodeEnvironmentAction::Shell {
-            command: "printf 'hello'".to_owned(),
-        })
-        .await
-        .unwrap();
-
-    match outcome {
-        CodeEnvironmentOutcome::Shell { stdout, exit_code, .. } => {
-            assert_eq!(stdout, "hello");
-            assert_eq!(exit_code, 0);
-        }
-        other => panic!("unexpected outcome: {other:?}"),
-    }
-
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[tokio::test]
-async fn code_environment_reads_and_writes_files() {
-    let root = temp_root("code-env-fs");
-    std::fs::create_dir_all(&root).unwrap();
-    let mut environment = CodeEnvironment::new(&root, None).unwrap();
-    environment.reset().await.unwrap();
-
-    let write_outcome = environment
-        .step(CodeEnvironmentAction::WriteFile {
-            path: PathBuf::from("notes/output.txt"),
-            content: b"content".to_vec(),
-        })
-        .await
-        .unwrap();
-    assert!(matches!(
-        write_outcome,
-        CodeEnvironmentOutcome::WriteFile { bytes_written: 7, .. }
-    ));
-
-    let read_outcome = environment
-        .step(CodeEnvironmentAction::ReadFile {
-            path: PathBuf::from("notes/output.txt"),
-        })
-        .await
-        .unwrap();
-
-    match read_outcome {
-        CodeEnvironmentOutcome::ReadFile { content, .. } => {
-            assert_eq!(content, b"content");
-        }
-        other => panic!("unexpected outcome: {other:?}"),
-    }
-
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[tokio::test]
 async fn code_environment_executes_tools_through_async_executor() {
     let root = temp_root("code-env-tool");
     std::fs::create_dir_all(&root).unwrap();
@@ -592,7 +529,9 @@ async fn code_environment_executes_tools_through_async_executor() {
         None,
         Arc::new(FakeCodeToolExecutor),
     );
-    environment.reset().await.unwrap();
+    let observation = environment.reset().await.unwrap();
+    assert_eq!(observation.available_tools.len(), 3);
+    assert_eq!(observation.available_skills, Vec::<String>::new());
 
     let outcome = environment
         .step(CodeEnvironmentAction::CallTool {
@@ -613,27 +552,7 @@ async fn code_environment_executes_tools_through_async_executor() {
         CodeEnvironmentOutcome::ToolCall { value, .. } => {
             assert_eq!(value, CanonicalValue::S64(17));
         }
-        other => panic!("unexpected outcome: {other:?}"),
     }
-
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[tokio::test]
-async fn code_environment_rejects_paths_outside_workspace() {
-    let root = temp_root("code-env-paths");
-    std::fs::create_dir_all(&root).unwrap();
-    let mut environment = CodeEnvironment::new(&root, None).unwrap();
-    environment.reset().await.unwrap();
-
-    let error = environment
-        .step(CodeEnvironmentAction::ReadFile {
-            path: PathBuf::from("../secret.txt"),
-        })
-        .await
-        .unwrap_err();
-
-    assert!(error.to_string().contains("escapes the workspace root"));
 
     let _ = std::fs::remove_dir_all(root);
 }
