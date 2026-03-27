@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use pera_core::{ActionId, RunId};
+use pera_core::{ActionId, RunId, WorkItemId};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ParticipantId {
@@ -81,21 +81,44 @@ pub enum FinishReason {
     Deadlocked,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkItemStatus {
+    Active,
+    WaitingOnEnvironment,
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkItem {
+    pub id: WorkItemId,
+    pub created_by: ParticipantId,
+    pub status: WorkItemStatus,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParticipantInboxEvent<A, U> {
+    Message {
+        from: ParticipantId,
+        work_item: WorkItem,
+        content: String,
+    },
     ActionAccepted {
+        work_item: Option<WorkItem>,
         action_id: ActionId,
         action: A,
     },
     ActionCompleted {
+        work_item: Option<WorkItem>,
         action_id: ActionId,
         outcome: U,
     },
     ActionFailed {
+        work_item: Option<WorkItem>,
         action_id: ActionId,
         error: String,
     },
     Notification {
+        work_item: Option<WorkItem>,
         message: String,
     },
 }
@@ -132,27 +155,34 @@ pub enum EnvironmentEvent<A, U> {
 pub enum TrajectoryEvent<O, A, U> {
     SessionStarted { task: TaskSpec },
     ObservationRecorded { observation: O },
+    WorkItemCreated { work_item: WorkItem },
+    WorkItemCompleted { work_item: WorkItem },
     ParticipantMessage {
+        work_item: WorkItem,
         participant: ParticipantId,
         content: String,
     },
     ActionRequested {
+        work_item: Option<WorkItem>,
         participant: ParticipantId,
         action: A,
         execution: ActionExecution,
     },
     ActionSubmitted {
+        work_item: Option<WorkItem>,
         participant: ParticipantId,
         action_id: ActionId,
         action: A,
         execution: ActionExecution,
     },
     ActionCompleted {
+        work_item: Option<WorkItem>,
         participant: ParticipantId,
         action_id: ActionId,
         outcome: U,
     },
     ActionFailed {
+        work_item: Option<WorkItem>,
         participant: ParticipantId,
         action_id: ActionId,
         error: String,
@@ -183,9 +213,10 @@ impl<O, A, U> Trajectory<O, A, U> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ParticipantTurnInput<O, A, U> {
+pub struct WorkItemContinuationInput<O, A, U> {
     pub run_id: RunId,
     pub participant: ParticipantId,
+    pub current_work_item: Option<WorkItem>,
     pub task: TaskSpec,
     pub limits: RunLimits,
     pub observation: O,
@@ -196,6 +227,7 @@ pub struct ParticipantTurnInput<O, A, U> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParticipantDecision<A> {
     Message { content: String },
+    FinalMessage { content: String },
     Action {
         action: A,
         execution: ActionExecution,

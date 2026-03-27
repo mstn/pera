@@ -77,6 +77,31 @@ impl CodeArtifactId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+pub struct WorkItemId(Uuid);
+
+impl WorkItemId {
+    pub fn new(value: Uuid) -> Self {
+        Self(value)
+    }
+
+    pub fn generate() -> Self {
+        Self(Uuid::new_v4())
+    }
+
+    pub fn parse_str(value: &str) -> Result<Self, uuid::Error> {
+        Uuid::parse_str(value).map(Self)
+    }
+
+    pub fn get(self) -> Uuid {
+        self.0
+    }
+
+    pub fn as_hyphenated(&self) -> String {
+        self.0.hyphenated().to_string()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub struct InputName(String);
 
@@ -116,6 +141,12 @@ impl Display for ActionId {
 }
 
 impl Display for CodeArtifactId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.as_hyphenated())
+    }
+}
+
+impl Display for WorkItemId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.as_hyphenated())
     }

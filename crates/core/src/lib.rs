@@ -12,7 +12,7 @@ mod value;
 pub use action::{CanonicalInvocation, ActionRecord, ActionRequest, ActionResult, ActionSkillRef, ActionStatus};
 pub use code::{CodeArtifact, CodeLanguage, ScriptName};
 pub use event::ExecutionEvent;
-pub use ids::{ActionId, ActionName, CodeArtifactId, InputName, RunId};
+pub use ids::{ActionId, ActionName, CodeArtifactId, InputName, RunId, WorkItemId};
 pub use interpreter::{
     CompiledProgram, ExecutionOutput, ExecutionSnapshot, ExternalCall, InputValues, Interpreter,
     InterpreterError, InterpreterKind, InterpreterStep, Suspension,
