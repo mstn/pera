@@ -146,6 +146,13 @@ impl MessageRole {
             Self::Assistant => "assistant",
         }
     }
+
+    fn content_type(self) -> &'static str {
+        match self {
+            Self::Assistant => "output_text",
+            Self::System | Self::Developer | Self::User => "input_text",
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -163,10 +170,11 @@ struct ApiMessage {
 
 impl From<Message> for ApiMessage {
     fn from(message: Message) -> Self {
+        let content_type = message.role.content_type();
         Self {
             role: message.role.as_str(),
             content: vec![ApiContentPart {
-                content_type: "input_text",
+                content_type,
                 text: message.content,
             }],
         }

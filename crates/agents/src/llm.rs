@@ -104,6 +104,13 @@ where
             content.push_str(&chunk);
             output.message_delta(&ParticipantId::Agent, &chunk).await?;
         }
+        if content.trim().is_empty() {
+            let fallback = "[empty response]";
+            content.push_str(fallback);
+            output
+                .message_delta(&ParticipantId::Agent, fallback)
+                .await?;
+        }
         output.message_end(&ParticipantId::Agent).await?;
 
         Ok(ParticipantDecision::FinalMessage { content })

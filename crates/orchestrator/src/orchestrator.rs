@@ -109,8 +109,8 @@ where
         self.step_count += 1;
     }
 
-    fn into_participant(self) -> BoxedParticipant<O, A, U> {
-        self.participant
+    fn into_parts(self) -> (BoxedParticipant<O, A, U>, Vec<ParticipantInboxEvent<A, U>>) {
+        (self.participant, self.inbox)
     }
 
     async fn continue_with(
@@ -211,7 +211,9 @@ where
 
     fn complete_loop(&mut self) {
         if let Some(agent_loop) = self.agent_loop.take() {
-            self.participant = Some(agent_loop.into_participant());
+            let (participant, inbox) = agent_loop.into_parts();
+            self.pending_inbox.extend(inbox);
+            self.participant = Some(participant);
         }
     }
 
@@ -224,7 +226,7 @@ where
     fn into_participant(self) -> BoxedParticipant<O, A, U> {
         match (self.participant, self.agent_loop) {
             (Some(participant), None) => participant,
-            (None, Some(agent_loop)) => agent_loop.into_participant(),
+            (None, Some(agent_loop)) => agent_loop.into_parts().0,
             (Some(_), Some(_)) => unreachable!("participant and agent loop cannot coexist"),
             (None, None) => unreachable!("participant state must retain a participant"),
         }
