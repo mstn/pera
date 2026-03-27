@@ -18,8 +18,8 @@ pub struct FilePromptDebugSink {
 }
 
 impl FilePromptDebugSink {
-    pub fn new(project_root: PathBuf, model: Option<String>) -> Self {
-        let layout = FileSystemLayout::new(project_root)
+    pub fn new(root: PathBuf, model: Option<String>) -> Self {
+        let layout = FileSystemLayout::new(root)
             .expect("prompt debug layout initialization must succeed");
         Self {
             layout,

@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 pub use pera_runtime::{
-    CodeEnvironment, CodeEnvironmentAction as CodeAction, CodeEnvironmentError,
+    CodeEnvironment, CodeEnvironmentAction as CodeAction,
+    CodeEnvironmentActiveSkill as CodeActiveSkill,
+    CodeEnvironmentAvailableSkill as CodeAvailableSkill, CodeEnvironmentError,
     CodeEnvironmentEvent, CodeEnvironmentObservation as CodeObservation,
     CodeEnvironmentOutcome as CodeOutcome, CodeEnvironmentSnapshot as CodeSnapshot,
     SubmittedCodeAction,

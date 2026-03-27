@@ -11,8 +11,9 @@ use pera_orchestrator::{
     ParticipantOutput, RuntimeCodeEnvironment, RunLimits, RunRequest, TaskSpec,
     TerminationCondition,
 };
-use pera_runtime::CodeEnvironment;
+use pera_runtime::{CodeEnvironment, FileSystemSkillRuntimeLoader};
 use tokio::sync::mpsc;
+use tracing::info;
 
 use crate::config::AgentConfig;
 use crate::error::CliError;
@@ -22,8 +23,17 @@ use crate::repl::renderer::render_transport_output;
 use crate::repl::transport::{InboundTransportEvent, OutboundTransportEvent};
 
 pub async fn run_repl(agent_config: AgentConfig) -> Result<(), CliError> {
+    let skill_runtime = FileSystemSkillRuntimeLoader::new(&agent_config.root)
+        .load()
+        .map_err(CliError::Store)?;
+    info!(
+        root = %agent_config.root.display(),
+        catalog_root = %agent_config.root.join("catalog").join("skills").display(),
+        discovered_skill_count = skill_runtime.catalog().skills().count(),
+        "loaded skill runtime for repl",
+    );
     let environment = RuntimeCodeEnvironment::new(
-        CodeEnvironment::new(&agent_config.project_root, None)
+        CodeEnvironment::new(&agent_config.root, Some(skill_runtime))
             .map_err(|error| CliError::UnexpectedStateOwned(error.to_string()))?,
     );
     let (console_input_tx, console_input_rx) = mpsc::unbounded_channel();
@@ -36,8 +46,8 @@ pub async fn run_repl(agent_config: AgentConfig) -> Result<(), CliError> {
 
     println!("Starting REPL. Type /help for help, /exit to quit.");
     println!(
-        "Project root: {}",
-        agent_config.project_root.display()
+        "Root: {}",
+        agent_config.root.display()
     );
     if agent_config.debug {
         println!("Prompt debug logging: enabled");
@@ -79,7 +89,7 @@ pub async fn run_repl(agent_config: AgentConfig) -> Result<(), CliError> {
                         .map_err(|error| CliError::UnexpectedStateOwned(error.to_string()))?,
                         ProviderBackedPromptBuilder,
                         Arc::new(FilePromptDebugSink::new(
-                            agent_config.project_root.clone(),
+                            agent_config.root.clone(),
                             Some(openai.model.clone()),
                         )),
                     )

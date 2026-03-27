@@ -531,7 +531,8 @@ async fn code_environment_executes_tools_through_async_executor() {
     );
     let observation = environment.reset().await.unwrap();
     assert_eq!(observation.available_tools.len(), 3);
-    assert_eq!(observation.available_skills, Vec::<String>::new());
+    assert!(observation.available_skills.is_empty());
+    assert!(observation.active_skills.is_empty());
 
     let outcome = environment
         .step(CodeEnvironmentAction::CallTool {

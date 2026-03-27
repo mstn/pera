@@ -177,6 +177,7 @@ mod tests {
             observation: CodeObservation {
                 available_tools: Vec::new(),
                 available_skills: Vec::new(),
+                active_skills: Vec::new(),
             },
             inbox: Vec::<ParticipantInboxEvent<CodeAction, pera_orchestrator::CodeOutcome>>::new(),
             trajectory: Trajectory {

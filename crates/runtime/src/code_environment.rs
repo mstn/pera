@@ -1,23 +1,47 @@
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use pera_canonical::CatalogSkill;
+use pera_canonical::render_python_stubs;
 use pera_core::{
     ActionId, ActionRequest, ActionSkillRef, CanonicalInvocation, CanonicalValue, RunId,
+    SkillManifest,
 };
 use tokio::task::JoinHandle;
+use tracing::debug;
 
 use crate::{ActionExecutionUpdate, ActionExecutor, SkillRuntime, WasmtimeComponentActionExecutor};
 use crate::code_tools::default_code_environment_tools;
 use crate::CodeEnvironmentTool;
 
+fn catalog_skills_root(runtime_root: &std::path::Path) -> PathBuf {
+    runtime_root.join("catalog").join("skills")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeEnvironmentObservation {
     pub available_tools: Vec<CodeEnvironmentTool>,
-    pub available_skills: Vec<String>,
+    pub available_skills: Vec<CodeEnvironmentAvailableSkill>,
+    pub active_skills: Vec<CodeEnvironmentActiveSkill>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeEnvironmentAvailableSkill {
+    pub skill_name: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeEnvironmentActiveSkill {
+    pub skill_name: String,
+    pub instructions: String,
+    pub python_stub: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,6 +148,7 @@ pub struct CodeEnvironment {
     skill_runtime: Option<Arc<SkillRuntime>>,
     tool_executor: Option<Arc<dyn CodeToolExecutor>>,
     pending_actions: BTreeMap<ActionId, PendingCodeAction>,
+    active_skill_names: BTreeSet<String>,
 }
 
 impl std::fmt::Debug for CodeEnvironment {
@@ -152,6 +177,7 @@ impl CodeEnvironment {
             skill_runtime: skill_runtime.map(Arc::new),
             tool_executor,
             pending_actions: BTreeMap::new(),
+            active_skill_names: BTreeSet::new(),
         })
     }
 
@@ -164,6 +190,7 @@ impl CodeEnvironment {
             skill_runtime: skill_runtime.map(Arc::new),
             tool_executor: Some(tool_executor),
             pending_actions: BTreeMap::new(),
+            active_skill_names: BTreeSet::new(),
         }
     }
 
@@ -172,22 +199,65 @@ impl CodeEnvironment {
         self.observe().await
     }
 
+    pub fn activate_skill(&mut self, skill_name: impl Into<String>) {
+        self.active_skill_names.insert(skill_name.into());
+    }
+
+    pub fn deactivate_skill(&mut self, skill_name: &str) {
+        self.active_skill_names.remove(skill_name);
+    }
+
     pub async fn observe(&self) -> Result<CodeEnvironmentObservation, CodeEnvironmentError> {
-        let available_skills = self
-            .skill_runtime
-            .as_ref()
-            .map(|runtime| {
-                runtime
-                    .catalog()
-                    .skills()
-                    .map(|skill| skill.metadata.skill_name.clone())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let (available_skills, active_skills) = match &self.skill_runtime {
+            Some(runtime) => {
+                let mut available_skills = Vec::new();
+                let mut active_skills = Vec::new();
+
+                for catalog_skill in runtime.catalog().skills() {
+                    let skill_name = catalog_skill.metadata.skill_name.clone();
+                    if self.active_skill_names.contains(&skill_name) {
+                        let instructions = active_skill_instructions(runtime.root(), catalog_skill)
+                            .await?;
+                        active_skills.push(CodeEnvironmentActiveSkill {
+                            skill_name,
+                            instructions,
+                            python_stub: render_python_stubs(&catalog_skill.world),
+                        });
+                    } else {
+                        let description = available_skill_description(runtime.root(), catalog_skill);
+                        available_skills.push(CodeEnvironmentAvailableSkill {
+                            skill_name,
+                            description,
+                        });
+                    }
+                }
+
+                (available_skills, active_skills)
+            }
+            None => (Vec::new(), Vec::new()),
+        };
+
+        debug!(
+            skill_runtime_root = self
+                .skill_runtime
+                .as_ref()
+                .map(|runtime| runtime.root().display().to_string())
+                .unwrap_or_else(|| "<none>".to_owned()),
+            catalog_skills_root = self
+                .skill_runtime
+                .as_ref()
+                .map(|runtime| catalog_skills_root(runtime.root()).display().to_string())
+                .unwrap_or_else(|| "<none>".to_owned()),
+            available_skill_count = available_skills.len(),
+            active_skill_count = active_skills.len(),
+            active_skill_names = ?self.active_skill_names,
+            "code environment observation prepared",
+        );
 
         Ok(CodeEnvironmentObservation {
             available_tools: default_code_environment_tools(),
             available_skills,
+            active_skills,
         })
     }
 
@@ -304,4 +374,97 @@ async fn call_tool(
         invocation,
         value,
     })
+}
+
+async fn active_skill_instructions(
+    runtime_root: &Path,
+    catalog_skill: &CatalogSkill,
+) -> Result<String, CodeEnvironmentError> {
+    let (profile_dir, manifest) = compiled_catalog_profile(runtime_root, catalog_skill)?;
+    let Some(instructions) = manifest.defaults.instructions.as_ref() else {
+        return Ok(String::new());
+    };
+    let instructions_path = profile_dir.join(&instructions.source);
+    tokio::fs::read_to_string(&instructions_path)
+        .await
+        .map_err(|error| CodeEnvironmentError::new(error.to_string()))
+}
+
+fn available_skill_description(runtime_root: &Path, catalog_skill: &CatalogSkill) -> String {
+    let Ok((profile_dir, manifest)) = compiled_catalog_profile(runtime_root, catalog_skill) else {
+        return String::new();
+    };
+    let Some(instructions) = manifest.defaults.instructions.as_ref() else {
+        return manifest.skill.description;
+    };
+    let instructions_path = profile_dir.join(&instructions.source);
+    let Ok(source) = std::fs::read_to_string(&instructions_path) else {
+        return manifest.skill.description;
+    };
+
+    frontmatter_when_to_use(&source)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(manifest.skill.description)
+}
+
+fn compiled_catalog_profile(
+    runtime_root: &Path,
+    catalog_skill: &CatalogSkill,
+) -> Result<(PathBuf, SkillManifest), CodeEnvironmentError> {
+    let skill_version = catalog_skill
+        .metadata
+        .skill_version
+        .as_deref()
+        .ok_or_else(|| CodeEnvironmentError::new("catalog skill is missing skill_version"))?;
+    let profile_name = catalog_skill
+        .metadata
+        .profile_name
+        .as_deref()
+        .ok_or_else(|| CodeEnvironmentError::new("catalog skill is missing profile_name"))?;
+    let profile_dir = catalog_skills_root(runtime_root)
+        .join(&catalog_skill.metadata.skill_name)
+        .join(skill_version)
+        .join(profile_name);
+    let manifest_path = resolve_manifest_path(&profile_dir)?;
+    let manifest_source = std::fs::read_to_string(&manifest_path)
+        .map_err(|error| CodeEnvironmentError::new(error.to_string()))?;
+    let manifest = serde_yaml::from_str(&manifest_source)
+        .map_err(|error| CodeEnvironmentError::new(error.to_string()))?;
+    Ok((profile_dir, manifest))
+}
+
+fn resolve_manifest_path(profile_dir: &Path) -> Result<PathBuf, CodeEnvironmentError> {
+    for candidate in ["manifest.yaml", "skill.yaml", "skill.yml"] {
+        let path = profile_dir.join(candidate);
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
+    Err(CodeEnvironmentError::new(format!(
+        "no manifest found in {}",
+        profile_dir.display()
+    )))
+}
+
+fn frontmatter_when_to_use(source: &str) -> Option<String> {
+    let mut lines = source.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+
+    let mut frontmatter = String::new();
+    for line in lines {
+        if line.trim() == "---" {
+            break;
+        }
+        frontmatter.push_str(line);
+        frontmatter.push('\n');
+    }
+
+    let value: serde_yaml::Value = serde_yaml::from_str(&frontmatter).ok()?;
+    value
+        .get("when_to_use")
+        .and_then(serde_yaml::Value::as_str)
+        .map(ToOwned::to_owned)
 }

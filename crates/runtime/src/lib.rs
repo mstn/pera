@@ -22,7 +22,8 @@ pub use capabilities::{
     SqliteCapabilityProvider,
 };
 pub use code_environment::{
-    CodeEnvironment, CodeEnvironmentAction, CodeEnvironmentError, CodeEnvironmentEvent,
+    CodeEnvironment, CodeEnvironmentAction, CodeEnvironmentActiveSkill,
+    CodeEnvironmentAvailableSkill, CodeEnvironmentError, CodeEnvironmentEvent,
     CodeEnvironmentObservation, CodeEnvironmentOutcome, CodeEnvironmentSnapshot, CodeToolExecutor,
     SubmittedCodeAction,
 };

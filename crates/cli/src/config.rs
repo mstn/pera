@@ -10,14 +10,14 @@ pub struct OpenAiConfig {
 
 #[derive(Debug, Clone, Default)]
 pub struct AgentConfig {
-    pub project_root: PathBuf,
+    pub root: PathBuf,
     pub debug: bool,
     pub openai: Option<OpenAiConfig>,
 }
 
 impl AgentConfig {
     pub fn from_openai(
-        project_root: PathBuf,
+        root: PathBuf,
         debug: bool,
         api_key: Option<String>,
         model: Option<String>,
@@ -27,12 +27,12 @@ impl AgentConfig {
             model.map(|value| value.trim().to_owned()).filter(|value| !value.is_empty()),
         ) {
             (None, None) => Ok(Self {
-                project_root,
+                root,
                 debug,
                 openai: None,
             }),
             (Some(api_key), Some(model)) => Ok(Self {
-                project_root,
+                root,
                 debug,
                 openai: Some(OpenAiConfig { api_key, model }),
             }),
