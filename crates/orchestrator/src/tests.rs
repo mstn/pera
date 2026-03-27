@@ -6,11 +6,12 @@ use pera_core::ActionId;
 
 use crate::error::{EnvironmentError, EvaluatorError, ParticipantError};
 use crate::orchestrator::Orchestrator;
+use crate::streaming::ParticipantOutput;
 use crate::traits::{Environment, Evaluator, Participant};
 use crate::types::{
     ActionExecution, EnvironmentEvent, EvalResult, FinishReason, ParticipantDecision,
     ParticipantId, ParticipantInboxEvent, ParticipantTurnInput, RunLimits, RunRequest,
-    SubmittedAction, TaskSpec, Trajectory, TrajectoryEvent,
+    SubmittedAction, TaskSpec, TerminationCondition, Trajectory, TrajectoryEvent,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,9 +42,10 @@ impl Participant for FakeParticipant {
         self.id.clone()
     }
 
-    async fn next_decision(
+    async fn run_turn(
         &mut self,
         input: ParticipantTurnInput<Self::Observation, Self::Action, Self::Outcome>,
+        _output: &mut dyn ParticipantOutput<Self::Action>,
     ) -> Result<ParticipantDecision<Self::Action>, ParticipantError> {
         self.seen_inboxes.lock().unwrap().push(input.inbox);
         self.decisions
@@ -146,6 +148,7 @@ fn test_request() -> RunRequest {
             max_messages: 12,
             max_duration: None,
         },
+        termination_condition: TerminationCondition::AllParticipantsFinished,
     }
 }
 
@@ -342,4 +345,42 @@ async fn orchestrator_runs_evaluator_once_when_present() {
 
     assert_eq!(*calls.lock().unwrap(), 1);
     assert_eq!(result.evaluation.unwrap().score, Some(1.0));
+}
+
+#[tokio::test]
+async fn orchestrator_can_terminate_when_a_specific_participant_finishes() {
+    let agent = FakeParticipant {
+        id: ParticipantId::Agent,
+        decisions: VecDeque::from([Ok(ParticipantDecision::Yield)]),
+        seen_inboxes: Arc::new(Mutex::new(Vec::new())),
+    };
+    let user = FakeParticipant {
+        id: ParticipantId::User,
+        decisions: VecDeque::from([Ok(ParticipantDecision::Finish)]),
+        seen_inboxes: Arc::new(Mutex::new(Vec::new())),
+    };
+    let environment = FakeEnvironment {
+        observation: TestObservation("initial"),
+        terminal: None,
+        immediate_outcomes: VecDeque::new(),
+        submitted_events: VecDeque::new(),
+        submitted_ids: VecDeque::new(),
+    };
+    let participants = vec![
+        Box::new(agent) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
+        Box::new(user) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
+    ];
+    let mut orchestrator = Orchestrator::from_participants(participants, environment);
+    let mut request = test_request();
+    request.termination_condition =
+        TerminationCondition::AnyOfParticipantsFinished(vec![ParticipantId::User]);
+
+    let result = orchestrator.run(request).await.unwrap();
+
+    assert_eq!(
+        result.finish_reason,
+        FinishReason::ParticipantFinished {
+            participant: ParticipantId::User,
+        }
+    );
 }

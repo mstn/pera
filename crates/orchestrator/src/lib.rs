@@ -1,6 +1,7 @@
 mod error;
 mod orchestrator;
 mod runtime;
+mod streaming;
 mod traits;
 mod types;
 
@@ -10,11 +11,12 @@ pub use runtime::{
     CodeAction, CodeEnvironment, CodeEnvironmentError, CodeEnvironmentEvent, CodeObservation,
     CodeOutcome, CodeSnapshot, SubmittedCodeAction, RuntimeCodeEnvironment,
 };
+pub use streaming::{NoopParticipantOutput, ParticipantOutput};
 pub use traits::{Environment, Evaluator, NoopEvaluator, Participant};
 pub use types::{
     ActionExecution, EnvironmentEvent, EvalResult, FinishReason, ParticipantDecision,
     ParticipantId, ParticipantInboxEvent, ParticipantTurnInput, RunLimits, RunRequest, RunResult,
-    SubmittedAction, TaskSpec, Trajectory, TrajectoryEvent,
+    SubmittedAction, TaskSpec, TerminationCondition, Trajectory, TrajectoryEvent,
 };
 
 #[cfg(test)]

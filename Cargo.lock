@@ -1592,9 +1592,11 @@ dependencies = [
 name = "pera-cli"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "clap",
  "pera-canonical",
  "pera-core",
+ "pera-orchestrator",
  "pera-runtime",
  "serde",
  "serde_json",

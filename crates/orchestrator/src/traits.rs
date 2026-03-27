@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 
 use crate::error::{EnvironmentError, EvaluatorError, ParticipantError};
+use crate::streaming::ParticipantOutput;
 use crate::types::{
     EnvironmentEvent, EvalResult, ParticipantDecision, ParticipantId, ParticipantTurnInput,
     SubmittedAction, TaskSpec, Trajectory,
@@ -14,9 +15,10 @@ pub trait Participant: Send {
 
     fn id(&self) -> ParticipantId;
 
-    async fn next_decision(
+    async fn run_turn(
         &mut self,
         input: ParticipantTurnInput<Self::Observation, Self::Action, Self::Outcome>,
+        output: &mut dyn ParticipantOutput<Self::Action>,
     ) -> Result<ParticipantDecision<Self::Action>, ParticipantError>;
 }
 

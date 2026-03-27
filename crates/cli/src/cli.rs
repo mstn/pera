@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 
 use crate::commands::bindings::BindingsCommand;
+use crate::commands::repl::ReplCommand;
 use crate::commands::run::RunCommand;
 use crate::commands::skill::SkillCommand;
 
@@ -18,6 +19,7 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     Bindings(BindingsCommand),
+    Repl(ReplCommand),
     Run(RunCommand),
     Skill(SkillCommand),
 }

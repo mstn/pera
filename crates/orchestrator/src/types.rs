@@ -17,6 +17,13 @@ pub enum ActionExecution {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TerminationCondition {
+    AllParticipantsFinished,
+    AnyParticipantFinished,
+    AnyOfParticipantsFinished(Vec<ParticipantId>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskSpec {
     pub id: String,
     pub instructions: String,
@@ -45,6 +52,7 @@ impl Default for RunLimits {
 pub struct RunRequest {
     pub task: TaskSpec,
     pub limits: RunLimits,
+    pub termination_condition: TerminationCondition,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -57,6 +65,9 @@ pub struct EvalResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FinishReason {
     ParticipantsFinished,
+    ParticipantFinished {
+        participant: ParticipantId,
+    },
     StepLimitExceeded,
     ActionLimitExceeded,
     MessageLimitExceeded,

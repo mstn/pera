@@ -4,15 +4,15 @@ use std::time::Instant;
 use pera_core::{ActionId, RunId};
 
 use crate::error::EvaluatorError;
+use crate::streaming::{NoopParticipantOutput, ParticipantOutput};
 use crate::traits::{Environment, Evaluator, NoopEvaluator, Participant};
 use crate::types::{
     ActionExecution, EnvironmentEvent, FinishReason, ParticipantDecision, ParticipantId,
     ParticipantInboxEvent, ParticipantTurnInput, RunRequest, RunResult, SubmittedAction,
-    Trajectory, TrajectoryEvent,
+    TerminationCondition, Trajectory, TrajectoryEvent,
 };
 
-type BoxedParticipant<O, A, U> =
-    Box<dyn Participant<Observation = O, Action = A, Outcome = U>>;
+type BoxedParticipant<O, A, U> = Box<dyn Participant<Observation = O, Action = A, Outcome = U>>;
 
 pub struct Orchestrator<E, V>
 where
@@ -30,10 +30,10 @@ where
 {
     pub fn new(
         participant: impl Participant<
-                Observation = E::Observation,
-                Action = E::Action,
-                Outcome = E::Outcome,
-            > + 'static,
+            Observation = E::Observation,
+            Action = E::Action,
+            Outcome = E::Outcome,
+        > + 'static,
         _environment: E,
     ) -> Self {
         Self::from_participants(vec![Box::new(participant)], _environment)
@@ -58,10 +58,10 @@ where
 {
     pub fn with_evaluator(
         participant: impl Participant<
-                Observation = E::Observation,
-                Action = E::Action,
-                Outcome = E::Outcome,
-            > + 'static,
+            Observation = E::Observation,
+            Action = E::Action,
+            Outcome = E::Outcome,
+        > + 'static,
         _environment: E,
         evaluator: V,
     ) -> Self {
@@ -91,6 +91,15 @@ where
         &mut self,
         request: RunRequest,
     ) -> Result<RunResult<E::Observation, E::Action, E::Outcome>, EvaluatorError> {
+        let mut output = NoopParticipantOutput;
+        self.run_with_output(request, &mut output).await
+    }
+
+    pub async fn run_with_output(
+        &mut self,
+        request: RunRequest,
+        output: &mut dyn ParticipantOutput<E::Action>,
+    ) -> Result<RunResult<E::Observation, E::Action, E::Outcome>, EvaluatorError> {
         let run_id = RunId::generate();
         let started_at = Instant::now();
         let mut step_count = 0usize;
@@ -100,10 +109,8 @@ where
         let mut pending_actions = BTreeSet::<ActionId>::new();
         let mut blocked_participants = BTreeMap::<ParticipantId, ActionId>::new();
         let mut finished_participants = BTreeSet::<ParticipantId>::new();
-        let mut inboxes = BTreeMap::<
-            ParticipantId,
-            Vec<ParticipantInboxEvent<E::Action, E::Outcome>>,
-        >::new();
+        let mut inboxes =
+            BTreeMap::<ParticipantId, Vec<ParticipantInboxEvent<E::Action, E::Outcome>>>::new();
 
         let mut trajectory = Trajectory::new(run_id);
         trajectory.events.push(TrajectoryEvent::SessionStarted {
@@ -114,11 +121,9 @@ where
             Ok(observation) => observation,
             Err(error) => {
                 let reason = FinishReason::EnvironmentError(error.to_string());
-                trajectory
-                    .events
-                    .push(TrajectoryEvent::SessionFinished {
-                        reason: reason.clone(),
-                    });
+                trajectory.events.push(TrajectoryEvent::SessionFinished {
+                    reason: reason.clone(),
+                });
                 return Ok(RunResult {
                     run_id,
                     finish_reason: reason,
@@ -127,9 +132,11 @@ where
                 });
             }
         };
-        trajectory.events.push(TrajectoryEvent::ObservationRecorded {
-            observation: observation.clone(),
-        });
+        trajectory
+            .events
+            .push(TrajectoryEvent::ObservationRecorded {
+                observation: observation.clone(),
+            });
 
         let finish_reason = loop {
             if step_count >= request.limits.max_steps {
@@ -162,19 +169,25 @@ where
                         "failed to refresh observation after environment events: {error}"
                     ))
                 })?;
-                trajectory.events.push(TrajectoryEvent::ObservationRecorded {
-                    observation: observation.clone(),
-                });
+                trajectory
+                    .events
+                    .push(TrajectoryEvent::ObservationRecorded {
+                        observation: observation.clone(),
+                    });
             }
 
-            if finished_participants.len() == self.participants.len() {
-                break FinishReason::ParticipantsFinished;
-            }
-
-            let Some(participant_index) = self.next_runnable_participant(
+            if let Some(reason) = termination_condition_met(
+                &request.termination_condition,
                 &finished_participants,
-                &blocked_participants,
-            ) else {
+                self.participants.len(),
+                None,
+            ) {
+                break reason;
+            }
+
+            let Some(participant_index) =
+                self.next_runnable_participant(&finished_participants, &blocked_participants)
+            else {
                 if pending_actions.is_empty() {
                     break FinishReason::Deadlocked;
                 }
@@ -193,7 +206,7 @@ where
                 trajectory: trajectory.clone(),
             };
 
-            match participant.next_decision(input).await {
+            match participant.run_turn(input, output).await {
                 Ok(ParticipantDecision::Message { content }) => {
                     step_count += 1;
                     message_count += 1;
@@ -219,6 +232,14 @@ where
 
                     match execution {
                         ActionExecution::Immediate => {
+                            output
+                                .action_planned(&participant_id, &action)
+                                .await
+                                .map_err(|error| {
+                                    EvaluatorError::new(format!(
+                                        "failed to emit action planning output: {error}"
+                                    ))
+                                })?;
                             let action_id = ActionId::generate();
                             match self.environment.step(participant_id.clone(), action).await {
                                 Ok(outcome) => {
@@ -232,9 +253,11 @@ where
                                             "failed to refresh observation after immediate action: {error}"
                                         ))
                                     })?;
-                                    trajectory.events.push(TrajectoryEvent::ObservationRecorded {
-                                        observation: observation.clone(),
-                                    });
+                                    trajectory
+                                        .events
+                                        .push(TrajectoryEvent::ObservationRecorded {
+                                            observation: observation.clone(),
+                                        });
                                 }
                                 Err(error) => {
                                     trajectory.events.push(TrajectoryEvent::ActionFailed {
@@ -249,7 +272,19 @@ where
                         ActionExecution::DeferredBlocking
                         | ActionExecution::DeferredNonBlocking => {
                             let blocking = execution == ActionExecution::DeferredBlocking;
-                            match self.environment.submit(participant_id.clone(), action.clone()).await {
+                            output
+                                .action_planned(&participant_id, &action)
+                                .await
+                                .map_err(|error| {
+                                    EvaluatorError::new(format!(
+                                        "failed to emit action planning output: {error}"
+                                    ))
+                                })?;
+                            match self
+                                .environment
+                                .submit(participant_id.clone(), action.clone())
+                                .await
+                            {
                                 Ok(SubmittedAction { action_id }) => {
                                     trajectory.events.push(TrajectoryEvent::ActionSubmitted {
                                         participant: participant_id.clone(),
@@ -257,13 +292,9 @@ where
                                         action: action.clone(),
                                         execution,
                                     });
-                                    inboxes
-                                        .entry(participant_id.clone())
-                                        .or_default()
-                                        .push(ParticipantInboxEvent::ActionAccepted {
-                                            action_id,
-                                            action,
-                                        });
+                                    inboxes.entry(participant_id.clone()).or_default().push(
+                                        ParticipantInboxEvent::ActionAccepted { action_id, action },
+                                    );
                                     pending_actions.insert(action_id);
                                     if blocking {
                                         blocked_participants.insert(participant_id, action_id);
@@ -284,9 +315,19 @@ where
                 }
                 Ok(ParticipantDecision::Finish) => {
                     finished_participants.insert(participant_id.clone());
-                    trajectory.events.push(TrajectoryEvent::ParticipantFinished {
-                        participant: participant_id,
-                    });
+                    trajectory
+                        .events
+                        .push(TrajectoryEvent::ParticipantFinished {
+                            participant: participant_id.clone(),
+                        });
+                    if let Some(reason) = termination_condition_met(
+                        &request.termination_condition,
+                        &finished_participants,
+                        self.participants.len(),
+                        Some(&participant_id),
+                    ) {
+                        break reason;
+                    }
                 }
                 Err(error) => {
                     break FinishReason::ParticipantError {
@@ -303,9 +344,11 @@ where
 
         if let Some(evaluator) = &self.evaluator {
             let result = evaluator.evaluate(&request.task, &trajectory).await?;
-            trajectory.events.push(TrajectoryEvent::EvaluationCompleted {
-                result: result.clone(),
-            });
+            trajectory
+                .events
+                .push(TrajectoryEvent::EvaluationCompleted {
+                    result: result.clone(),
+                });
             evaluation = Some(result);
         }
 
@@ -368,7 +411,8 @@ where
                     outcome,
                 } => {
                     pending_actions.remove(&action_id);
-                    blocked_participants.retain(|_, blocked_action_id| *blocked_action_id != action_id);
+                    blocked_participants
+                        .retain(|_, blocked_action_id| *blocked_action_id != action_id);
                     trajectory.events.push(TrajectoryEvent::ActionCompleted {
                         participant: participant.clone(),
                         action_id,
@@ -385,7 +429,8 @@ where
                     error,
                 } => {
                     pending_actions.remove(&action_id);
-                    blocked_participants.retain(|_, blocked_action_id| *blocked_action_id != action_id);
+                    blocked_participants
+                        .retain(|_, blocked_action_id| *blocked_action_id != action_id);
                     trajectory.events.push(TrajectoryEvent::ActionFailed {
                         participant: participant.clone(),
                         action_id,
@@ -405,6 +450,36 @@ where
                         .or_default()
                         .push(ParticipantInboxEvent::Notification { message });
                 }
+            }
+        }
+    }
+}
+
+fn termination_condition_met(
+    condition: &TerminationCondition,
+    finished_participants: &BTreeSet<ParticipantId>,
+    participant_count: usize,
+    newly_finished_participant: Option<&ParticipantId>,
+) -> Option<FinishReason> {
+    match condition {
+        TerminationCondition::AllParticipantsFinished => {
+            if participant_count > 0 && finished_participants.len() == participant_count {
+                Some(FinishReason::ParticipantsFinished)
+            } else {
+                None
+            }
+        }
+        TerminationCondition::AnyParticipantFinished => newly_finished_participant
+            .cloned()
+            .map(|participant| FinishReason::ParticipantFinished { participant }),
+        TerminationCondition::AnyOfParticipantsFinished(participants) => {
+            let newly_finished_participant = newly_finished_participant?;
+            if participants.contains(newly_finished_participant) {
+                Some(FinishReason::ParticipantFinished {
+                    participant: newly_finished_participant.clone(),
+                })
+            } else {
+                None
             }
         }
     }

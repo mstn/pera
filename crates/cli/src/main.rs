@@ -1,6 +1,7 @@
 mod cli;
 mod commands;
 mod error;
+mod repl;
 
 use std::process::ExitCode;
 
@@ -26,6 +27,7 @@ async fn run() -> Result<(), error::CliError> {
 
     match cli.command {
         Command::Bindings(command) => command.execute().await,
+        Command::Repl(command) => command.execute().await,
         Command::Run(command) => command.execute().await,
         Command::Skill(command) => command.execute().await,
     }
