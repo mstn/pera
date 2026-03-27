@@ -135,25 +135,19 @@ impl CodePromptBuilder for ProviderBackedPromptBuilder {
             prompt.push_str("</available-skills>\n");
         }
 
-        if !context.active_skills.is_empty() {
-            prompt.push_str("\nActive skills:\n");
-            for skill in &context.active_skills {
-                prompt.push_str("\nSkill: ");
-                prompt.push_str(&skill.skill_name);
+        for skill in &context.active_skills {
+            if !skill.instructions.trim().is_empty() {
+                prompt.push_str("\nInstructions:\n");
+                prompt.push_str(&skill.instructions);
                 prompt.push('\n');
-                if !skill.instructions.trim().is_empty() {
-                    prompt.push_str("Instructions:\n");
-                    prompt.push_str(&skill.instructions);
+            }
+            if !skill.python_stub.trim().is_empty() {
+                prompt.push_str("Python stub:\n```python\n");
+                prompt.push_str(&skill.python_stub);
+                if !skill.python_stub.ends_with('\n') {
                     prompt.push('\n');
                 }
-                if !skill.python_stub.trim().is_empty() {
-                    prompt.push_str("Python stub:\n```python\n");
-                    prompt.push_str(&skill.python_stub);
-                    if !skill.python_stub.ends_with('\n') {
-                        prompt.push('\n');
-                    }
-                    prompt.push_str("```\n");
-                }
+                prompt.push_str("```\n");
             }
         }
 
@@ -276,8 +270,6 @@ mod tests {
         assert!(prompt.contains("- name: sqlite"));
         assert!(prompt.contains("when_to_use: Use when you need structured data queries."));
         assert!(prompt.contains("</available-skills>"));
-        assert!(prompt.contains("Active skills:"));
-        assert!(prompt.contains("Skill: git"));
         assert!(prompt.contains("Use this skill for repository inspection."));
         assert!(prompt.contains("def status() -> str: ..."));
     }
