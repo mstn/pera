@@ -1,15 +1,15 @@
 use std::collections::BTreeSet;
 use std::time::Instant;
 
-use pera_core::{ActionId, RunId};
+use pera_core::{ActionId, RunId, WorkItemId};
 
 use crate::error::EvaluatorError;
 use crate::streaming::{NoopParticipantOutput, ParticipantOutput};
 use crate::traits::{Environment, Evaluator, NoopEvaluator, Participant};
 use crate::types::{
     ActionExecution, EnvironmentEvent, FinishReason, InitialInboxMessage, ParticipantDecision,
-    ParticipantId, ParticipantInboxEvent, ParticipantInput, RunRequest, RunResult,
-    SubmittedAction, TerminationCondition, Trajectory, TrajectoryEvent,
+    ParticipantId, ParticipantInboxEvent, ParticipantInput, RunRequest, RunResult, SubmittedAction,
+    TerminationCondition, Trajectory, TrajectoryEvent,
 };
 
 type BoxedParticipant<O, A, U> = Box<dyn Participant<Observation = O, Action = A, Outcome = U>>;
@@ -29,6 +29,7 @@ struct InitialMessage {
 
 #[derive(Debug, Clone)]
 struct WorkItem {
+    id: WorkItemId,
     initial_message: InitialMessage,
 }
 
@@ -69,7 +70,10 @@ where
         Self {
             participant,
             inbox,
-            work_item: WorkItem { initial_message },
+            work_item: WorkItem {
+                id: WorkItemId::generate(),
+                initial_message,
+            },
             status: AgentLoopStatus::Ready,
             step_count: 0,
         }
@@ -125,6 +129,7 @@ where
         );
         let input = ParticipantInput {
             run_id: input.run_id,
+            agent_loop_id: self.work_item.id,
             participant: self.participant.id(),
             task: input.task,
             limits: input.limits,
@@ -263,7 +268,10 @@ where
             observation,
             trajectory,
             pending_actions: BTreeSet::new(),
-            participants: participants.into_iter().map(ParticipantState::new).collect(),
+            participants: participants
+                .into_iter()
+                .map(ParticipantState::new)
+                .collect(),
         };
 
         for message in initial_messages {
@@ -336,7 +344,8 @@ where
                 action,
             } => {
                 if let Some(participant) = self.participant_mut(&participant) {
-                    participant.deliver(ParticipantInboxEvent::ActionAccepted { action_id, action });
+                    participant
+                        .deliver(ParticipantInboxEvent::ActionAccepted { action_id, action });
                 }
             }
             EnvironmentEvent::ActionCompleted {
@@ -351,10 +360,8 @@ where
                     outcome: outcome.clone(),
                 });
                 if let Some(participant) = self.participant_mut(&participant) {
-                    participant.deliver(ParticipantInboxEvent::ActionCompleted {
-                        action_id,
-                        outcome,
-                    });
+                    participant
+                        .deliver(ParticipantInboxEvent::ActionCompleted { action_id, outcome });
                 }
             }
             EnvironmentEvent::ActionFailed {

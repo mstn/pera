@@ -1,7 +1,11 @@
+use std::sync::Arc;
 use std::io::{self, BufRead, Write};
 
 use async_trait::async_trait;
-use pera_agents::{LlmAgentParticipant, OpenAiConfig as OpenAiProviderConfig, OpenAiProvider, ProviderBackedPromptBuilder};
+use pera_agents::{
+    LlmAgentParticipant, OpenAiConfig as OpenAiProviderConfig, OpenAiProvider,
+    ProviderBackedPromptBuilder,
+};
 use pera_orchestrator::{
     CodeAction, InitialInboxMessage, Participant, ParticipantError, ParticipantId,
     ParticipantOutput, RuntimeCodeEnvironment, RunLimits, RunRequest, TaskSpec,
@@ -13,6 +17,7 @@ use tokio::sync::mpsc;
 use crate::config::AgentConfig;
 use crate::error::CliError;
 use crate::repl::participants::HumanParticipant;
+use crate::repl::prompt_debug::FilePromptDebugSink;
 use crate::repl::renderer::render_transport_output;
 use crate::repl::transport::{InboundTransportEvent, OutboundTransportEvent};
 
@@ -34,6 +39,9 @@ pub async fn run_repl(agent_config: AgentConfig) -> Result<(), CliError> {
         "Project root: {}",
         agent_config.project_root.display()
     );
+    if agent_config.debug {
+        println!("Prompt debug logging: enabled");
+    }
     if let Some(openai) = &agent_config.openai {
         let api_key_status = if openai.api_key.is_empty() {
             "missing API key"
@@ -61,16 +69,32 @@ pub async fn run_repl(agent_config: AgentConfig) -> Result<(), CliError> {
     > = vec![
         Box::new(HumanParticipant { input_rx: console_input_rx }),
         match &agent_config.openai {
-            Some(openai) => Box::new(
-                LlmAgentParticipant::new(
-                    OpenAiProvider::new(OpenAiProviderConfig {
-                        api_key: openai.api_key.clone(),
-                        model: openai.model.clone(),
-                    })
-                    .map_err(|error| CliError::UnexpectedStateOwned(error.to_string()))?,
-                    ProviderBackedPromptBuilder,
-                ),
-            ),
+            Some(openai) => {
+                let participant = if agent_config.debug {
+                    LlmAgentParticipant::with_debug_sink(
+                        OpenAiProvider::new(OpenAiProviderConfig {
+                            api_key: openai.api_key.clone(),
+                            model: openai.model.clone(),
+                        })
+                        .map_err(|error| CliError::UnexpectedStateOwned(error.to_string()))?,
+                        ProviderBackedPromptBuilder,
+                        Arc::new(FilePromptDebugSink::new(
+                            agent_config.project_root.clone(),
+                            Some(openai.model.clone()),
+                        )),
+                    )
+                } else {
+                    LlmAgentParticipant::new(
+                        OpenAiProvider::new(OpenAiProviderConfig {
+                            api_key: openai.api_key.clone(),
+                            model: openai.model.clone(),
+                        })
+                        .map_err(|error| CliError::UnexpectedStateOwned(error.to_string()))?,
+                        ProviderBackedPromptBuilder,
+                    )
+                };
+                Box::new(participant)
+            }
             None => Box::new(LlmAgentParticipant::unconfigured()),
         },
     ];

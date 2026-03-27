@@ -11,6 +11,9 @@ pub struct ReplCommand {
     #[arg(long)]
     pub root: PathBuf,
 
+    #[arg(long, default_value_t = false)]
+    pub debug: bool,
+
     #[arg(long, env = "OPENAI_API_KEY")]
     pub openai_api_key: Option<String>,
 
@@ -29,6 +32,7 @@ impl ReplCommand {
             })?;
         let agent_config = AgentConfig::from_openai(
             root.clone(),
+            self.debug,
             self.openai_api_key.clone(),
             self.openai_model.clone(),
         )?;

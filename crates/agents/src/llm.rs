@@ -1,8 +1,10 @@
 use std::pin::Pin;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use futures_util::stream::Stream;
+use pera_core::{RunId, WorkItemId};
 use pera_orchestrator::{
     CodeAction, CodeObservation, CodeOutcome, Participant, ParticipantDecision,
     ParticipantError, ParticipantId, ParticipantInput, ParticipantOutput,
@@ -28,6 +30,35 @@ pub struct LlmToolDefinition {
     pub name: String,
     pub description: String,
     pub input_schema: Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct PromptDebugMetadata {
+    pub run_id: RunId,
+    pub agent_loop_id: WorkItemId,
+    pub participant: ParticipantId,
+    pub task_id: String,
+}
+
+pub trait PromptDebugSink: Send + Sync {
+    fn record_prompt(
+        &self,
+        metadata: &PromptDebugMetadata,
+        request: &LlmRequest,
+    ) -> Result<(), ParticipantError>;
+}
+
+#[derive(Debug, Default)]
+pub struct NoopPromptDebugSink;
+
+impl PromptDebugSink for NoopPromptDebugSink {
+    fn record_prompt(
+        &self,
+        _metadata: &PromptDebugMetadata,
+        _request: &LlmRequest,
+    ) -> Result<(), ParticipantError> {
+        Ok(())
+    }
 }
 
 pub type LlmTextStream = Pin<Box<dyn Stream<Item = Result<String, ParticipantError>> + Send>>;
@@ -60,6 +91,7 @@ impl LlmProvider for UnconfiguredLlmProvider {
 pub struct LlmAgentParticipant<P = UnconfiguredLlmProvider, B = ProviderBackedPromptBuilder> {
     provider: P,
     prompt_builder: B,
+    debug_sink: Arc<dyn PromptDebugSink>,
 }
 
 impl LlmAgentParticipant<UnconfiguredLlmProvider, ProviderBackedPromptBuilder> {
@@ -67,6 +99,7 @@ impl LlmAgentParticipant<UnconfiguredLlmProvider, ProviderBackedPromptBuilder> {
         Self {
             provider: UnconfiguredLlmProvider,
             prompt_builder: ProviderBackedPromptBuilder,
+            debug_sink: Arc::new(NoopPromptDebugSink),
         }
     }
 }
@@ -76,6 +109,19 @@ impl<P, B> LlmAgentParticipant<P, B> {
         Self {
             provider,
             prompt_builder,
+            debug_sink: Arc::new(NoopPromptDebugSink),
+        }
+    }
+
+    pub fn with_debug_sink(
+        provider: P,
+        prompt_builder: B,
+        debug_sink: Arc<dyn PromptDebugSink>,
+    ) -> Self {
+        Self {
+            provider,
+            prompt_builder,
+            debug_sink,
         }
     }
 }
@@ -105,6 +151,15 @@ where
             messages: prompt_messages(&context),
             tools: context.tools.clone(),
         };
+        self.debug_sink.record_prompt(
+            &PromptDebugMetadata {
+                run_id: input.run_id,
+                agent_loop_id: input.agent_loop_id,
+                participant: input.participant.clone(),
+                task_id: input.task.id.clone(),
+            },
+            &request,
+        )?;
 
         output.message_start(&ParticipantId::Agent).await?;
         let mut stream = self.provider.stream(request).await?;

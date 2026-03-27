@@ -11,12 +11,14 @@ pub struct OpenAiConfig {
 #[derive(Debug, Clone, Default)]
 pub struct AgentConfig {
     pub project_root: PathBuf,
+    pub debug: bool,
     pub openai: Option<OpenAiConfig>,
 }
 
 impl AgentConfig {
     pub fn from_openai(
         project_root: PathBuf,
+        debug: bool,
         api_key: Option<String>,
         model: Option<String>,
     ) -> Result<Self, CliError> {
@@ -26,10 +28,12 @@ impl AgentConfig {
         ) {
             (None, None) => Ok(Self {
                 project_root,
+                debug,
                 openai: None,
             }),
             (Some(api_key), Some(model)) => Ok(Self {
                 project_root,
+                debug,
                 openai: Some(OpenAiConfig { api_key, model }),
             }),
             (Some(_), None) => Err(CliError::InvalidArguments(

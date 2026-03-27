@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4.5.38", features = ["derive", "env"] }
 dotenvy = "0.15"
 pera-agents = { path = "../agents" }

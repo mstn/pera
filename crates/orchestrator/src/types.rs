@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use pera_core::{ActionId, RunId};
+use pera_core::{ActionId, RunId, WorkItemId};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ParticipantId {
@@ -202,6 +202,7 @@ impl<O, A, U> Trajectory<O, A, U> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParticipantInput<O, A, U> {
     pub run_id: RunId,
+    pub agent_loop_id: WorkItemId,
     pub participant: ParticipantId,
     pub task: TaskSpec,
     pub limits: RunLimits,

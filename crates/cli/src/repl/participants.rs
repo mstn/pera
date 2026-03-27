@@ -116,9 +116,13 @@ mod tests {
             return Some(message);
         }
 
-        match input.trajectory.events.iter().rev().find(|event| {
-            matches!(event, TrajectoryEvent::ParticipantMessage { .. })
-        }) {
+        match input
+            .trajectory
+            .events
+            .iter()
+            .rev()
+            .find(|event| matches!(event, TrajectoryEvent::ParticipantMessage { .. }))
+        {
             Some(TrajectoryEvent::ParticipantMessage {
                 participant: ParticipantId::User,
                 content,
@@ -162,6 +166,7 @@ mod tests {
     ) -> ParticipantInput<CodeObservation, CodeAction, pera_orchestrator::CodeOutcome> {
         ParticipantInput {
             run_id: RunId::generate(),
+            agent_loop_id: pera_core::WorkItemId::generate(),
             participant: ParticipantId::Agent,
             task: TaskSpec {
                 id: "repl".to_owned(),
@@ -172,9 +177,7 @@ mod tests {
                 available_tools: Vec::new(),
                 available_skills: Vec::new(),
             },
-            inbox: Vec::<
-                ParticipantInboxEvent<CodeAction, pera_orchestrator::CodeOutcome>,
-            >::new(),
+            inbox: Vec::<ParticipantInboxEvent<CodeAction, pera_orchestrator::CodeOutcome>>::new(),
             trajectory: Trajectory {
                 run_id: RunId::generate(),
                 events,

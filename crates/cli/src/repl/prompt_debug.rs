@@ -1,0 +1,138 @@
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+use std::path::PathBuf;
+use std::sync::Mutex;
+
+use chrono::Local;
+use pera_agents::{LlmRequest, PromptDebugMetadata, PromptDebugSink};
+use pera_core::RunId;
+
+use crate::error::CliError;
+
+pub struct FilePromptDebugSink {
+    project_root: PathBuf,
+    model: Option<String>,
+    run_directories: Mutex<BTreeMap<RunId, PathBuf>>,
+}
+
+impl FilePromptDebugSink {
+    pub fn new(project_root: PathBuf, model: Option<String>) -> Self {
+        Self {
+            project_root,
+            model,
+            run_directories: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    fn resolve_run_directory(&self, run_id: RunId) -> Result<PathBuf, CliError> {
+        let mut run_directories = self
+            .run_directories
+            .lock()
+            .map_err(|_| CliError::UnexpectedStateOwned("prompt debug lock poisoned".to_owned()))?;
+        if let Some(path) = run_directories.get(&run_id) {
+            return Ok(path.clone());
+        }
+
+        let timestamp = timestamp_prefix();
+        let path = self
+            .project_root
+            .join("orchestration-prompts")
+            .join(format!("{timestamp}_{}", run_id.as_hyphenated()));
+        std::fs::create_dir_all(&path).map_err(|source| CliError::CreateDir {
+            path: path.clone(),
+            source,
+        })?;
+        run_directories.insert(run_id, path.clone());
+        Ok(path)
+    }
+}
+
+impl PromptDebugSink for FilePromptDebugSink {
+    fn record_prompt(
+        &self,
+        metadata: &PromptDebugMetadata,
+        request: &LlmRequest,
+    ) -> Result<(), pera_orchestrator::ParticipantError> {
+        let run_directory = self
+            .resolve_run_directory(metadata.run_id)
+            .map_err(|error| pera_orchestrator::ParticipantError::new(error.to_string()))?;
+        let timestamp = timestamp_prefix();
+        let file_path = run_directory.join(format!(
+            "{timestamp}_{}.md",
+            metadata.agent_loop_id.as_hyphenated()
+        ));
+
+        std::fs::write(&file_path, render_prompt_markdown(self.model.as_deref(), metadata, request))
+            .map_err(|source| {
+                pera_orchestrator::ParticipantError::new(
+                    CliError::WriteFile {
+                        path: file_path,
+                        source,
+                    }
+                    .to_string(),
+                )
+            })
+    }
+}
+
+fn render_prompt_markdown(
+    model: Option<&str>,
+    metadata: &PromptDebugMetadata,
+    request: &LlmRequest,
+) -> String {
+    let mut output = String::new();
+    let _ = writeln!(&mut output, "---");
+    let _ = writeln!(&mut output, "generated_at: {}", Local::now().to_rfc3339());
+    let _ = writeln!(&mut output, "run_id: {}", metadata.run_id);
+    let _ = writeln!(&mut output, "agent_loop_id: {}", metadata.agent_loop_id);
+    let _ = writeln!(&mut output, "participant: {:?}", metadata.participant);
+    let _ = writeln!(&mut output, "task_id: {}", metadata.task_id);
+    if let Some(model) = model {
+        let _ = writeln!(&mut output, "model: {model}");
+    }
+    let _ = writeln!(&mut output, "---");
+    let _ = writeln!(&mut output);
+
+    let _ = writeln!(&mut output, "# System Prompt");
+    let _ = writeln!(&mut output);
+    let _ = writeln!(&mut output, "```text");
+    let _ = writeln!(&mut output, "{}", request.system_prompt);
+    let _ = writeln!(&mut output, "```");
+    let _ = writeln!(&mut output);
+
+    let _ = writeln!(&mut output, "# Tools");
+    let _ = writeln!(&mut output);
+    if request.tools.is_empty() {
+        let _ = writeln!(&mut output, "_No tools_");
+    } else {
+        for tool in &request.tools {
+            let _ = writeln!(&mut output, "## {}", tool.name);
+            let _ = writeln!(&mut output);
+            let _ = writeln!(&mut output, "{}", tool.description);
+            let _ = writeln!(&mut output);
+            let _ = writeln!(&mut output, "```json");
+            let schema = serde_json::to_string_pretty(&tool.input_schema)
+                .unwrap_or_else(|_| "{}".to_owned());
+            let _ = writeln!(&mut output, "{schema}");
+            let _ = writeln!(&mut output, "```");
+            let _ = writeln!(&mut output);
+        }
+    }
+
+    let _ = writeln!(&mut output, "# Messages");
+    let _ = writeln!(&mut output);
+    for message in &request.messages {
+        let _ = writeln!(&mut output, "## {}", message.role);
+        let _ = writeln!(&mut output);
+        let _ = writeln!(&mut output, "```text");
+        let _ = writeln!(&mut output, "{}", message.content);
+        let _ = writeln!(&mut output, "```");
+        let _ = writeln!(&mut output);
+    }
+
+    output
+}
+
+fn timestamp_prefix() -> String {
+    Local::now().format("%Y%m%d-%H%M%S").to_string()
+}
