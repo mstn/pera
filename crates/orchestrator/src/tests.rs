@@ -9,10 +9,10 @@ use crate::orchestrator::Orchestrator;
 use crate::streaming::ParticipantOutput;
 use crate::traits::{Environment, Evaluator, Participant};
 use crate::types::{
-    ActionExecution, EnvironmentEvent, EvalResult, FinishReason, ParticipantDecision,
-    ParticipantId, ParticipantInboxEvent, RunLimits, RunRequest,
-    SubmittedAction, TaskSpec, TerminationCondition, Trajectory, TrajectoryEvent,
-    WorkItemContinuationInput, WorkItemStatus,
+    ActionExecution, EnvironmentEvent, EvalResult, FinishReason,
+    InitialInboxMessage, ParticipantDecision, ParticipantId, ParticipantInboxEvent, RunLimits,
+    ParticipantInput, RunRequest, SubmittedAction, TaskSpec, TerminationCondition, Trajectory,
+    TrajectoryEvent,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,9 +43,9 @@ impl Participant for FakeParticipant {
         self.id.clone()
     }
 
-    async fn continue_work_item(
+    async fn respond(
         &mut self,
-        input: WorkItemContinuationInput<Self::Observation, Self::Action, Self::Outcome>,
+        input: ParticipantInput<Self::Observation, Self::Action, Self::Outcome>,
         _output: &mut dyn ParticipantOutput<Self::Action>,
     ) -> Result<ParticipantDecision<Self::Action>, ParticipantError> {
         self.seen_inboxes.lock().unwrap().push(input.inbox);
@@ -150,12 +150,13 @@ fn test_request() -> RunRequest {
             max_duration: None,
         },
         termination_condition: TerminationCondition::AllParticipantsFinished,
+        initial_messages: Vec::new(),
     }
 }
 
 #[tokio::test]
 async fn orchestrator_handles_single_participant_immediate_action() {
-    let participant = FakeParticipant {
+    let agent = FakeParticipant {
         id: ParticipantId::Agent,
         decisions: VecDeque::from([
             Ok(ParticipantDecision::Action {
@@ -166,6 +167,11 @@ async fn orchestrator_handles_single_participant_immediate_action() {
         ]),
         seen_inboxes: Arc::new(Mutex::new(Vec::new())),
     };
+    let user = FakeParticipant {
+        id: ParticipantId::User,
+        decisions: VecDeque::from([Ok(ParticipantDecision::Finish)]),
+        seen_inboxes: Arc::new(Mutex::new(Vec::new())),
+    };
     let environment = FakeEnvironment {
         observation: TestObservation("initial"),
         terminal: None,
@@ -173,9 +179,24 @@ async fn orchestrator_handles_single_participant_immediate_action() {
         submitted_events: VecDeque::new(),
         submitted_ids: VecDeque::new(),
     };
-    let mut orchestrator = Orchestrator::new(participant, environment);
+    let participants = vec![
+        Box::new(user) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
+        Box::new(agent) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
+    ];
+    let mut orchestrator = Orchestrator::from_participants(participants, environment);
+    let mut request = test_request();
+    request.initial_messages.push(InitialInboxMessage {
+        to: ParticipantId::Agent,
+        from: ParticipantId::User,
+        content: "go".to_owned(),
+    });
+    request.initial_messages.push(InitialInboxMessage {
+        to: ParticipantId::User,
+        from: ParticipantId::Custom("system".to_owned()),
+        content: "done".to_owned(),
+    });
 
-    let result = orchestrator.run(test_request()).await.unwrap();
+    let result = orchestrator.run(request).await.unwrap();
 
     assert_eq!(result.finish_reason, FinishReason::ParticipantsFinished);
     assert!(result.trajectory.events.iter().any(|event| matches!(
@@ -185,64 +206,11 @@ async fn orchestrator_handles_single_participant_immediate_action() {
 }
 
 #[tokio::test]
-async fn orchestrator_releases_work_item_on_final_message() {
-    let seen_agent = Arc::new(Mutex::new(Vec::new()));
-    let seen_user = Arc::new(Mutex::new(Vec::new()));
-    let user = FakeParticipant {
-        id: ParticipantId::User,
-        decisions: VecDeque::from([
-            Ok(ParticipantDecision::Message {
-                content: "hi".to_owned(),
-            }),
-            Ok(ParticipantDecision::Finish),
-        ]),
-        seen_inboxes: Arc::clone(&seen_user),
-    };
-    let agent = FakeParticipant {
-        id: ParticipantId::Agent,
-        decisions: VecDeque::from([
-            Ok(ParticipantDecision::FinalMessage {
-                content: "done".to_owned(),
-            }),
-            Ok(ParticipantDecision::Finish),
-        ]),
-        seen_inboxes: Arc::clone(&seen_agent),
-    };
-    let environment = FakeEnvironment {
-        observation: TestObservation("initial"),
-        terminal: None,
-        immediate_outcomes: VecDeque::new(),
-        submitted_events: VecDeque::new(),
-        submitted_ids: VecDeque::new(),
-    };
-    let participants = vec![
-        Box::new(user) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
-        Box::new(agent) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
-    ];
-    let mut orchestrator = Orchestrator::from_participants(participants, environment);
-
-    let result = orchestrator.run(test_request()).await.unwrap();
-
-    assert!(result.trajectory.events.iter().any(|event| matches!(
-        event,
-        TrajectoryEvent::WorkItemCompleted { work_item }
-            if work_item.status == WorkItemStatus::Completed
-    )));
-    assert!(result.trajectory.events.iter().any(|event| matches!(
-        event,
-        TrajectoryEvent::ParticipantMessage { participant, work_item, content }
-            if *participant == ParticipantId::Agent
-                && content == "done"
-                && work_item.status == WorkItemStatus::Completed
-    )));
-}
-
-#[tokio::test]
 async fn orchestrator_delivers_deferred_completion_via_inbox() {
     let seen_inboxes = Arc::new(Mutex::new(Vec::new()));
     let submitted_action_id =
         ActionId::parse_str("00000000-0000-0000-0000-000000000123").unwrap();
-    let participant = FakeParticipant {
+    let agent = FakeParticipant {
         id: ParticipantId::Agent,
         decisions: VecDeque::from([
             Ok(ParticipantDecision::Action {
@@ -253,6 +221,11 @@ async fn orchestrator_delivers_deferred_completion_via_inbox() {
             Ok(ParticipantDecision::Finish),
         ]),
         seen_inboxes: Arc::clone(&seen_inboxes),
+    };
+    let user = FakeParticipant {
+        id: ParticipantId::User,
+        decisions: VecDeque::from([Ok(ParticipantDecision::Finish)]),
+        seen_inboxes: Arc::new(Mutex::new(Vec::new())),
     };
     let environment = FakeEnvironment {
         observation: TestObservation("initial"),
@@ -268,14 +241,29 @@ async fn orchestrator_delivers_deferred_completion_via_inbox() {
         ]),
         submitted_ids: VecDeque::from([submitted_action_id]),
     };
-    let mut orchestrator = Orchestrator::new(participant, environment);
+    let participants = vec![
+        Box::new(user) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
+        Box::new(agent) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
+    ];
+    let mut orchestrator = Orchestrator::from_participants(participants, environment);
+    let mut request = test_request();
+    request.initial_messages.push(InitialInboxMessage {
+        to: ParticipantId::Agent,
+        from: ParticipantId::User,
+        content: "go".to_owned(),
+    });
+    request.initial_messages.push(InitialInboxMessage {
+        to: ParticipantId::User,
+        from: ParticipantId::Custom("system".to_owned()),
+        content: "done".to_owned(),
+    });
 
-    let result = orchestrator.run(test_request()).await.unwrap();
+    let result = orchestrator.run(request).await.unwrap();
     let inboxes = seen_inboxes.lock().unwrap();
 
     assert!(inboxes.iter().any(|inbox| inbox.iter().any(|event| matches!(
         event,
-        ParticipantInboxEvent::ActionCompleted { action_id, outcome, .. }
+        ParticipantInboxEvent::ActionCompleted { action_id, outcome }
             if *action_id == submitted_action_id && *outcome == TestOutcome("completed")
     ))));
     assert!(result.trajectory.events.iter().any(|event| matches!(
@@ -289,7 +277,7 @@ async fn orchestrator_blocks_participant_on_deferred_blocking_action() {
     let seen_inboxes = Arc::new(Mutex::new(Vec::new()));
     let submitted_action_id =
         ActionId::parse_str("00000000-0000-0000-0000-000000000124").unwrap();
-    let participant = FakeParticipant {
+    let agent = FakeParticipant {
         id: ParticipantId::Agent,
         decisions: VecDeque::from([
             Ok(ParticipantDecision::Action {
@@ -299,6 +287,11 @@ async fn orchestrator_blocks_participant_on_deferred_blocking_action() {
             Ok(ParticipantDecision::Finish),
         ]),
         seen_inboxes: Arc::clone(&seen_inboxes),
+    };
+    let user = FakeParticipant {
+        id: ParticipantId::User,
+        decisions: VecDeque::from([Ok(ParticipantDecision::Finish)]),
+        seen_inboxes: Arc::new(Mutex::new(Vec::new())),
     };
     let environment = FakeEnvironment {
         observation: TestObservation("initial"),
@@ -314,9 +307,24 @@ async fn orchestrator_blocks_participant_on_deferred_blocking_action() {
         ]),
         submitted_ids: VecDeque::from([submitted_action_id]),
     };
-    let mut orchestrator = Orchestrator::new(participant, environment);
+    let participants = vec![
+        Box::new(user) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
+        Box::new(agent) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
+    ];
+    let mut orchestrator = Orchestrator::from_participants(participants, environment);
+    let mut request = test_request();
+    request.initial_messages.push(InitialInboxMessage {
+        to: ParticipantId::Agent,
+        from: ParticipantId::User,
+        content: "go".to_owned(),
+    });
+    request.initial_messages.push(InitialInboxMessage {
+        to: ParticipantId::User,
+        from: ParticipantId::Custom("system".to_owned()),
+        content: "done".to_owned(),
+    });
 
-    let result = orchestrator.run(test_request()).await.unwrap();
+    let result = orchestrator.run(request).await.unwrap();
     let inbox_call_count = seen_inboxes.lock().unwrap().len();
 
     assert_eq!(result.finish_reason, FinishReason::ParticipantsFinished);
@@ -359,18 +367,24 @@ async fn orchestrator_alternates_two_participants() {
         Box::new(user) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
     ];
     let mut orchestrator = Orchestrator::from_participants(participants, environment);
+    let mut request = test_request();
+    request.initial_messages.push(InitialInboxMessage {
+        to: ParticipantId::User,
+        from: ParticipantId::Custom("system".to_owned()),
+        content: "start".to_owned(),
+    });
 
-    let result = orchestrator.run(test_request()).await.unwrap();
+    let result = orchestrator.run(request).await.unwrap();
 
     assert_eq!(result.finish_reason, FinishReason::ParticipantsFinished);
     assert!(result.trajectory.events.iter().any(|event| matches!(
         event,
-        TrajectoryEvent::ParticipantMessage { participant, content, .. }
+        TrajectoryEvent::ParticipantMessage { participant, content }
             if *participant == ParticipantId::Agent && content == "hello"
     )));
     assert!(result.trajectory.events.iter().any(|event| matches!(
         event,
-        TrajectoryEvent::ParticipantMessage { participant, content, .. }
+        TrajectoryEvent::ParticipantMessage { participant, content }
             if *participant == ParticipantId::User && content == "hi"
     )));
 }
@@ -395,7 +409,14 @@ async fn orchestrator_runs_evaluator_once_when_present() {
     };
     let mut orchestrator = Orchestrator::with_evaluator(participant, environment, evaluator);
 
-    let result = orchestrator.run(test_request()).await.unwrap();
+    let mut request = test_request();
+    request.initial_messages.push(InitialInboxMessage {
+        to: ParticipantId::Agent,
+        from: ParticipantId::Custom("system".to_owned()),
+        content: "start".to_owned(),
+    });
+
+    let result = orchestrator.run(request).await.unwrap();
 
     assert_eq!(*calls.lock().unwrap(), 1);
     assert_eq!(result.evaluation.unwrap().score, Some(1.0));
@@ -428,6 +449,11 @@ async fn orchestrator_can_terminate_when_a_specific_participant_finishes() {
     let mut request = test_request();
     request.termination_condition =
         TerminationCondition::AnyOfParticipantsFinished(vec![ParticipantId::User]);
+    request.initial_messages.push(InitialInboxMessage {
+        to: ParticipantId::User,
+        from: ParticipantId::Custom("system".to_owned()),
+        content: "start".to_owned(),
+    });
 
     let result = orchestrator.run(request).await.unwrap();
 
@@ -440,7 +466,7 @@ async fn orchestrator_can_terminate_when_a_specific_participant_finishes() {
 }
 
 #[tokio::test]
-async fn orchestrator_creates_and_routes_work_item_for_participant_message() {
+async fn orchestrator_routes_participant_message_to_other_mailboxes() {
     let seen_agent = Arc::new(Mutex::new(Vec::new()));
     let seen_user = Arc::new(Mutex::new(Vec::new()));
     let user = FakeParticipant {
@@ -470,20 +496,25 @@ async fn orchestrator_creates_and_routes_work_item_for_participant_message() {
         Box::new(agent) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
     ];
     let mut orchestrator = Orchestrator::from_participants(participants, environment);
+    let mut request = test_request();
+    request.initial_messages.push(InitialInboxMessage {
+        to: ParticipantId::User,
+        from: ParticipantId::Custom("system".to_owned()),
+        content: "start".to_owned(),
+    });
 
-    let result = orchestrator.run(test_request()).await.unwrap();
+    let result = orchestrator.run(request).await.unwrap();
     let agent_inboxes = seen_agent.lock().unwrap();
 
     assert!(result.trajectory.events.iter().any(|event| matches!(
         event,
-        TrajectoryEvent::WorkItemCreated { work_item }
-            if work_item.created_by == ParticipantId::User
+        TrajectoryEvent::ParticipantMessage { participant, content }
+            if *participant == ParticipantId::User && content == "hi"
     )));
     assert!(agent_inboxes.iter().any(|inbox| inbox.iter().any(|event| matches!(
         event,
-        ParticipantInboxEvent::Message { from, content, work_item }
+        ParticipantInboxEvent::Message { from, content }
             if *from == ParticipantId::User
                 && content == "hi"
-                && work_item.status == WorkItemStatus::Active
     ))));
 }

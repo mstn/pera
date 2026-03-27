@@ -3,8 +3,9 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use pera_orchestrator::{
-    CodeAction, Participant, ParticipantError, ParticipantId, ParticipantOutput,
-    RuntimeCodeEnvironment, RunLimits, RunRequest, TaskSpec, TerminationCondition,
+    CodeAction, InitialInboxMessage, Participant, ParticipantError, ParticipantId,
+    ParticipantOutput, RuntimeCodeEnvironment, RunLimits, RunRequest, TaskSpec,
+    TerminationCondition,
 };
 use pera_runtime::CodeEnvironment;
 use tokio::sync::mpsc;
@@ -64,6 +65,11 @@ pub async fn run_repl(root: &Path) -> Result<(), CliError> {
                 termination_condition: TerminationCondition::AnyOfParticipantsFinished(
                     vec![ParticipantId::User],
                 ),
+                initial_messages: vec![InitialInboxMessage {
+                    to: ParticipantId::User,
+                    from: ParticipantId::Custom("system".to_owned()),
+                    content: "start".to_owned(),
+                }],
             },
             &mut output,
         )

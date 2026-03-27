@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use crate::error::{EnvironmentError, EvaluatorError, ParticipantError};
 use crate::streaming::ParticipantOutput;
 use crate::types::{
-    EnvironmentEvent, EvalResult, ParticipantDecision, ParticipantId, WorkItemContinuationInput,
+    EnvironmentEvent, EvalResult, ParticipantDecision, ParticipantId, ParticipantInput,
     SubmittedAction, TaskSpec, Trajectory,
 };
 
@@ -15,9 +15,9 @@ pub trait Participant: Send {
 
     fn id(&self) -> ParticipantId;
 
-    async fn continue_work_item(
+    async fn respond(
         &mut self,
-        input: WorkItemContinuationInput<Self::Observation, Self::Action, Self::Outcome>,
+        input: ParticipantInput<Self::Observation, Self::Action, Self::Outcome>,
         output: &mut dyn ParticipantOutput<Self::Action>,
     ) -> Result<ParticipantDecision<Self::Action>, ParticipantError>;
 }

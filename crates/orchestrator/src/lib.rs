@@ -14,10 +14,10 @@ pub use runtime::{
 pub use streaming::{NoopParticipantOutput, ParticipantOutput};
 pub use traits::{Environment, Evaluator, NoopEvaluator, Participant};
 pub use types::{
-    ActionExecution, EnvironmentEvent, EvalResult, FinishReason, ParticipantDecision,
-    ParticipantId, ParticipantInboxEvent, RunLimits, RunRequest, RunResult, SubmittedAction,
-    TaskSpec, TerminationCondition, Trajectory, TrajectoryEvent, WorkItem, WorkItemContinuationInput,
-    WorkItemStatus,
+    ActionExecution, EnvironmentEvent, EvalResult, FinishReason,
+    InitialInboxMessage, ParticipantDecision, ParticipantId, ParticipantInboxEvent, RunLimits,
+    ParticipantInput, RunRequest, RunResult, SubmittedAction, TaskSpec, TerminationCondition, Trajectory,
+    TrajectoryEvent,
 };
 
 #[cfg(test)]

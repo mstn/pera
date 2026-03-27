@@ -1,16 +1,15 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::time::Instant;
 
-use pera_core::{ActionId, RunId, WorkItemId};
+use pera_core::{ActionId, RunId};
 
 use crate::error::EvaluatorError;
 use crate::streaming::{NoopParticipantOutput, ParticipantOutput};
 use crate::traits::{Environment, Evaluator, NoopEvaluator, Participant};
 use crate::types::{
-    ActionExecution, EnvironmentEvent, FinishReason, ParticipantDecision, ParticipantId,
-    ParticipantInboxEvent, RunRequest, RunResult, SubmittedAction,
-    TerminationCondition, Trajectory, TrajectoryEvent, WorkItem, WorkItemStatus,
-    WorkItemContinuationInput,
+    ActionExecution, EnvironmentEvent, FinishReason, InitialInboxMessage, ParticipantDecision,
+    ParticipantId, ParticipantInboxEvent, ParticipantInput, RunRequest, RunResult,
+    SubmittedAction, TerminationCondition, Trajectory, TrajectoryEvent,
 };
 
 type BoxedParticipant<O, A, U> = Box<dyn Participant<Observation = O, Action = A, Outcome = U>>;
@@ -23,191 +22,297 @@ struct RunCounters {
 }
 
 #[derive(Debug, Clone)]
-struct ParticipantRuntimeState<A, U> {
-    inbox: Vec<ParticipantInboxEvent<A, U>>,
-    current_work_item: Option<WorkItem>,
-    blocked_on_action: Option<ActionId>,
-    finished: bool,
-}
-
-impl<A, U> Default for ParticipantRuntimeState<A, U> {
-    fn default() -> Self {
-        Self {
-            inbox: Vec::new(),
-            current_work_item: None,
-            blocked_on_action: None,
-            finished: false,
-        }
-    }
+struct InitialMessage {
+    from: ParticipantId,
+    content: String,
 }
 
 #[derive(Debug, Clone)]
-struct WorkItemContinuation {
-    participant_id: ParticipantId,
-    participant_index: usize,
-    work_item: Option<WorkItem>,
+struct WorkItem {
+    initial_message: InitialMessage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentLoopStatus {
+    Ready,
+    WaitingOnEnvironment { action_id: ActionId },
+}
+
+#[derive(Debug, Clone)]
+struct AgentLoopInput<O, A, U> {
+    run_id: RunId,
+    task: crate::types::TaskSpec,
+    limits: crate::types::RunLimits,
+    observation: O,
+    trajectory: Trajectory<O, A, U>,
+}
+
+struct AgentLoop<O, A, U> {
+    participant: BoxedParticipant<O, A, U>,
+    inbox: Vec<ParticipantInboxEvent<A, U>>,
+    work_item: WorkItem,
+    status: AgentLoopStatus,
+}
+
+impl<O, A, U> AgentLoop<O, A, U>
+where
+    O: Clone + Send + Sync + 'static,
+    A: Clone + Send + Sync + 'static,
+    U: Clone + Send + Sync + 'static,
+{
+    fn start(
+        participant: BoxedParticipant<O, A, U>,
+        inbox: Vec<ParticipantInboxEvent<A, U>>,
+        initial_message: InitialMessage,
+    ) -> Self {
+        Self {
+            participant,
+            inbox,
+            work_item: WorkItem { initial_message },
+            status: AgentLoopStatus::Ready,
+        }
+    }
+
+    fn participant_id(&self) -> ParticipantId {
+        self.participant.id()
+    }
+
+    fn has_mail(&self) -> bool {
+        !self.inbox.is_empty()
+    }
+
+    fn can_continue(&self) -> bool {
+        matches!(self.status, AgentLoopStatus::Ready)
+    }
+
+    fn deliver(&mut self, event: ParticipantInboxEvent<A, U>) {
+        self.inbox.push(event);
+    }
+
+    fn on_mailbox_updated(&mut self) {
+        if self.has_mail() && matches!(self.status, AgentLoopStatus::WaitingOnEnvironment { .. }) {
+            self.status = AgentLoopStatus::Ready;
+        }
+    }
+
+    fn block_on_action(&mut self, action_id: ActionId) {
+        self.status = AgentLoopStatus::WaitingOnEnvironment { action_id };
+    }
+
+    fn into_participant(self) -> BoxedParticipant<O, A, U> {
+        self.participant
+    }
+
+    async fn continue_with(
+        &mut self,
+        input: AgentLoopInput<O, A, U>,
+        output: &mut dyn ParticipantOutput<A>,
+    ) -> Result<ParticipantDecision<A>, crate::error::ParticipantError> {
+        self.on_mailbox_updated();
+        let _ = (
+            &self.work_item.initial_message.from,
+            &self.work_item.initial_message.content,
+        );
+        let input = ParticipantInput {
+            run_id: input.run_id,
+            participant: self.participant.id(),
+            task: input.task,
+            limits: input.limits,
+            observation: input.observation,
+            inbox: std::mem::take(&mut self.inbox),
+            trajectory: input.trajectory,
+        };
+        self.participant.respond(input, output).await
+    }
+}
+
+struct ParticipantState<O, A, U> {
+    participant: Option<BoxedParticipant<O, A, U>>,
+    pending_inbox: Vec<ParticipantInboxEvent<A, U>>,
+    agent_loop: Option<AgentLoop<O, A, U>>,
+    finished: bool,
+}
+
+impl<O, A, U> ParticipantState<O, A, U>
+where
+    O: Clone + Send + Sync + 'static,
+    A: Clone + Send + Sync + 'static,
+    U: Clone + Send + Sync + 'static,
+{
+    fn new(participant: BoxedParticipant<O, A, U>) -> Self {
+        Self {
+            participant: Some(participant),
+            pending_inbox: Vec::new(),
+            agent_loop: None,
+            finished: false,
+        }
+    }
+
+    fn id(&self) -> ParticipantId {
+        if let Some(agent_loop) = &self.agent_loop {
+            agent_loop.participant_id()
+        } else {
+            self.participant
+                .as_ref()
+                .expect("idle participant must be present")
+                .id()
+        }
+    }
+
+    fn has_startable_message(&self) -> bool {
+        startable_message(&self.pending_inbox).is_some()
+    }
+
+    fn deliver(&mut self, event: ParticipantInboxEvent<A, U>) {
+        if let Some(agent_loop) = &mut self.agent_loop {
+            agent_loop.deliver(event);
+        } else {
+            self.pending_inbox.push(event);
+        }
+    }
+
+    fn is_runnable(&self) -> bool {
+        if self.finished {
+            return false;
+        }
+        match &self.agent_loop {
+            Some(agent_loop) => agent_loop.can_continue() || agent_loop.has_mail(),
+            None => self.has_startable_message(),
+        }
+    }
+
+    fn start_loop(&mut self) -> Option<&mut AgentLoop<O, A, U>> {
+        let initial_message = startable_message(&self.pending_inbox)?;
+        let participant = self
+            .participant
+            .take()
+            .expect("idle participant must be available when starting loop");
+        let inbox = std::mem::take(&mut self.pending_inbox);
+        self.agent_loop = Some(AgentLoop::start(participant, inbox, initial_message));
+        self.agent_loop.as_mut()
+    }
+
+    fn get_or_start_loop(&mut self) -> Option<&mut AgentLoop<O, A, U>> {
+        if self.agent_loop.is_none() {
+            self.start_loop()?;
+        }
+        self.agent_loop.as_mut()
+    }
+
+    fn complete_loop(&mut self) {
+        if let Some(agent_loop) = self.agent_loop.take() {
+            self.participant = Some(agent_loop.into_participant());
+        }
+    }
+
+    fn finish(&mut self) {
+        self.finished = true;
+        self.pending_inbox.clear();
+        self.complete_loop();
+    }
+
+    fn into_participant(self) -> BoxedParticipant<O, A, U> {
+        match (self.participant, self.agent_loop) {
+            (Some(participant), None) => participant,
+            (None, Some(agent_loop)) => agent_loop.into_participant(),
+            (Some(_), Some(_)) => unreachable!("participant and agent loop cannot coexist"),
+            (None, None) => unreachable!("participant state must retain a participant"),
+        }
+    }
 }
 
 struct RunState<O, A, U> {
     observation: O,
     trajectory: Trajectory<O, A, U>,
     pending_actions: BTreeSet<ActionId>,
-    action_work_items: BTreeMap<ActionId, WorkItem>,
-    participants: BTreeMap<ParticipantId, ParticipantRuntimeState<A, U>>,
+    participants: Vec<ParticipantState<O, A, U>>,
 }
 
 impl<O, A, U> RunState<O, A, U>
 where
-    O: Clone,
-    A: Clone,
-    U: Clone,
+    O: Clone + Send + Sync + 'static,
+    A: Clone + Send + Sync + 'static,
+    U: Clone + Send + Sync + 'static,
 {
     fn new(
         run_id: RunId,
         task: &crate::types::TaskSpec,
         observation: O,
-        participants: &[ParticipantId],
+        participants: Vec<BoxedParticipant<O, A, U>>,
+        initial_messages: &[InitialInboxMessage],
     ) -> Self {
         let mut trajectory = Trajectory::new(run_id);
-        trajectory.events.push(TrajectoryEvent::SessionStarted {
-            task: task.clone(),
-        });
-        trajectory.events.push(TrajectoryEvent::ObservationRecorded {
+        trajectory.push(TrajectoryEvent::SessionStarted { task: task.clone() });
+        trajectory.push(TrajectoryEvent::ObservationRecorded {
             observation: observation.clone(),
         });
 
-        let participants = participants
-            .iter()
-            .cloned()
-            .map(|participant| (participant, ParticipantRuntimeState::default()))
-            .collect();
-
-        Self {
+        let mut state = Self {
             observation,
             trajectory,
             pending_actions: BTreeSet::new(),
-            action_work_items: BTreeMap::new(),
-            participants,
+            participants: participants.into_iter().map(ParticipantState::new).collect(),
+        };
+
+        for message in initial_messages {
+            if let Some(participant) = state.participant_mut(&message.to) {
+                participant.deliver(ParticipantInboxEvent::Message {
+                    from: message.from.clone(),
+                    content: message.content.clone(),
+                });
+            }
         }
+
+        state
+    }
+
+    fn into_parts(self) -> (Vec<BoxedParticipant<O, A, U>>, Trajectory<O, A, U>) {
+        let participants = self
+            .participants
+            .into_iter()
+            .map(ParticipantState::into_participant)
+            .collect();
+        (participants, self.trajectory)
+    }
+
+    fn finished_participants(&self) -> BTreeSet<ParticipantId> {
+        self.participants
+            .iter()
+            .filter(|participant| participant.finished)
+            .map(ParticipantState::id)
+            .collect()
     }
 
     fn record_observation(&mut self, observation: O) {
         self.observation = observation.clone();
         self.trajectory
-            .events
             .push(TrajectoryEvent::ObservationRecorded { observation });
     }
 
-    fn continuation_input(
+    fn participant_mut(
         &mut self,
-        run_id: RunId,
         participant: &ParticipantId,
-        request: &RunRequest,
-    ) -> WorkItemContinuationInput<O, A, U> {
-        let state = self
-            .participants
-            .get_mut(participant)
-            .expect("participant runtime state must exist");
-        WorkItemContinuationInput {
-            run_id,
-            participant: participant.clone(),
-            current_work_item: state.current_work_item.clone(),
-            task: request.task.clone(),
-            limits: request.limits,
-            observation: self.observation.clone(),
-            inbox: std::mem::take(&mut state.inbox),
-            trajectory: self.trajectory.clone(),
-        }
-    }
-
-    fn work_item_for_message(&mut self, participant: &ParticipantId) -> WorkItem {
-        if let Some(work_item) = self
-            .participants
-            .get(participant)
-            .and_then(|state| state.current_work_item.clone())
-        {
-            return work_item;
-        }
-
-        let work_item = WorkItem {
-            id: WorkItemId::generate(),
-            created_by: participant.clone(),
-            status: WorkItemStatus::Active,
-        };
-        self.trajectory.push(TrajectoryEvent::WorkItemCreated {
-            work_item: work_item.clone(),
-        });
+    ) -> Option<&mut ParticipantState<O, A, U>> {
         self.participants
-            .get_mut(participant)
-            .expect("participant runtime state must exist")
-            .current_work_item = Some(work_item.clone());
-        work_item
+            .iter_mut()
+            .find(|state| state.id() == *participant)
     }
 
-    fn work_item_for_action(&self, participant: &ParticipantId) -> Option<WorkItem> {
-        self.participants
-            .get(participant)
-            .and_then(|state| state.current_work_item.clone())
-    }
-
-    fn complete_work_item(&mut self, work_item_id: WorkItemId) {
-        for participant_state in self.participants.values_mut() {
-            if participant_state
-                .current_work_item
-                .as_ref()
-                .is_some_and(|work_item| work_item.id == work_item_id)
-            {
-                participant_state.current_work_item = None;
-            }
-
-            for event in &mut participant_state.inbox {
-                match event {
-                    ParticipantInboxEvent::Message { work_item, .. }
-                        if work_item.id == work_item_id =>
-                    {
-                        work_item.status = WorkItemStatus::Completed;
-                    }
-                    ParticipantInboxEvent::Message { .. } => {}
-                    ParticipantInboxEvent::ActionAccepted { work_item, .. }
-                    | ParticipantInboxEvent::ActionCompleted { work_item, .. }
-                    | ParticipantInboxEvent::ActionFailed { work_item, .. }
-                    | ParticipantInboxEvent::Notification { work_item, .. } => {
-                        if let Some(work_item) = work_item.as_mut() {
-                            if work_item.id == work_item_id {
-                                work_item.status = WorkItemStatus::Completed;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn route_participant_message(
-        &mut self,
-        from: &ParticipantId,
-        work_item: &WorkItem,
-        content: &str,
-    ) {
-        for (participant_id, participant_state) in &mut self.participants {
-            if participant_id == from || participant_state.finished {
+    fn route_participant_message(&mut self, from: &ParticipantId, content: &str) {
+        for participant in &mut self.participants {
+            if participant.finished || participant.id() == *from {
                 continue;
             }
-
-            participant_state.inbox.push(ParticipantInboxEvent::Message {
+            participant.deliver(ParticipantInboxEvent::Message {
                 from: from.clone(),
-                work_item: work_item.clone(),
                 content: content.to_owned(),
             });
-            participant_state.current_work_item = Some(work_item.clone());
         }
     }
 
-    fn mark_participant_finished(&mut self, participant: &ParticipantId) {
-        if let Some(state) = self.participants.get_mut(participant) {
-            state.finished = true;
-            state.current_work_item = None;
-            state.blocked_on_action = None;
+    fn finish_participant(&mut self, participant: &ParticipantId) {
+        if let Some(participant) = self.participant_mut(participant) {
+            participant.finish();
         }
     }
 
@@ -218,22 +323,9 @@ where
                 action_id,
                 action,
             } => {
-                let work_item = self.action_work_items.get(&action_id).cloned();
-                if let Some(work_item) = &work_item {
-                    self.participants
-                        .get_mut(&participant)
-                        .expect("participant runtime state must exist")
-                        .current_work_item = Some(work_item.clone());
+                if let Some(participant) = self.participant_mut(&participant) {
+                    participant.deliver(ParticipantInboxEvent::ActionAccepted { action_id, action });
                 }
-                self.participants
-                    .get_mut(&participant)
-                    .expect("participant runtime state must exist")
-                    .inbox
-                    .push(ParticipantInboxEvent::ActionAccepted {
-                        work_item,
-                        action_id,
-                        action,
-                    });
             }
             EnvironmentEvent::ActionCompleted {
                 participant,
@@ -241,32 +333,17 @@ where
                 outcome,
             } => {
                 self.pending_actions.remove(&action_id);
-                let work_item = self.action_work_items.remove(&action_id).map(|work_item| WorkItem {
-                    status: WorkItemStatus::Active,
-                    ..work_item
+                self.trajectory.push(TrajectoryEvent::ActionCompleted {
+                    participant: participant.clone(),
+                    action_id,
+                    outcome: outcome.clone(),
                 });
-                if let Some(work_item) = &work_item {
-                    self.participants
-                        .get_mut(&participant)
-                        .expect("participant runtime state must exist")
-                        .current_work_item = Some(work_item.clone());
-                }
-                if let Some(state) = self.participants.get_mut(&participant) {
-                    if state.blocked_on_action == Some(action_id) {
-                        state.blocked_on_action = None;
-                    }
-                    state.inbox.push(ParticipantInboxEvent::ActionCompleted {
-                        work_item: work_item.clone(),
+                if let Some(participant) = self.participant_mut(&participant) {
+                    participant.deliver(ParticipantInboxEvent::ActionCompleted {
                         action_id,
-                        outcome: outcome.clone(),
+                        outcome,
                     });
                 }
-                self.trajectory.push(TrajectoryEvent::ActionCompleted {
-                    work_item,
-                    participant,
-                    action_id,
-                    outcome,
-                });
             }
             EnvironmentEvent::ActionFailed {
                 participant,
@@ -274,55 +351,24 @@ where
                 error,
             } => {
                 self.pending_actions.remove(&action_id);
-                let work_item = self.action_work_items.remove(&action_id).map(|work_item| WorkItem {
-                    status: WorkItemStatus::Active,
-                    ..work_item
-                });
-                if let Some(work_item) = &work_item {
-                    self.participants
-                        .get_mut(&participant)
-                        .expect("participant runtime state must exist")
-                        .current_work_item = Some(work_item.clone());
-                }
-                if let Some(state) = self.participants.get_mut(&participant) {
-                    if state.blocked_on_action == Some(action_id) {
-                        state.blocked_on_action = None;
-                    }
-                    state.inbox.push(ParticipantInboxEvent::ActionFailed {
-                        work_item: work_item.clone(),
-                        action_id,
-                        error: error.clone(),
-                    });
-                }
                 self.trajectory.push(TrajectoryEvent::ActionFailed {
-                    work_item,
-                    participant,
+                    participant: participant.clone(),
                     action_id,
-                    error,
+                    error: error.clone(),
                 });
+                if let Some(participant) = self.participant_mut(&participant) {
+                    participant.deliver(ParticipantInboxEvent::ActionFailed { action_id, error });
+                }
             }
             EnvironmentEvent::Notification {
                 participant,
                 message,
             } => {
-                let work_item = self
-                    .participants
-                    .get(&participant)
-                    .and_then(|state| state.current_work_item.clone());
-                self.participants
-                    .get_mut(&participant)
-                    .expect("participant runtime state must exist")
-                    .inbox
-                    .push(ParticipantInboxEvent::Notification { work_item, message });
+                if let Some(participant) = self.participant_mut(&participant) {
+                    participant.deliver(ParticipantInboxEvent::Notification { message });
+                }
             }
         }
-    }
-
-    fn finished_participants(&self) -> BTreeSet<ParticipantId> {
-        self.participants
-            .iter()
-            .filter_map(|(participant, state)| state.finished.then_some(participant.clone()))
-            .collect()
     }
 }
 
@@ -443,8 +489,14 @@ where
             }
         };
 
-        let participant_ids = self.participants.iter().map(|p| p.id()).collect::<Vec<_>>();
-        let mut state = RunState::new(run_id, &request.task, initial_observation, &participant_ids);
+        let participants = std::mem::take(&mut self.participants);
+        let mut state = RunState::new(
+            run_id,
+            &request.task,
+            initial_observation,
+            participants,
+            &request.initial_messages,
+        );
 
         let finish_reason = loop {
             if let Some(reason) = self.enforce_run_limits(&request, &started_at, &counters) {
@@ -459,69 +511,82 @@ where
             if let Some(reason) = termination_condition_met(
                 &request.termination_condition,
                 &finished_participants,
-                self.participants.len(),
+                state.participants.len(),
                 None,
             ) {
                 break reason;
             }
 
-            let Some(continuation) = self.next_work_item_continuation(&state) else {
+            let Some(participant_index) = self.pick_next_participant(&state) else {
                 if state.pending_actions.is_empty() {
                     break FinishReason::Deadlocked;
                 }
                 continue;
             };
 
-            let decision = {
-                let input = state.continuation_input(run_id, &continuation.participant_id, &request);
-                let participant = &mut self.participants[continuation.participant_index];
-                participant.continue_work_item(input, output).await
+            let participant = &mut state.participants[participant_index];
+            let participant_id = participant.id();
+            let Some(agent_loop) = participant.get_or_start_loop() else {
+                continue;
             };
+
+            let decision = agent_loop
+                .continue_with(
+                    AgentLoopInput {
+                        run_id,
+                        task: request.task.clone(),
+                        limits: request.limits,
+                        observation: state.observation.clone(),
+                        trajectory: state.trajectory.clone(),
+                    },
+                    output,
+                )
+                .await;
 
             match decision {
                 Ok(decision) => {
-                    if let Some(reason) = self.apply_participant_decision(
-                        &request,
-                        continuation,
-                        decision,
-                        &mut state,
-                        &mut counters,
-                        output,
-                    )
-                    .await?
+                    if let Some(reason) = self
+                        .apply_decision(
+                            &request,
+                            participant_id,
+                            decision,
+                            &mut state,
+                            &mut counters,
+                            output,
+                        )
+                        .await?
                     {
                         break reason;
                     }
                 }
                 Err(error) => {
                     break FinishReason::ParticipantError {
-                        participant: continuation.participant_id,
+                        participant: participant_id,
                         message: error.to_string(),
                     };
                 }
             }
         };
 
-        state
-            .trajectory
-            .push(TrajectoryEvent::SessionFinished {
-                reason: finish_reason.clone(),
-            });
+        state.trajectory.push(TrajectoryEvent::SessionFinished {
+            reason: finish_reason.clone(),
+        });
 
         if let Some(evaluator) = &self.evaluator {
             let result = evaluator.evaluate(&request.task, &state.trajectory).await?;
-            state
-                .trajectory
-                .push(TrajectoryEvent::EvaluationCompleted {
-                    result: result.clone(),
-                });
+            state.trajectory.push(TrajectoryEvent::EvaluationCompleted {
+                result: result.clone(),
+            });
             evaluation = Some(result);
         }
+
+        let (participants, trajectory) = state.into_parts();
+        self.participants = participants;
 
         Ok(RunResult {
             run_id,
             finish_reason,
-            trajectory: state.trajectory,
+            trajectory,
             evaluation,
         })
     }
@@ -535,10 +600,10 @@ where
         if counters.step_count >= request.limits.max_steps {
             return Some(FinishReason::StepLimitExceeded);
         }
-        if let Some(max_duration) = request.limits.max_duration {
-            if started_at.elapsed() >= max_duration {
-                return Some(FinishReason::TimeLimitExceeded);
-            }
+        if let Some(max_duration) = request.limits.max_duration
+            && started_at.elapsed() >= max_duration
+        {
+            return Some(FinishReason::TimeLimitExceeded);
         }
         None
     }
@@ -572,59 +637,45 @@ where
         Ok(None)
     }
 
-    fn next_work_item_continuation(
+    fn pick_next_participant(
         &mut self,
         state: &RunState<E::Observation, E::Action, E::Outcome>,
-    ) -> Option<WorkItemContinuation> {
-        if self.participants.is_empty() {
+    ) -> Option<usize> {
+        if state.participants.is_empty() {
             return None;
         }
 
-        for offset in 0..self.participants.len() {
-            let index = (self.next_participant_index + offset) % self.participants.len();
-            let participant_id = self.participants[index].id();
-            let runtime_state = state
-                .participants
-                .get(&participant_id)
-                .expect("participant runtime state must exist");
-            if runtime_state.finished || runtime_state.blocked_on_action.is_some() {
+        for offset in 0..state.participants.len() {
+            let index = (self.next_participant_index + offset) % state.participants.len();
+            if !state.participants[index].is_runnable() {
                 continue;
             }
 
-            self.next_participant_index = (index + 1) % self.participants.len();
-            return Some(WorkItemContinuation {
-                participant_id,
-                participant_index: index,
-                work_item: runtime_state.current_work_item.clone(),
-            });
+            self.next_participant_index = (index + 1) % state.participants.len();
+            return Some(index);
         }
 
         None
     }
 
-    async fn apply_participant_decision(
+    async fn apply_decision(
         &mut self,
         request: &RunRequest,
-        continuation: WorkItemContinuation,
+        participant_id: ParticipantId,
         decision: ParticipantDecision<E::Action>,
         state: &mut RunState<E::Observation, E::Action, E::Outcome>,
         counters: &mut RunCounters,
         output: &mut dyn ParticipantOutput<E::Action>,
     ) -> Result<Option<FinishReason>, EvaluatorError> {
-        let participant_id = continuation.participant_id;
         match decision {
             ParticipantDecision::Message { content } => {
                 counters.step_count += 1;
                 counters.message_count += 1;
-
-                let work_item = state.work_item_for_message(&participant_id);
                 state.trajectory.push(TrajectoryEvent::ParticipantMessage {
-                    work_item: work_item.clone(),
                     participant: participant_id.clone(),
                     content: content.clone(),
                 });
-                state.route_participant_message(&participant_id, &work_item, &content);
-
+                state.route_participant_message(&participant_id, &content);
                 if counters.message_count > request.limits.max_messages {
                     return Ok(Some(FinishReason::MessageLimitExceeded));
                 }
@@ -632,23 +683,14 @@ where
             ParticipantDecision::FinalMessage { content } => {
                 counters.step_count += 1;
                 counters.message_count += 1;
-
-                let work_item = state.work_item_for_message(&participant_id);
-                let completed_work_item = WorkItem {
-                    status: WorkItemStatus::Completed,
-                    ..work_item
-                };
                 state.trajectory.push(TrajectoryEvent::ParticipantMessage {
-                    work_item: completed_work_item.clone(),
                     participant: participant_id.clone(),
                     content: content.clone(),
                 });
-                state.route_participant_message(&participant_id, &completed_work_item, &content);
-                state.trajectory.push(TrajectoryEvent::WorkItemCompleted {
-                    work_item: completed_work_item.clone(),
-                });
-                state.complete_work_item(completed_work_item.id);
-
+                state.route_participant_message(&participant_id, &content);
+                if let Some(participant) = state.participant_mut(&participant_id) {
+                    participant.complete_loop();
+                }
                 if counters.message_count > request.limits.max_messages {
                     return Ok(Some(FinishReason::MessageLimitExceeded));
                 }
@@ -656,10 +698,7 @@ where
             ParticipantDecision::Action { action, execution } => {
                 counters.step_count += 1;
                 counters.action_count += 1;
-
-                let work_item = continuation.work_item.or_else(|| state.work_item_for_action(&participant_id));
                 state.trajectory.push(TrajectoryEvent::ActionRequested {
-                    work_item: work_item.clone(),
                     participant: participant_id.clone(),
                     action: action.clone(),
                     execution,
@@ -679,33 +718,9 @@ where
                                 ))
                             })?;
                         let action_id = ActionId::generate();
-                        if let Some(work_item) = &work_item {
-                            state.action_work_items.insert(
-                                action_id,
-                                WorkItem {
-                                    status: WorkItemStatus::WaitingOnEnvironment,
-                                    ..work_item.clone()
-                                },
-                            );
-                        }
-
                         match self.environment.step(participant_id.clone(), action).await {
                             Ok(outcome) => {
-                                let work_item = state.action_work_items.remove(&action_id).map(|work_item| {
-                                    WorkItem {
-                                        status: WorkItemStatus::Active,
-                                        ..work_item
-                                    }
-                                });
-                                if let Some(work_item) = &work_item {
-                                    state
-                                        .participants
-                                        .get_mut(&participant_id)
-                                        .expect("participant runtime state must exist")
-                                        .current_work_item = Some(work_item.clone());
-                                }
                                 state.trajectory.push(TrajectoryEvent::ActionCompleted {
-                                    work_item,
                                     participant: participant_id,
                                     action_id,
                                     outcome,
@@ -719,7 +734,6 @@ where
                             }
                             Err(error) => {
                                 state.trajectory.push(TrajectoryEvent::ActionFailed {
-                                    work_item: state.action_work_items.remove(&action_id),
                                     participant: participant_id,
                                     action_id,
                                     error: error.to_string(),
@@ -744,37 +758,26 @@ where
                             .await
                         {
                             Ok(SubmittedAction { action_id }) => {
-                                if let Some(work_item) = &work_item {
-                                    state.action_work_items.insert(
-                                        action_id,
-                                        WorkItem {
-                                            status: WorkItemStatus::WaitingOnEnvironment,
-                                            ..work_item.clone()
-                                        },
-                                    );
-                                }
                                 state.trajectory.push(TrajectoryEvent::ActionSubmitted {
-                                    work_item: work_item.clone(),
                                     participant: participant_id.clone(),
                                     action_id,
                                     action: action.clone(),
                                     execution,
                                 });
-                                let participant_state = state
-                                    .participants
-                                    .get_mut(&participant_id)
-                                    .expect("participant runtime state must exist");
-                                participant_state.inbox.push(
-                                    ParticipantInboxEvent::ActionAccepted {
-                                        work_item,
+                                if let Some(participant) = state.participant_mut(&participant_id) {
+                                    participant.deliver(ParticipantInboxEvent::ActionAccepted {
                                         action_id,
                                         action,
-                                    },
-                                );
-                                state.pending_actions.insert(action_id);
-                                if blocking {
-                                    participant_state.blocked_on_action = Some(action_id);
+                                    });
+                                    if blocking {
+                                        participant
+                                            .agent_loop
+                                            .as_mut()
+                                            .expect("agent loop must exist before blocking")
+                                            .block_on_action(action_id);
+                                    }
                                 }
+                                state.pending_actions.insert(action_id);
                             }
                             Err(error) => {
                                 return Ok(Some(FinishReason::EnvironmentError(error.to_string())));
@@ -790,15 +793,15 @@ where
                 });
             }
             ParticipantDecision::Finish => {
-                state.mark_participant_finished(&participant_id);
+                state.finish_participant(&participant_id);
                 state.trajectory.push(TrajectoryEvent::ParticipantFinished {
                     participant: participant_id.clone(),
                 });
-                let finished = state.finished_participants();
+                let finished_participants = state.finished_participants();
                 if let Some(reason) = termination_condition_met(
                     &request.termination_condition,
-                    &finished,
-                    self.participants.len(),
+                    &finished_participants,
+                    state.participants.len(),
                     Some(&participant_id),
                 ) {
                     return Ok(Some(reason));
@@ -808,6 +811,16 @@ where
 
         Ok(None)
     }
+}
+
+fn startable_message<A, U>(inbox: &[ParticipantInboxEvent<A, U>]) -> Option<InitialMessage> {
+    inbox.iter().find_map(|event| match event {
+        ParticipantInboxEvent::Message { from, content } => Some(InitialMessage {
+            from: from.clone(),
+            content: content.clone(),
+        }),
+        _ => None,
+    })
 }
 
 fn termination_condition_met(

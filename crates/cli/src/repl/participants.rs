@@ -1,9 +1,7 @@
 use async_trait::async_trait;
 use pera_orchestrator::{
     CodeAction, Participant, ParticipantDecision, ParticipantError, ParticipantId,
-    ParticipantInboxEvent, ParticipantOutput, TrajectoryEvent, WorkItem,
-    WorkItemContinuationInput,
-    WorkItemStatus,
+    ParticipantInboxEvent, ParticipantInput, ParticipantOutput, TrajectoryEvent,
 };
 use tokio::sync::mpsc;
 
@@ -23,9 +21,9 @@ impl Participant for HumanParticipant {
         ParticipantId::User
     }
 
-    async fn continue_work_item(
+    async fn respond(
         &mut self,
-        _input: WorkItemContinuationInput<Self::Observation, Self::Action, Self::Outcome>,
+        _input: ParticipantInput<Self::Observation, Self::Action, Self::Outcome>,
         _output: &mut dyn ParticipantOutput<Self::Action>,
     ) -> Result<ParticipantDecision<Self::Action>, ParticipantError> {
         let mut buffer = String::new();
@@ -64,9 +62,9 @@ impl Participant for DemoAgentParticipant {
         ParticipantId::Agent
     }
 
-    async fn continue_work_item(
+    async fn respond(
         &mut self,
-        input: WorkItemContinuationInput<Self::Observation, Self::Action, Self::Outcome>,
+        input: ParticipantInput<Self::Observation, Self::Action, Self::Outcome>,
         output: &mut dyn ParticipantOutput<Self::Action>,
     ) -> Result<ParticipantDecision<Self::Action>, ParticipantError> {
         let Some(user_message) = last_user_message(&input) else {
@@ -92,7 +90,7 @@ impl Participant for DemoAgentParticipant {
 }
 
 fn last_user_message(
-    input: &WorkItemContinuationInput<
+    input: &ParticipantInput<
         pera_orchestrator::CodeObservation,
         CodeAction,
         pera_orchestrator::CodeOutcome,
@@ -102,7 +100,6 @@ fn last_user_message(
         ParticipantInboxEvent::Message {
             from: ParticipantId::User,
             content,
-            ..
         } => Some(content.as_str()),
         _ => None,
     }) {
@@ -113,7 +110,6 @@ fn last_user_message(
         matches!(event, TrajectoryEvent::ParticipantMessage { .. })
     }) {
         Some(TrajectoryEvent::ParticipantMessage {
-            work_item: _,
             participant: ParticipantId::User,
             content,
         }) => Some(content.as_str()),
@@ -124,10 +120,8 @@ fn last_user_message(
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
-    use pera_core::{RunId, WorkItemId};
-    use pera_orchestrator::{
-        CodeObservation, RunLimits, TaskSpec, Trajectory,
-    };
+    use pera_core::RunId;
+    use pera_orchestrator::{CodeObservation, RunLimits, TaskSpec, Trajectory};
 
     use super::*;
 
@@ -163,11 +157,10 @@ mod tests {
 
     fn test_input(
         events: Vec<TrajectoryEvent<CodeObservation, CodeAction, pera_orchestrator::CodeOutcome>>,
-    ) -> WorkItemContinuationInput<CodeObservation, CodeAction, pera_orchestrator::CodeOutcome> {
-        WorkItemContinuationInput {
+    ) -> ParticipantInput<CodeObservation, CodeAction, pera_orchestrator::CodeOutcome> {
+        ParticipantInput {
             run_id: RunId::generate(),
             participant: ParticipantId::Agent,
-            current_work_item: None,
             task: TaskSpec {
                 id: "repl".to_owned(),
                 instructions: "test".to_owned(),
@@ -196,18 +189,16 @@ mod tests {
         };
         let input = test_input(vec![
             TrajectoryEvent::ParticipantMessage {
-                work_item: test_work_item(),
                 participant: ParticipantId::User,
                 content: "hello".to_owned(),
             },
             TrajectoryEvent::ParticipantMessage {
-                work_item: test_work_item(),
                 participant: ParticipantId::Agent,
                 content: "Echo: hello".to_owned(),
             },
         ]);
 
-        let decision = participant.continue_work_item(input, &mut output).await.unwrap();
+        let decision = participant.respond(input, &mut output).await.unwrap();
 
         assert_eq!(decision, ParticipantDecision::Yield);
         assert!(output.chunks.is_empty());
@@ -220,12 +211,11 @@ mod tests {
             chunks: String::new(),
         };
         let input = test_input(vec![TrajectoryEvent::ParticipantMessage {
-            work_item: test_work_item(),
             participant: ParticipantId::User,
             content: "hello".to_owned(),
         }]);
 
-        let decision = participant.continue_work_item(input, &mut output).await.unwrap();
+        let decision = participant.respond(input, &mut output).await.unwrap();
 
         assert_eq!(
             decision,
@@ -245,11 +235,10 @@ mod tests {
         let mut input = test_input(Vec::new());
         input.inbox.push(ParticipantInboxEvent::Message {
             from: ParticipantId::User,
-            work_item: test_work_item(),
             content: "from inbox".to_owned(),
         });
 
-        let decision = participant.continue_work_item(input, &mut output).await.unwrap();
+        let decision = participant.respond(input, &mut output).await.unwrap();
 
         assert_eq!(
             decision,
@@ -258,13 +247,5 @@ mod tests {
             }
         );
         assert_eq!(output.chunks, "Echo: from inbox");
-    }
-
-    fn test_work_item() -> WorkItem {
-        WorkItem {
-            id: WorkItemId::generate(),
-            created_by: ParticipantId::User,
-            status: WorkItemStatus::Active,
-        }
     }
 }
