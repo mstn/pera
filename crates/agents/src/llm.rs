@@ -198,23 +198,23 @@ where
             &request,
         )?;
 
+        output.message_start(&ParticipantId::Agent).await?;
         let mut stream = self.provider.stream(request).await?;
         let mut content = String::new();
         let mut tool_call = None;
-        let mut started_message = false;
+        let started_message = true;
         let mut pending_tool_name = None;
         while let Some(chunk) = stream.next().await {
             match chunk? {
                 LlmStreamEvent::Text(chunk) => {
-                    if !started_message {
-                        output.message_start(&ParticipantId::Agent).await?;
-                        started_message = true;
-                    }
                     content.push_str(&chunk);
                     output.message_delta(&ParticipantId::Agent, &chunk).await?;
                 }
                 LlmStreamEvent::ToolCallStart { name, .. } => {
                     pending_tool_name = Some(name.clone());
+                    output
+                        .status_update(&ParticipantId::Agent, &status_for_tool_start(&name))
+                        .await?;
                     output
                         .tool_call_start(&ParticipantId::Agent, &name)
                         .await?;
@@ -225,6 +225,11 @@ where
                     ..
                 } => {
                     pending_tool_name = Some(name.clone());
+                    if let Some(status) = status_for_tool_delta(&name, &arguments_delta) {
+                        output
+                            .status_update(&ParticipantId::Agent, &status)
+                            .await?;
+                    }
                     output
                         .tool_call_delta(&ParticipantId::Agent, &name, &arguments_delta)
                         .await?;
@@ -243,10 +248,6 @@ where
             }
         }
         if content.trim().is_empty() && tool_call.is_none() {
-            if !started_message {
-                output.message_start(&ParticipantId::Agent).await?;
-                started_message = true;
-            }
             let fallback = "[empty response]";
             content.push_str(fallback);
             output
@@ -259,6 +260,12 @@ where
 
         if let Some(tool_call) = tool_call {
             let decision = map_tool_call_to_decision(tool_call)?;
+            output
+                .status_update(
+                    &ParticipantId::Agent,
+                    &status_for_action_decision(&decision),
+                )
+                .await?;
             output
                 .action_planned(&ParticipantId::Agent, match &decision {
                     ParticipantDecision::Action { action, .. } => action,
@@ -305,6 +312,52 @@ fn required_string_argument(arguments: &Value, field: &str) -> Result<String, Pa
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
         .ok_or_else(|| ParticipantError::new(format!("tool call is missing string field '{field}'")))
+}
+
+fn status_for_tool_start(tool_name: &str) -> String {
+    match tool_name {
+        "load_skill" => "preparing skill load".to_owned(),
+        "unload_skill" => "preparing skill unload".to_owned(),
+        "execute_code" => "preparing code execution".to_owned(),
+        _ => format!("preparing tool call: {tool_name}"),
+    }
+}
+
+fn status_for_tool_delta(tool_name: &str, arguments_delta: &str) -> Option<String> {
+    let skill_name = extract_skill_name_hint(arguments_delta)?;
+    match tool_name {
+        "load_skill" => Some(format!("loading skill {skill_name}")),
+        "unload_skill" => Some(format!("unloading skill {skill_name}")),
+        _ => None,
+    }
+}
+
+fn status_for_action_decision(decision: &ParticipantDecision<CodeAction>) -> String {
+    match decision {
+        ParticipantDecision::Action {
+            action: CodeAction::LoadSkill { skill_name },
+            ..
+        } => format!("loading skill {skill_name}"),
+        ParticipantDecision::Action {
+            action: CodeAction::UnloadSkill { skill_name },
+            ..
+        } => format!("unloading skill {skill_name}"),
+        ParticipantDecision::Action { .. } => "planning action".to_owned(),
+        ParticipantDecision::Message { .. }
+        | ParticipantDecision::FinalMessage { .. }
+        | ParticipantDecision::Yield
+        | ParticipantDecision::Finish => "updating".to_owned(),
+    }
+}
+
+fn extract_skill_name_hint(arguments_delta: &str) -> Option<String> {
+    let key = "\"skill_name\"";
+    let start = arguments_delta.find(key)?;
+    let after_key = &arguments_delta[start + key.len()..];
+    let first_quote = after_key.find('"')?;
+    let after_first_quote = &after_key[first_quote + 1..];
+    let second_quote = after_first_quote.find('"')?;
+    Some(after_first_quote[..second_quote].to_owned())
 }
 
 #[cfg(test)]

@@ -11,6 +11,7 @@ pub async fn render_transport_output(
     let mut current_message_has_delta = false;
     let mut loading_participant = None;
     let mut loading_frame = 0usize;
+    let mut ephemeral_line_active = false;
     let mut spinner = time::interval(Duration::from_millis(250));
 
     loop {
@@ -22,6 +23,10 @@ pub async fn render_transport_output(
 
                 match event {
                     OutboundTransportEvent::MessageStarted { participant } => {
+                        if ephemeral_line_active {
+                            clear_line()?;
+                            ephemeral_line_active = false;
+                        }
                         current_message_has_delta = false;
                         loading_frame = 0;
                         loading_participant = Some(participant.clone());
@@ -29,6 +34,10 @@ pub async fn render_transport_output(
                     }
                     OutboundTransportEvent::MessageDelta { participant, text } => {
                         if !current_message_has_delta {
+                            if ephemeral_line_active {
+                                clear_line()?;
+                                ephemeral_line_active = false;
+                            }
                             loading_participant = None;
                             print!("\r{}> ", participant_label(&participant));
                             current_message_has_delta = true;
@@ -40,44 +49,51 @@ pub async fn render_transport_output(
                         let _ = participant;
                         current_message_has_delta = false;
                         loading_participant = None;
+                        ephemeral_line_active = false;
                         println!();
                         print!("you> ");
                         flush_stdout()?;
                     }
+                    OutboundTransportEvent::Status { participant, text } => {
+                        render_ephemeral_line(
+                            &format!("{} status> {text}", participant_label(&participant))
+                        )?;
+                        ephemeral_line_active = true;
+                    }
                     OutboundTransportEvent::ToolCallStarted { participant, tool_name } => {
-                        loading_participant = None;
-                        current_message_has_delta = false;
-                        println!("\r{} tool> {} ...", participant_label(&participant), tool_name);
-                        print!("you> ");
-                        flush_stdout()?;
+                        render_ephemeral_line(
+                            &format!("{} tool> {} ...", participant_label(&participant), tool_name)
+                        )?;
+                        ephemeral_line_active = true;
                     }
                     OutboundTransportEvent::ToolCallDelta {
                         participant,
                         tool_name,
                         delta,
                     } => {
-                        println!(
-                            "\r{} tool> {} {}",
+                        render_ephemeral_line(&format!(
+                            "{} tool> {} {}",
                             participant_label(&participant),
                             tool_name,
                             delta
-                        );
-                        print!("you> ");
-                        flush_stdout()?;
+                        ))?;
+                        ephemeral_line_active = true;
                     }
                     OutboundTransportEvent::ToolCallCompleted { participant, tool_name } => {
-                        println!(
-                            "\r{} tool> {} ready",
-                            participant_label(&participant),
-                            tool_name
-                        );
-                        print!("you> ");
-                        flush_stdout()?;
+                        if tool_name != "load_skill" && tool_name != "unload_skill" {
+                            render_ephemeral_line(&format!(
+                                "{} tool> {} ready",
+                                participant_label(&participant),
+                                tool_name
+                            ))?;
+                            ephemeral_line_active = true;
+                        }
                     }
                     OutboundTransportEvent::ActionPlanned { participant, action } => {
-                        println!("\r{} action> {action}", participant_label(&participant));
-                        print!("you> ");
-                        flush_stdout()?;
+                        render_ephemeral_line(
+                            &format!("{} action> {action}", participant_label(&participant))
+                        )?;
+                        ephemeral_line_active = true;
                     }
                 }
             }
@@ -101,6 +117,16 @@ fn render_loading_frame(participant: &pera_orchestrator::ParticipantId, frame: u
         _ => " ..",
     };
     print!("\r{}> {dots}", participant_label(participant));
+    flush_stdout()
+}
+
+fn render_ephemeral_line(text: &str) -> Result<(), CliError> {
+    print!("\r\x1b[2K{text}");
+    flush_stdout()
+}
+
+fn clear_line() -> Result<(), CliError> {
+    print!("\r\x1b[2K");
     flush_stdout()
 }
 

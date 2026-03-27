@@ -21,6 +21,15 @@ pub trait ParticipantOutput<A>: Send {
         participant: &ParticipantId,
     ) -> Result<(), ParticipantError>;
 
+    async fn status_update(
+        &mut self,
+        participant: &ParticipantId,
+        _status: &str,
+    ) -> Result<(), ParticipantError> {
+        let _ = participant;
+        Ok(())
+    }
+
     async fn tool_call_start(
         &mut self,
         participant: &ParticipantId,

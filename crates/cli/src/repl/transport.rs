@@ -20,6 +20,10 @@ pub enum OutboundTransportEvent {
     MessageCompleted {
         participant: ParticipantId,
     },
+    Status {
+        participant: ParticipantId,
+        text: String,
+    },
     ToolCallStarted {
         participant: ParticipantId,
         tool_name: String,

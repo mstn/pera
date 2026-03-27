@@ -192,6 +192,19 @@ impl ParticipantOutput<CodeAction> for TransportBackedOutput {
             .map_err(|_| ParticipantError::new("stream output channel is closed"))
     }
 
+    async fn status_update(
+        &mut self,
+        participant: &ParticipantId,
+        status: &str,
+    ) -> Result<(), ParticipantError> {
+        self.output_tx
+            .send(OutboundTransportEvent::Status {
+                participant: participant.clone(),
+                text: status.to_owned(),
+            })
+            .map_err(|_| ParticipantError::new("stream output channel is closed"))
+    }
+
     async fn tool_call_start(
         &mut self,
         participant: &ParticipantId,
@@ -238,10 +251,15 @@ impl ParticipantOutput<CodeAction> for TransportBackedOutput {
         participant: &ParticipantId,
         action: &CodeAction,
     ) -> Result<(), ParticipantError> {
+        let action = match action {
+            CodeAction::LoadSkill { skill_name } => format!("load skill {skill_name}"),
+            CodeAction::UnloadSkill { skill_name } => format!("unload skill {skill_name}"),
+            other => format!("{other:?}"),
+        };
         self.output_tx
             .send(OutboundTransportEvent::ActionPlanned {
                 participant: participant.clone(),
-                action: format!("{action:?}"),
+                action,
             })
             .map_err(|_| ParticipantError::new("stream output channel is closed"))
     }
