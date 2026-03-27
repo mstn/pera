@@ -1,7 +1,7 @@
 use std::io::{self, BufRead, Write};
 
 use async_trait::async_trait;
-use pera_agents::LlmAgentParticipant;
+use pera_agents::{LlmAgentParticipant, OpenAiConfig as OpenAiProviderConfig, OpenAiProvider, ProviderBackedPromptBuilder};
 use pera_orchestrator::{
     CodeAction, InitialInboxMessage, Participant, ParticipantError, ParticipantId,
     ParticipantOutput, RuntimeCodeEnvironment, RunLimits, RunRequest, TaskSpec,
@@ -60,7 +60,19 @@ pub async fn run_repl(agent_config: AgentConfig) -> Result<(), CliError> {
         >,
     > = vec![
         Box::new(HumanParticipant { input_rx: console_input_rx }),
-        Box::new(LlmAgentParticipant::unconfigured()),
+        match &agent_config.openai {
+            Some(openai) => Box::new(
+                LlmAgentParticipant::new(
+                    OpenAiProvider::new(OpenAiProviderConfig {
+                        api_key: openai.api_key.clone(),
+                        model: openai.model.clone(),
+                    })
+                    .map_err(|error| CliError::UnexpectedStateOwned(error.to_string()))?,
+                    ProviderBackedPromptBuilder,
+                ),
+            ),
+            None => Box::new(LlmAgentParticipant::unconfigured()),
+        },
     ];
     let mut orchestrator =
         pera_orchestrator::Orchestrator::from_participants(participants, environment);

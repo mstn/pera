@@ -9,11 +9,15 @@ use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValu
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::config::Config;
-
 const RESPONSES_API_URL: &str = "https://api.openai.com/v1/responses";
 
 pub type TextStream = Pin<Box<dyn Stream<Item = Result<String>> + Send>>;
+
+#[derive(Debug, Clone)]
+pub struct OpenAiConfig {
+    pub api_key: String,
+    pub model: String,
+}
 
 pub struct OpenAiClient {
     http: reqwest::Client,
@@ -21,9 +25,9 @@ pub struct OpenAiClient {
 }
 
 impl OpenAiClient {
-    pub fn new(config: &Config) -> Result<Self> {
+    pub fn new(config: &OpenAiConfig) -> Result<Self> {
         let mut headers = HeaderMap::new();
-        let bearer = format!("Bearer {}", config.openai_api_key);
+        let bearer = format!("Bearer {}", config.api_key);
         let auth_value = HeaderValue::from_str(&bearer)
             .context("invalid OpenAI API key for Authorization header")?;
 
@@ -38,7 +42,7 @@ impl OpenAiClient {
 
         Ok(Self {
             http,
-            model: config.openai_model.clone(),
+            model: config.model.clone(),
         })
     }
 
