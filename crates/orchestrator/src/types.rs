@@ -203,6 +203,7 @@ impl<O, A, U> Trajectory<O, A, U> {
 pub struct ParticipantInput<O, A, U> {
     pub run_id: RunId,
     pub agent_loop_id: WorkItemId,
+    pub agent_loop_iteration: usize,
     pub participant: ParticipantId,
     pub task: TaskSpec,
     pub limits: RunLimits,

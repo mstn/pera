@@ -5,22 +5,27 @@ use std::sync::Mutex;
 
 use chrono::Local;
 use pera_agents::{LlmRequest, PromptDebugMetadata, PromptDebugSink};
-use pera_core::RunId;
+use pera_core::{RunId, WorkItemId};
+use pera_runtime::FileSystemLayout;
 
 use crate::error::CliError;
 
 pub struct FilePromptDebugSink {
-    project_root: PathBuf,
+    layout: FileSystemLayout,
     model: Option<String>,
     run_directories: Mutex<BTreeMap<RunId, PathBuf>>,
+    loop_directories: Mutex<BTreeMap<(RunId, WorkItemId), PathBuf>>,
 }
 
 impl FilePromptDebugSink {
     pub fn new(project_root: PathBuf, model: Option<String>) -> Self {
+        let layout = FileSystemLayout::new(project_root)
+            .expect("prompt debug layout initialization must succeed");
         Self {
-            project_root,
+            layout,
             model,
             run_directories: Mutex::new(BTreeMap::new()),
+            loop_directories: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -33,16 +38,42 @@ impl FilePromptDebugSink {
             return Ok(path.clone());
         }
 
-        let timestamp = timestamp_prefix();
         let path = self
-            .project_root
-            .join("orchestration-prompts")
-            .join(format!("{timestamp}_{}", run_id.as_hyphenated()));
+            .layout
+            .orchestration_runs_dir()
+            .join(format!("{}-{}", timestamp_prefix(), run_id.as_hyphenated()));
         std::fs::create_dir_all(&path).map_err(|source| CliError::CreateDir {
             path: path.clone(),
             source,
         })?;
         run_directories.insert(run_id, path.clone());
+        Ok(path)
+    }
+
+    fn resolve_loop_directory(
+        &self,
+        metadata: &PromptDebugMetadata,
+    ) -> Result<PathBuf, CliError> {
+        let key = (metadata.run_id, metadata.agent_loop_id);
+        let mut loop_directories = self
+            .loop_directories
+            .lock()
+            .map_err(|_| CliError::UnexpectedStateOwned("prompt debug lock poisoned".to_owned()))?;
+        if let Some(path) = loop_directories.get(&key) {
+            return Ok(path.clone());
+        }
+
+        let run_directory = self.resolve_run_directory(metadata.run_id)?;
+        let path = run_directory.join(format!(
+            "{}-{}",
+            timestamp_prefix(),
+            metadata.agent_loop_id.as_hyphenated()
+        ));
+        std::fs::create_dir_all(&path).map_err(|source| CliError::CreateDir {
+            path: path.clone(),
+            source,
+        })?;
+        loop_directories.insert(key, path.clone());
         Ok(path)
     }
 }
@@ -53,25 +84,43 @@ impl PromptDebugSink for FilePromptDebugSink {
         metadata: &PromptDebugMetadata,
         request: &LlmRequest,
     ) -> Result<(), pera_orchestrator::ParticipantError> {
-        let run_directory = self
-            .resolve_run_directory(metadata.run_id)
+        let loop_directory = self
+            .resolve_loop_directory(metadata)
             .map_err(|error| pera_orchestrator::ParticipantError::new(error.to_string()))?;
-        let timestamp = timestamp_prefix();
-        let file_path = run_directory.join(format!(
-            "{timestamp}_{}.md",
-            metadata.agent_loop_id.as_hyphenated()
-        ));
+        let iteration_id = format!("{:04}", metadata.agent_loop_iteration);
+        let prompt_path = loop_directory.join(format!("{iteration_id}.prompt.md"));
+        let tools_path = loop_directory.join(format!("{iteration_id}.tools.json"));
 
-        std::fs::write(&file_path, render_prompt_markdown(self.model.as_deref(), metadata, request))
-            .map_err(|source| {
-                pera_orchestrator::ParticipantError::new(
-                    CliError::WriteFile {
-                        path: file_path,
-                        source,
-                    }
-                    .to_string(),
-                )
-            })
+        std::fs::write(
+            &prompt_path,
+            render_prompt_markdown(self.model.as_deref(), metadata, request),
+        )
+        .map_err(|source| {
+            pera_orchestrator::ParticipantError::new(
+                CliError::WriteFile {
+                    path: prompt_path,
+                    source,
+                }
+                .to_string(),
+            )
+        })?;
+
+        let tools_json = serde_json::to_vec_pretty(&request.tools).map_err(|error| {
+            pera_orchestrator::ParticipantError::new(
+                CliError::UnexpectedStateOwned(error.to_string()).to_string(),
+            )
+        })?;
+        std::fs::write(&tools_path, tools_json).map_err(|source| {
+            pera_orchestrator::ParticipantError::new(
+                CliError::WriteFile {
+                    path: tools_path,
+                    source,
+                }
+                .to_string(),
+            )
+        })?;
+
+        Ok(())
     }
 }
 
@@ -85,6 +134,11 @@ fn render_prompt_markdown(
     let _ = writeln!(&mut output, "generated_at: {}", Local::now().to_rfc3339());
     let _ = writeln!(&mut output, "run_id: {}", metadata.run_id);
     let _ = writeln!(&mut output, "agent_loop_id: {}", metadata.agent_loop_id);
+    let _ = writeln!(
+        &mut output,
+        "agent_loop_iteration: {}",
+        metadata.agent_loop_iteration
+    );
     let _ = writeln!(&mut output, "participant: {:?}", metadata.participant);
     let _ = writeln!(&mut output, "task_id: {}", metadata.task_id);
     if let Some(model) = model {
@@ -93,40 +147,22 @@ fn render_prompt_markdown(
     let _ = writeln!(&mut output, "---");
     let _ = writeln!(&mut output);
 
-    let _ = writeln!(&mut output, "# System Prompt");
-    let _ = writeln!(&mut output);
-    let _ = writeln!(&mut output, "```text");
+    let _ = writeln!(&mut output, "<system>");
     let _ = writeln!(&mut output, "{}", request.system_prompt);
-    let _ = writeln!(&mut output, "```");
+    let _ = writeln!(&mut output, "</system>");
     let _ = writeln!(&mut output);
 
-    let _ = writeln!(&mut output, "# Tools");
-    let _ = writeln!(&mut output);
-    if request.tools.is_empty() {
-        let _ = writeln!(&mut output, "_No tools_");
-    } else {
-        for tool in &request.tools {
-            let _ = writeln!(&mut output, "## {}", tool.name);
-            let _ = writeln!(&mut output);
-            let _ = writeln!(&mut output, "{}", tool.description);
-            let _ = writeln!(&mut output);
-            let _ = writeln!(&mut output, "```json");
-            let schema = serde_json::to_string_pretty(&tool.input_schema)
-                .unwrap_or_else(|_| "{}".to_owned());
-            let _ = writeln!(&mut output, "{schema}");
-            let _ = writeln!(&mut output, "```");
-            let _ = writeln!(&mut output);
-        }
-    }
-
-    let _ = writeln!(&mut output, "# Messages");
-    let _ = writeln!(&mut output);
     for message in &request.messages {
-        let _ = writeln!(&mut output, "## {}", message.role);
-        let _ = writeln!(&mut output);
-        let _ = writeln!(&mut output, "```text");
+        let tag = match message.role.as_str() {
+            "system" => "system",
+            "assistant" => "assistant",
+            "developer" => "developer",
+            "user" => "user",
+            _ => "message",
+        };
+        let _ = writeln!(&mut output, "<{tag}>");
         let _ = writeln!(&mut output, "{}", message.content);
-        let _ = writeln!(&mut output, "```");
+        let _ = writeln!(&mut output, "</{tag}>");
         let _ = writeln!(&mut output);
     }
 

@@ -9,6 +9,7 @@ use pera_orchestrator::{
     CodeAction, CodeObservation, CodeOutcome, Participant, ParticipantDecision,
     ParticipantError, ParticipantId, ParticipantInput, ParticipantOutput,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::prompt::{CodePromptBuilder, PromptContext, PromptMessage, ProviderBackedPromptBuilder};
@@ -25,7 +26,7 @@ pub struct LlmResponse {
     pub content: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmToolDefinition {
     pub name: String,
     pub description: String,
@@ -36,6 +37,7 @@ pub struct LlmToolDefinition {
 pub struct PromptDebugMetadata {
     pub run_id: RunId,
     pub agent_loop_id: WorkItemId,
+    pub agent_loop_iteration: usize,
     pub participant: ParticipantId,
     pub task_id: String,
 }
@@ -155,6 +157,7 @@ where
             &PromptDebugMetadata {
                 run_id: input.run_id,
                 agent_loop_id: input.agent_loop_id,
+                agent_loop_iteration: input.agent_loop_iteration,
                 participant: input.participant.clone(),
                 task_id: input.task.id.clone(),
             },
@@ -183,8 +186,21 @@ where
 }
 
 fn prompt_messages(context: &PromptContext) -> Vec<PromptMessage> {
-    let mut messages = Vec::new();
-    messages.extend(context.transcript.iter().cloned());
-    messages.extend(context.inbox.iter().cloned());
+    let mut messages = context.transcript.clone();
+    let overlap = suffix_prefix_overlap(&messages, &context.inbox);
+    messages.extend(context.inbox.iter().skip(overlap).cloned());
     messages
+}
+
+fn suffix_prefix_overlap(
+    transcript: &[PromptMessage],
+    inbox: &[PromptMessage],
+) -> usize {
+    let max_overlap = transcript.len().min(inbox.len());
+    for overlap in (1..=max_overlap).rev() {
+        if transcript[transcript.len() - overlap..] == inbox[..overlap] {
+            return overlap;
+        }
+    }
+    0
 }

@@ -130,6 +130,7 @@ where
         let input = ParticipantInput {
             run_id: input.run_id,
             agent_loop_id: self.work_item.id,
+            agent_loop_iteration: self.step_count + 1,
             participant: self.participant.id(),
             task: input.task,
             limits: input.limits,

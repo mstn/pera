@@ -167,6 +167,7 @@ mod tests {
         ParticipantInput {
             run_id: RunId::generate(),
             agent_loop_id: pera_core::WorkItemId::generate(),
+            agent_loop_iteration: 1,
             participant: ParticipantId::Agent,
             task: TaskSpec {
                 id: "repl".to_owned(),

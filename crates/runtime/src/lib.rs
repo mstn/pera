@@ -33,7 +33,7 @@ pub use engine::{ExecutionEngine, ExecutionEngineError};
 pub use events::{
     EventHub, EventHubPublisher, EventSubscription, StdoutEventPublisher, TeeEventPublisher,
 };
-pub use fs::{FileSystemEventLog, FileSystemRunStore};
+pub use fs::{FileSystemEventLog, FileSystemLayout, FileSystemRunStore};
 pub use in_memory::{InMemoryRunStore, RecordingEventPublisher};
 pub use run_executor::{RunExecutor, RunExecutorError, RunTransition, RunTransitionTrigger};
 pub use skills::{

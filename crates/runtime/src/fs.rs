@@ -21,13 +21,22 @@ impl FileSystemLayout {
 
     fn ensure_directories(&self) -> Result<(), StoreError> {
         create_dir_all(self.runs_dir())?;
+        create_dir_all(self.orchestration_runs_dir())?;
         create_dir_all(self.system_actions_dir())?;
         create_dir_all(self.system_dir())?;
         Ok(())
     }
 
-    fn runs_dir(&self) -> PathBuf {
+    pub fn runs_dir(&self) -> PathBuf {
         self.root.join("runs")
+    }
+
+    pub fn orchestration_dir(&self) -> PathBuf {
+        self.root.join("orchestration")
+    }
+
+    pub fn orchestration_runs_dir(&self) -> PathBuf {
+        self.orchestration_dir().join("runs")
     }
 
     fn system_dir(&self) -> PathBuf {
