@@ -1579,6 +1579,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pera-agents"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "pera-orchestrator",
+]
+
+[[package]]
 name = "pera-canonical"
 version = "0.1.0"
 dependencies = [
@@ -1594,6 +1602,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "clap",
+ "pera-agents",
  "pera-canonical",
  "pera-core",
  "pera-orchestrator",

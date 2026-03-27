@@ -1,0 +1,11 @@
+[package]
+name = "pera-agents"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+async-trait = "0.1"
+pera-orchestrator = { path = "../orchestrator" }
+
+[lib]
+path = "src/lib.rs"

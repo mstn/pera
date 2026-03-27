@@ -2,6 +2,7 @@ use std::io::{self, BufRead, Write};
 use std::path::Path;
 
 use async_trait::async_trait;
+use pera_agents::LlmAgentParticipant;
 use pera_orchestrator::{
     CodeAction, InitialInboxMessage, Participant, ParticipantError, ParticipantId,
     ParticipantOutput, RuntimeCodeEnvironment, RunLimits, RunRequest, TaskSpec,
@@ -11,7 +12,7 @@ use pera_runtime::CodeEnvironment;
 use tokio::sync::mpsc;
 
 use crate::error::CliError;
-use crate::repl::participants::{DemoAgentParticipant, HumanParticipant};
+use crate::repl::participants::HumanParticipant;
 use crate::repl::renderer::render_transport_output;
 use crate::repl::transport::{InboundTransportEvent, OutboundTransportEvent};
 
@@ -42,7 +43,7 @@ pub async fn run_repl(root: &Path) -> Result<(), CliError> {
         >,
     > = vec![
         Box::new(HumanParticipant { input_rx: console_input_rx }),
-        Box::new(DemoAgentParticipant),
+        Box::new(LlmAgentParticipant::unconfigured()),
     ];
     let mut orchestrator =
         pera_orchestrator::Orchestrator::from_participants(participants, environment);

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use pera_orchestrator::{
     CodeAction, Participant, ParticipantDecision, ParticipantError, ParticipantId,
-    ParticipantInboxEvent, ParticipantInput, ParticipantOutput, TrajectoryEvent,
+    ParticipantInput, ParticipantOutput,
 };
 use tokio::sync::mpsc;
 
@@ -50,80 +50,82 @@ impl Participant for HumanParticipant {
     }
 }
 
-pub struct DemoAgentParticipant;
-
-#[async_trait]
-impl Participant for DemoAgentParticipant {
-    type Observation = pera_orchestrator::CodeObservation;
-    type Action = CodeAction;
-    type Outcome = pera_orchestrator::CodeOutcome;
-
-    fn id(&self) -> ParticipantId {
-        ParticipantId::Agent
-    }
-
-    async fn respond(
-        &mut self,
-        input: ParticipantInput<Self::Observation, Self::Action, Self::Outcome>,
-        output: &mut dyn ParticipantOutput<Self::Action>,
-    ) -> Result<ParticipantDecision<Self::Action>, ParticipantError> {
-        let Some(user_message) = last_user_message(&input) else {
-            return Ok(ParticipantDecision::Yield);
-        };
-
-        let response = if user_message == "/help" {
-            "Try typing any message. Use /exit to leave the session.".to_owned()
-        } else {
-            format!("Echo: {user_message}")
-        };
-
-        output.message_start(&ParticipantId::Agent).await?;
-        for ch in response.chars() {
-            let mut chunk = String::new();
-            chunk.push(ch);
-            output.message_delta(&ParticipantId::Agent, &chunk).await?;
-        }
-        output.message_end(&ParticipantId::Agent).await?;
-
-        Ok(ParticipantDecision::FinalMessage { content: response })
-    }
-}
-
-fn last_user_message(
-    input: &ParticipantInput<
-        pera_orchestrator::CodeObservation,
-        CodeAction,
-        pera_orchestrator::CodeOutcome,
-    >,
-) -> Option<&str> {
-    if let Some(message) = input.inbox.iter().rev().find_map(|event| match event {
-        ParticipantInboxEvent::Message {
-            from: ParticipantId::User,
-            content,
-        } => Some(content.as_str()),
-        _ => None,
-    }) {
-        return Some(message);
-    }
-
-    match input.trajectory.events.iter().rev().find(|event| {
-        matches!(event, TrajectoryEvent::ParticipantMessage { .. })
-    }) {
-        Some(TrajectoryEvent::ParticipantMessage {
-            participant: ParticipantId::User,
-            content,
-        }) => Some(content.as_str()),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
     use pera_core::RunId;
-    use pera_orchestrator::{CodeObservation, RunLimits, TaskSpec, Trajectory};
+    use pera_orchestrator::{
+        CodeObservation, ParticipantInboxEvent, RunLimits, TaskSpec, Trajectory, TrajectoryEvent,
+    };
 
     use super::*;
+
+    struct DemoAgentParticipant;
+
+    #[async_trait]
+    impl Participant for DemoAgentParticipant {
+        type Observation = pera_orchestrator::CodeObservation;
+        type Action = CodeAction;
+        type Outcome = pera_orchestrator::CodeOutcome;
+
+        fn id(&self) -> ParticipantId {
+            ParticipantId::Agent
+        }
+
+        async fn respond(
+            &mut self,
+            input: ParticipantInput<Self::Observation, Self::Action, Self::Outcome>,
+            output: &mut dyn ParticipantOutput<Self::Action>,
+        ) -> Result<ParticipantDecision<Self::Action>, ParticipantError> {
+            let Some(user_message) = last_user_message(&input) else {
+                return Ok(ParticipantDecision::Yield);
+            };
+
+            let response = if user_message == "/help" {
+                "Try typing any message. Use /exit to leave the session.".to_owned()
+            } else {
+                format!("Echo: {user_message}")
+            };
+
+            output.message_start(&ParticipantId::Agent).await?;
+            for ch in response.chars() {
+                let mut chunk = String::new();
+                chunk.push(ch);
+                output.message_delta(&ParticipantId::Agent, &chunk).await?;
+            }
+            output.message_end(&ParticipantId::Agent).await?;
+
+            Ok(ParticipantDecision::FinalMessage { content: response })
+        }
+    }
+
+    fn last_user_message(
+        input: &ParticipantInput<
+            pera_orchestrator::CodeObservation,
+            CodeAction,
+            pera_orchestrator::CodeOutcome,
+        >,
+    ) -> Option<&str> {
+        if let Some(message) = input.inbox.iter().rev().find_map(|event| match event {
+            ParticipantInboxEvent::Message {
+                from: ParticipantId::User,
+                content,
+            } => Some(content.as_str()),
+            _ => None,
+        }) {
+            return Some(message);
+        }
+
+        match input.trajectory.events.iter().rev().find(|event| {
+            matches!(event, TrajectoryEvent::ParticipantMessage { .. })
+        }) {
+            Some(TrajectoryEvent::ParticipantMessage {
+                participant: ParticipantId::User,
+                content,
+            }) => Some(content.as_str()),
+            _ => None,
+        }
+    }
 
     struct RecordingOutput {
         chunks: String,
