@@ -1,5 +1,4 @@
 use std::io::{self, BufRead, Write};
-use std::path::Path;
 
 use async_trait::async_trait;
 use pera_agents::LlmAgentParticipant;
@@ -11,14 +10,15 @@ use pera_orchestrator::{
 use pera_runtime::CodeEnvironment;
 use tokio::sync::mpsc;
 
+use crate::config::AgentConfig;
 use crate::error::CliError;
 use crate::repl::participants::HumanParticipant;
 use crate::repl::renderer::render_transport_output;
 use crate::repl::transport::{InboundTransportEvent, OutboundTransportEvent};
 
-pub async fn run_repl(root: &Path) -> Result<(), CliError> {
+pub async fn run_repl(agent_config: AgentConfig) -> Result<(), CliError> {
     let environment = RuntimeCodeEnvironment::new(
-        CodeEnvironment::new(root, None)
+        CodeEnvironment::new(&agent_config.project_root, None)
             .map_err(|error| CliError::UnexpectedStateOwned(error.to_string()))?,
     );
     let (console_input_tx, console_input_rx) = mpsc::unbounded_channel();
@@ -30,6 +30,23 @@ pub async fn run_repl(root: &Path) -> Result<(), CliError> {
         tokio::spawn(render_transport_output(console_output_rx));
 
     println!("Starting REPL. Type /help for help, /exit to quit.");
+    println!(
+        "Project root: {}",
+        agent_config.project_root.display()
+    );
+    if let Some(openai) = &agent_config.openai {
+        let api_key_status = if openai.api_key.is_empty() {
+            "missing API key"
+        } else {
+            "API key present"
+        };
+        println!(
+            "Configured OpenAI model: {} ({api_key_status})",
+            openai.model
+        );
+    } else {
+        println!("OpenAI configuration not found. The LLM agent is still unconfigured.");
+    }
     print!("you> ");
     let _ = io::stdout().flush();
 

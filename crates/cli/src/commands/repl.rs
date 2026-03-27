@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::Args;
 
+use crate::config::AgentConfig;
 use crate::error::CliError;
 use crate::repl::session::run_repl;
 
@@ -9,6 +10,12 @@ use crate::repl::session::run_repl;
 pub struct ReplCommand {
     #[arg(long)]
     pub root: PathBuf,
+
+    #[arg(long, env = "OPENAI_API_KEY")]
+    pub openai_api_key: Option<String>,
+
+    #[arg(long, env = "OPENAI_MODEL")]
+    pub openai_model: Option<String>,
 }
 
 impl ReplCommand {
@@ -20,6 +27,11 @@ impl ReplCommand {
                 path: self.root.clone(),
                 source,
             })?;
-        run_repl(&root).await
+        let agent_config = AgentConfig::from_openai(
+            root.clone(),
+            self.openai_api_key.clone(),
+            self.openai_model.clone(),
+        )?;
+        run_repl(agent_config).await
     }
 }

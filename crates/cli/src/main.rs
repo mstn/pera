@@ -1,5 +1,6 @@
 mod cli;
 mod commands;
+mod config;
 mod error;
 mod repl;
 
@@ -22,6 +23,7 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> Result<(), error::CliError> {
+    let _ = dotenvy::dotenv();
     let cli = Cli::parse();
     init_logger(&cli.log_level);
 
