@@ -355,13 +355,6 @@ impl AgentWorkspace {
         )
     }
 
-    async fn reset_workspace(&mut self) -> Result<AgentWorkspaceObservation, AgentWorkspaceError> {
-        self.pending_actions.clear();
-        self.pending_execution_runs.clear();
-        self.execution_runs_by_id.clear();
-        self.observe_workspace().await
-    }
-
     pub fn activate_skill(&mut self, skill_name: impl Into<String>) {
         self.active_skill_names.insert(skill_name.into());
     }
@@ -370,7 +363,7 @@ impl AgentWorkspace {
         self.active_skill_names.remove(skill_name);
     }
 
-    async fn observe_workspace(&self) -> Result<AgentWorkspaceObservation, AgentWorkspaceError> {
+    async fn build_observation(&self) -> Result<AgentWorkspaceObservation, AgentWorkspaceError> {
         let (available_skills, active_skills) = match &self.skill_runtime {
             Some(runtime) => {
                 let mut available_skills = Vec::new();
@@ -425,42 +418,7 @@ impl AgentWorkspace {
         })
     }
 
-    async fn snapshot_workspace(&self) -> Result<AgentWorkspaceSnapshot, AgentWorkspaceError> {
-        Ok(AgentWorkspaceSnapshot)
-    }
-
-    async fn restore_workspace(
-        &mut self,
-        _snapshot: &AgentWorkspaceSnapshot,
-    ) -> Result<(), AgentWorkspaceError> {
-        Ok(())
-    }
-
-    async fn step_workspace(
-        &mut self,
-        action: AgentWorkspaceAction,
-    ) -> Result<AgentWorkspaceOutcome, AgentWorkspaceError> {
-        self.run_action(action).await
-    }
-
-    async fn submit_workspace(
-        &mut self,
-        actor: String,
-        action: AgentWorkspaceAction,
-    ) -> Result<SubmittedAgentWorkspaceAction, AgentWorkspaceError> {
-        if let AgentWorkspaceAction::ExecuteCode { language, source } = action {
-            return self.submit_execute_code(actor, language, source).await;
-        }
-        let action_id = ActionId::generate();
-        let outcome = self.run_action(action).await?;
-        let handle = tokio::spawn(async move { Ok(outcome) });
-        self.pending_actions
-            .insert(action_id, PendingCodeAction { actor, handle });
-
-        Ok(SubmittedAgentWorkspaceAction { action_id })
-    }
-
-    async fn poll_workspace_events(
+    async fn collect_pending_events(
         &mut self,
     ) -> Result<Vec<AgentWorkspaceEvent>, AgentWorkspaceError> {
         let ready_action_ids = self
@@ -776,13 +734,16 @@ impl Environment for AgentWorkspace {
     type Snapshot = AgentWorkspaceSnapshot;
 
     async fn reset(&mut self, _task: &TaskSpec) -> Result<Self::Observation, EnvironmentError> {
-        AgentWorkspace::reset_workspace(self)
+        self.pending_actions.clear();
+        self.pending_execution_runs.clear();
+        self.execution_runs_by_id.clear();
+        self.build_observation()
             .await
             .map_err(|error| EnvironmentError::new(error.to_string()))
     }
 
     async fn observe(&self) -> Result<Self::Observation, EnvironmentError> {
-        AgentWorkspace::observe_workspace(self)
+        self.build_observation()
             .await
             .map_err(|error| EnvironmentError::new(error.to_string()))
     }
@@ -792,7 +753,7 @@ impl Environment for AgentWorkspace {
         _actor: ParticipantId,
         action: Self::Action,
     ) -> Result<Self::Outcome, EnvironmentError> {
-        AgentWorkspace::step_workspace(self, action)
+        self.run_action(action)
             .await
             .map_err(|error| EnvironmentError::new(error.to_string()))
     }
@@ -802,18 +763,33 @@ impl Environment for AgentWorkspace {
         actor: ParticipantId,
         action: Self::Action,
     ) -> Result<SubmittedAction, EnvironmentError> {
-        AgentWorkspace::submit_workspace(self, format_participant_id(&actor), action)
-            .await
+        let actor = format_participant_id(&actor);
+        let submitted = if let AgentWorkspaceAction::ExecuteCode { language, source } = action {
+            self.submit_execute_code(actor, language, source).await
+        } else {
+            let action_id = ActionId::generate();
+            let outcome = self
+                .run_action(action)
+                .await
+                .map_err(|error| EnvironmentError::new(error.to_string()))?;
+            let handle = tokio::spawn(async move { Ok(outcome) });
+            self.pending_actions
+                .insert(action_id, PendingCodeAction { actor, handle });
+            Ok(SubmittedAgentWorkspaceAction { action_id })
+        };
+
+        submitted
             .map(|submitted| SubmittedAction {
                 action_id: submitted.action_id,
             })
-            .map_err(|error| EnvironmentError::new(error.to_string()))
+            .map_err(|error: AgentWorkspaceError| EnvironmentError::new(error.to_string()))
     }
 
     async fn poll_events(
         &mut self,
     ) -> Result<Vec<EnvironmentEvent<Self::Action, Self::Outcome>>, EnvironmentError> {
-        let events = AgentWorkspace::poll_workspace_events(self)
+        let events = self
+            .collect_pending_events()
             .await
             .map_err(|error| EnvironmentError::new(error.to_string()))?;
         Ok(events
@@ -823,15 +799,12 @@ impl Environment for AgentWorkspace {
     }
 
     async fn snapshot(&self) -> Result<Self::Snapshot, EnvironmentError> {
-        AgentWorkspace::snapshot_workspace(self)
-            .await
-            .map_err(|error| EnvironmentError::new(error.to_string()))
+        Ok(AgentWorkspaceSnapshot)
     }
 
     async fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), EnvironmentError> {
-        AgentWorkspace::restore_workspace(self, snapshot)
-            .await
-            .map_err(|error| EnvironmentError::new(error.to_string()))
+        let _ = snapshot;
+        Ok(())
     }
 
     async fn terminal_status(&self) -> Result<Option<String>, EnvironmentError> {
