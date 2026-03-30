@@ -11,10 +11,11 @@ use pera_core::{
     ExternalCall, InputValues, Interpreter, InterpreterError, InterpreterKind, InterpreterStep,
     RunStore, ScriptName, StartExecutionRequest, Suspension, Value,
 };
+use pera_orchestrator::{Environment, EnvironmentEvent, ParticipantId, TaskSpec};
 
 use crate::{
     ActionExecutionUpdate, ActionExecutor, ActionProcessorError, AgentWorkspace,
-    AgentWorkspaceAction, AgentWorkspaceEvent, AgentWorkspaceOutcome, AgentWorkspaceToolExecutor,
+    AgentWorkspaceAction, AgentWorkspaceOutcome, AgentWorkspaceToolExecutor,
     EventHub, ExecutionEngine, FileSystemEventLog, FileSystemRunStore, InMemoryRunStore,
     RecordingEventPublisher, RunExecutor, RunTransitionTrigger, TeeEventPublisher,
 };
@@ -531,23 +532,32 @@ async fn code_environment_executes_tools_through_async_executor() {
         None,
     )
     .unwrap();
-    let observation = environment.reset().await.unwrap();
+    let observation = environment
+        .reset(&TaskSpec {
+            id: "test".to_owned(),
+            instructions: "test".to_owned(),
+        })
+        .await
+        .unwrap();
     assert_eq!(observation.available_tools.len(), 3);
     assert!(observation.available_skills.is_empty());
     assert!(observation.active_skills.is_empty());
 
     let outcome = environment
-        .step(AgentWorkspaceAction::CallTool {
-            skill: pera_core::ActionSkillRef {
-                skill_name: "test-skill".to_owned(),
-                skill_version: None,
-                profile_name: None,
+        .step(
+            ParticipantId::Agent,
+            AgentWorkspaceAction::CallTool {
+                skill: pera_core::ActionSkillRef {
+                    skill_name: "test-skill".to_owned(),
+                    skill_version: None,
+                    profile_name: None,
+                },
+                invocation: pera_core::CanonicalInvocation {
+                    action_name: ActionName::new("echo"),
+                    arguments: BTreeMap::from([("value".to_owned(), CanonicalValue::S64(17))]),
+                },
             },
-            invocation: pera_core::CanonicalInvocation {
-                action_name: ActionName::new("echo"),
-                arguments: BTreeMap::from([("value".to_owned(), CanonicalValue::S64(17))]),
-            },
-        })
+        )
         .await
         .unwrap();
 
@@ -578,11 +588,17 @@ async fn code_environment_submits_and_polls_deferred_actions() {
         None,
     )
     .unwrap();
-    environment.reset().await.unwrap();
+    environment
+        .reset(&TaskSpec {
+            id: "test".to_owned(),
+            instructions: "test".to_owned(),
+        })
+        .await
+        .unwrap();
 
     let submitted = environment
         .submit(
-            "agent".to_owned(),
+            ParticipantId::Agent,
             AgentWorkspaceAction::CallTool {
                 skill: pera_core::ActionSkillRef {
                     skill_name: "test-skill".to_owned(),
@@ -609,11 +625,11 @@ async fn code_environment_submits_and_polls_deferred_actions() {
 
     assert!(events.iter().any(|event| matches!(
         event,
-        AgentWorkspaceEvent::ActionCompleted {
-            actor,
+        EnvironmentEvent::ActionCompleted {
+            participant: ParticipantId::Agent,
             action_id,
             outcome: AgentWorkspaceOutcome::ToolCall { value, .. },
-        } if actor == "agent" && *action_id == submitted.action_id && *value == CanonicalValue::S64(17)
+        } if *action_id == submitted.action_id && *value == CanonicalValue::S64(17)
     )), "events: {:?}", events);
 
     let _ = std::fs::remove_dir_all(root);

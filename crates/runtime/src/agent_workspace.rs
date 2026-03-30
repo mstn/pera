@@ -371,11 +371,11 @@ impl AgentWorkspace {
         )
     }
 
-    pub async fn reset(&mut self) -> Result<AgentWorkspaceObservation, AgentWorkspaceError> {
+    async fn reset_workspace(&mut self) -> Result<AgentWorkspaceObservation, AgentWorkspaceError> {
         self.pending_actions.clear();
         self.pending_execution_runs.clear();
         self.execution_runs_by_id.clear();
-        self.observe().await
+        self.observe_workspace().await
     }
 
     pub fn activate_skill(&mut self, skill_name: impl Into<String>) {
@@ -386,7 +386,7 @@ impl AgentWorkspace {
         self.active_skill_names.remove(skill_name);
     }
 
-    pub async fn observe(&self) -> Result<AgentWorkspaceObservation, AgentWorkspaceError> {
+    async fn observe_workspace(&self) -> Result<AgentWorkspaceObservation, AgentWorkspaceError> {
         let (available_skills, active_skills) = match &self.skill_runtime {
             Some(runtime) => {
                 let mut available_skills = Vec::new();
@@ -441,25 +441,25 @@ impl AgentWorkspace {
         })
     }
 
-    pub async fn snapshot(&self) -> Result<AgentWorkspaceSnapshot, AgentWorkspaceError> {
+    async fn snapshot_workspace(&self) -> Result<AgentWorkspaceSnapshot, AgentWorkspaceError> {
         Ok(AgentWorkspaceSnapshot)
     }
 
-    pub async fn restore(
+    async fn restore_workspace(
         &mut self,
         _snapshot: &AgentWorkspaceSnapshot,
     ) -> Result<(), AgentWorkspaceError> {
         Ok(())
     }
 
-    pub async fn step(
+    async fn step_workspace(
         &mut self,
         action: AgentWorkspaceAction,
     ) -> Result<AgentWorkspaceOutcome, AgentWorkspaceError> {
         self.run_action(action).await
     }
 
-    pub async fn submit(
+    async fn submit_workspace(
         &mut self,
         actor: String,
         action: AgentWorkspaceAction,
@@ -476,7 +476,9 @@ impl AgentWorkspace {
         Ok(SubmittedAgentWorkspaceAction { action_id })
     }
 
-    pub async fn poll_events(&mut self) -> Result<Vec<AgentWorkspaceEvent>, AgentWorkspaceError> {
+    async fn poll_workspace_events(
+        &mut self,
+    ) -> Result<Vec<AgentWorkspaceEvent>, AgentWorkspaceError> {
         let ready_action_ids = self
             .pending_actions
             .iter()
@@ -817,13 +819,13 @@ impl Environment for AgentWorkspace {
     type Snapshot = AgentWorkspaceSnapshot;
 
     async fn reset(&mut self, _task: &TaskSpec) -> Result<Self::Observation, EnvironmentError> {
-        AgentWorkspace::reset(self)
+        AgentWorkspace::reset_workspace(self)
             .await
             .map_err(|error| EnvironmentError::new(error.to_string()))
     }
 
     async fn observe(&self) -> Result<Self::Observation, EnvironmentError> {
-        AgentWorkspace::observe(self)
+        AgentWorkspace::observe_workspace(self)
             .await
             .map_err(|error| EnvironmentError::new(error.to_string()))
     }
@@ -833,7 +835,7 @@ impl Environment for AgentWorkspace {
         _actor: ParticipantId,
         action: Self::Action,
     ) -> Result<Self::Outcome, EnvironmentError> {
-        AgentWorkspace::step(self, action)
+        AgentWorkspace::step_workspace(self, action)
             .await
             .map_err(|error| EnvironmentError::new(error.to_string()))
     }
@@ -843,7 +845,7 @@ impl Environment for AgentWorkspace {
         actor: ParticipantId,
         action: Self::Action,
     ) -> Result<SubmittedAction, EnvironmentError> {
-        AgentWorkspace::submit(self, format_participant_id(&actor), action)
+        AgentWorkspace::submit_workspace(self, format_participant_id(&actor), action)
             .await
             .map(|submitted| SubmittedAction {
                 action_id: submitted.action_id,
@@ -854,7 +856,7 @@ impl Environment for AgentWorkspace {
     async fn poll_events(
         &mut self,
     ) -> Result<Vec<EnvironmentEvent<Self::Action, Self::Outcome>>, EnvironmentError> {
-        let events = AgentWorkspace::poll_events(self)
+        let events = AgentWorkspace::poll_workspace_events(self)
             .await
             .map_err(|error| EnvironmentError::new(error.to_string()))?;
         Ok(events
@@ -864,13 +866,13 @@ impl Environment for AgentWorkspace {
     }
 
     async fn snapshot(&self) -> Result<Self::Snapshot, EnvironmentError> {
-        AgentWorkspace::snapshot(self)
+        AgentWorkspace::snapshot_workspace(self)
             .await
             .map_err(|error| EnvironmentError::new(error.to_string()))
     }
 
     async fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), EnvironmentError> {
-        AgentWorkspace::restore(self, snapshot)
+        AgentWorkspace::restore_workspace(self, snapshot)
             .await
             .map_err(|error| EnvironmentError::new(error.to_string()))
     }
