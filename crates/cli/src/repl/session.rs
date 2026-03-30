@@ -7,10 +7,12 @@ use pera_agents::{
     ProviderBackedPromptBuilder,
 };
 use pera_orchestrator::{
-    InitialInboxMessage, Participant, ParticipantError, ParticipantId, ParticipantOutput,
+    InitialInboxMessage, ParticipantError, ParticipantId, ParticipantOutput,
     RunLimits, RunRequest, TaskSpec, TerminationCondition,
 };
-use pera_runtime::{AgentWorkspace, WorkspaceAction, WorkspaceObservation, WorkspaceOutcome};
+use pera_runtime::{
+    AgentWorkspace, WorkspaceAction, WorkspaceOutcome, WorkspaceParticipantDyn,
+};
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -62,15 +64,7 @@ pub async fn run_repl(agent_config: AgentConfig) -> Result<(), CliError> {
     print!("you> ");
     let _ = io::stdout().flush();
 
-    let participants: Vec<
-        Box<
-                    dyn Participant<
-                    Observation = WorkspaceObservation,
-                    Action = WorkspaceAction,
-                    Outcome = WorkspaceOutcome,
-                >,
-        >,
-    > = vec![
+    let participants: Vec<Box<WorkspaceParticipantDyn>> = vec![
         Box::new(HumanParticipant { input_rx: console_input_rx }),
         match &agent_config.openai {
             Some(openai) => {

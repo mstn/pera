@@ -38,6 +38,11 @@ pub type WorkspaceOutcome = AgentWorkspaceOutcome;
 pub type WorkspaceSnapshot = AgentWorkspaceSnapshot;
 pub type WorkspaceToolDefinition = AgentWorkspaceTool;
 pub type SubmittedWorkspaceAction = SubmittedAgentWorkspaceAction;
+pub type WorkspaceParticipantDyn = dyn pera_orchestrator::Participant<
+    Observation = WorkspaceObservation,
+    Action = WorkspaceAction,
+    Outcome = WorkspaceOutcome,
+>;
 
 pub(crate) use action::ActionWorker;
 pub use engine::{ExecutionEngine, ExecutionEngineError};
