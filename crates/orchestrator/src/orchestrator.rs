@@ -7,9 +7,9 @@ use crate::error::EvaluatorError;
 use crate::streaming::{NoopParticipantOutput, ParticipantOutput};
 use crate::traits::{Environment, Evaluator, NoopEvaluator, Participant};
 use crate::types::{
-    ActionExecution, EnvironmentEvent, FinishReason, InitialInboxMessage, ParticipantDecision,
-    ParticipantId, ParticipantInboxEvent, ParticipantInput, RunRequest, RunResult, SubmittedAction,
-    TerminationCondition, Trajectory, TrajectoryEvent,
+    ActionExecution, ActionRunStatus, EnvironmentEvent, FinishReason, InitialInboxMessage,
+    ParticipantDecision, ParticipantId, ParticipantInboxEvent, ParticipantInput, RunRequest,
+    RunResult, SubmittedAction, TerminationCondition, Trajectory, TrajectoryEvent,
 };
 
 type BoxedParticipant<O, A, U> = Box<dyn Participant<Observation = O, Action = A, Outcome = U>>;
@@ -355,6 +355,19 @@ where
                         .deliver(ParticipantInboxEvent::ActionAccepted { action_id, action });
                 }
             }
+            EnvironmentEvent::ActionRunStatus {
+                participant,
+                action_id,
+                run_id,
+                status,
+            } => {
+                self.trajectory.push(TrajectoryEvent::ActionRunStatus {
+                    participant,
+                    action_id,
+                    run_id,
+                    status,
+                });
+            }
             EnvironmentEvent::ActionCompleted {
                 participant,
                 action_id,
@@ -677,6 +690,26 @@ where
                             })?;
                     }
                 }
+                EnvironmentEvent::ActionRunStatus {
+                    participant,
+                    action_id,
+                    status,
+                    ..
+                } => {
+                    if let Some((_, action)) = state.submitted_actions.get(action_id) {
+                        output
+                            .status_update(
+                                participant,
+                                &format_action_run_status(action, status),
+                            )
+                            .await
+                            .map_err(|error| {
+                                EvaluatorError::new(format!(
+                                    "failed to emit deferred action status output: {error}"
+                                ))
+                            })?;
+                    }
+                }
                 EnvironmentEvent::ActionFailed {
                     participant,
                     action_id,
@@ -923,6 +956,23 @@ where
         }
 
         Ok(None)
+    }
+}
+
+fn format_action_run_status<A>(action: &A, status: &ActionRunStatus) -> String {
+    let _ = action;
+    match status {
+        ActionRunStatus::RunSubmitted => "code execution submitted".to_owned(),
+        ActionRunStatus::RunStarted => "running code".to_owned(),
+        ActionRunStatus::ActionEnqueued { .. } => "waiting for skill action".to_owned(),
+        ActionRunStatus::ActionClaimed { worker_id, .. } => {
+            format!("running skill action ({worker_id})")
+        }
+        ActionRunStatus::ActionCompleted { .. } => "skill action completed".to_owned(),
+        ActionRunStatus::ActionFailed { message, .. } => {
+            format!("skill action failed: {message}")
+        }
+        ActionRunStatus::RunResumed => "resuming code execution".to_owned(),
     }
 }
 

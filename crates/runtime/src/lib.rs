@@ -3,7 +3,7 @@
 mod action;
 mod catalog;
 mod capabilities;
-mod code_environment;
+mod agent_workspace;
 mod code_tools;
 mod engine;
 mod events;
@@ -21,13 +21,23 @@ pub use capabilities::{
     CapabilityProvider, CapabilityProviderError, CapabilityProviderRegistry,
     SqliteCapabilityProvider,
 };
-pub use code_environment::{
-    CodeEnvironment, CodeEnvironmentAction, CodeEnvironmentActiveSkill,
-    CodeEnvironmentAvailableSkill, CodeEnvironmentError, CodeEnvironmentEvent,
-    CodeEnvironmentObservation, CodeEnvironmentOutcome, CodeEnvironmentSnapshot, CodeToolExecutor,
-    SubmittedCodeAction,
+pub use agent_workspace::{
+    AgentWorkspace, AgentWorkspaceAction, AgentWorkspaceActionRunStatus,
+    AgentWorkspaceActiveSkill, AgentWorkspaceAvailableSkill, AgentWorkspaceError,
+    AgentWorkspaceEvent, AgentWorkspaceExecutionEngineHandle, AgentWorkspaceObservation,
+    AgentWorkspaceOutcome, AgentWorkspaceSnapshot, AgentWorkspaceToolExecutor,
+    SubmittedAgentWorkspaceAction,
 };
-pub use code_tools::{CodeEnvironmentTool, default_code_environment_tools};
+pub use code_tools::{AgentWorkspaceTool, default_agent_workspace_tools};
+pub type WorkspaceAction = AgentWorkspaceAction;
+pub type WorkspaceActionRunStatus = AgentWorkspaceActionRunStatus;
+pub type WorkspaceActiveSkill = AgentWorkspaceActiveSkill;
+pub type WorkspaceAvailableSkill = AgentWorkspaceAvailableSkill;
+pub type WorkspaceObservation = AgentWorkspaceObservation;
+pub type WorkspaceOutcome = AgentWorkspaceOutcome;
+pub type WorkspaceSnapshot = AgentWorkspaceSnapshot;
+pub type WorkspaceToolDefinition = AgentWorkspaceTool;
+pub type SubmittedWorkspaceAction = SubmittedAgentWorkspaceAction;
 
 pub(crate) use action::ActionWorker;
 pub use engine::{ExecutionEngine, ExecutionEngineError};

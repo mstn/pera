@@ -122,12 +122,39 @@ pub struct SubmittedAction {
     pub action_id: ActionId,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActionRunStatus {
+    RunSubmitted,
+    RunStarted,
+    ActionEnqueued {
+        engine_action_id: ActionId,
+    },
+    ActionClaimed {
+        engine_action_id: ActionId,
+        worker_id: String,
+    },
+    ActionCompleted {
+        engine_action_id: ActionId,
+    },
+    ActionFailed {
+        engine_action_id: ActionId,
+        message: String,
+    },
+    RunResumed,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum EnvironmentEvent<A, U> {
     ActionAccepted {
         participant: ParticipantId,
         action_id: ActionId,
         action: A,
+    },
+    ActionRunStatus {
+        participant: ParticipantId,
+        action_id: ActionId,
+        run_id: RunId,
+        status: ActionRunStatus,
     },
     ActionCompleted {
         participant: ParticipantId,
@@ -157,6 +184,12 @@ pub enum TrajectoryEvent<O, A, U> {
         participant: ParticipantId,
         action: A,
         execution: ActionExecution,
+    },
+    ActionRunStatus {
+        participant: ParticipantId,
+        action_id: ActionId,
+        run_id: RunId,
+        status: ActionRunStatus,
     },
     ActionSubmitted {
         participant: ParticipantId,

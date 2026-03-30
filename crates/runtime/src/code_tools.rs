@@ -1,15 +1,15 @@
 use serde_json::{Value, json};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CodeEnvironmentTool {
+pub struct AgentWorkspaceTool {
     pub name: String,
     pub description: String,
     pub input_schema: Value,
 }
 
-pub fn default_code_environment_tools() -> Vec<CodeEnvironmentTool> {
+pub fn default_agent_workspace_tools() -> Vec<AgentWorkspaceTool> {
     vec![
-        CodeEnvironmentTool {
+        AgentWorkspaceTool {
             name: "load_skill".to_owned(),
             description:
                 "Load a skill by name so you can use it while working on the current request."
@@ -26,7 +26,7 @@ pub fn default_code_environment_tools() -> Vec<CodeEnvironmentTool> {
                 "required": ["skill_name"]
             }),
         },
-        CodeEnvironmentTool {
+        AgentWorkspaceTool {
             name: "unload_skill".to_owned(),
             description: "Unload a previously loaded skill when you no longer need it."
                 .to_owned(),
@@ -42,7 +42,7 @@ pub fn default_code_environment_tools() -> Vec<CodeEnvironmentTool> {
                 "required": ["skill_name"]
             }),
         },
-        CodeEnvironmentTool {
+        AgentWorkspaceTool {
             name: "execute_code".to_owned(),
             description:
                 "Execute code in the workspace and inspect the result before replying."

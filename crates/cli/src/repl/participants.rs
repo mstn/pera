@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use pera_orchestrator::{
-    CodeAction, Participant, ParticipantDecision, ParticipantError, ParticipantId,
-    ParticipantInput, ParticipantOutput,
+    Participant, ParticipantDecision, ParticipantError, ParticipantId, ParticipantInput,
+    ParticipantOutput,
 };
+use pera_runtime::{WorkspaceAction, WorkspaceObservation, WorkspaceOutcome};
 use tokio::sync::mpsc;
 
 use crate::repl::transport::InboundTransportEvent;
@@ -13,9 +14,9 @@ pub struct HumanParticipant {
 
 #[async_trait]
 impl Participant for HumanParticipant {
-    type Observation = pera_orchestrator::CodeObservation;
-    type Action = CodeAction;
-    type Outcome = pera_orchestrator::CodeOutcome;
+    type Observation = WorkspaceObservation;
+    type Action = WorkspaceAction;
+    type Outcome = WorkspaceOutcome;
 
     fn id(&self) -> ParticipantId {
         ParticipantId::User
@@ -55,8 +56,9 @@ mod tests {
     use async_trait::async_trait;
     use pera_core::RunId;
     use pera_orchestrator::{
-        CodeObservation, ParticipantInboxEvent, RunLimits, TaskSpec, Trajectory, TrajectoryEvent,
+        ParticipantInboxEvent, RunLimits, TaskSpec, Trajectory, TrajectoryEvent,
     };
+    use pera_runtime::WorkspaceObservation;
 
     use super::*;
 
@@ -64,9 +66,9 @@ mod tests {
 
     #[async_trait]
     impl Participant for DemoAgentParticipant {
-        type Observation = pera_orchestrator::CodeObservation;
-        type Action = CodeAction;
-        type Outcome = pera_orchestrator::CodeOutcome;
+        type Observation = WorkspaceObservation;
+        type Action = WorkspaceAction;
+        type Outcome = WorkspaceOutcome;
 
         fn id(&self) -> ParticipantId {
             ParticipantId::Agent
@@ -75,7 +77,7 @@ mod tests {
         async fn respond(
             &mut self,
             input: ParticipantInput<Self::Observation, Self::Action, Self::Outcome>,
-            output: &mut dyn ParticipantOutput<Self::Action>,
+            output: &mut dyn ParticipantOutput<Self::Action, Self::Outcome>,
         ) -> Result<ParticipantDecision<Self::Action>, ParticipantError> {
             let Some(user_message) = last_user_message(&input) else {
                 return Ok(ParticipantDecision::Yield);
@@ -101,9 +103,9 @@ mod tests {
 
     fn last_user_message(
         input: &ParticipantInput<
-            pera_orchestrator::CodeObservation,
-            CodeAction,
-            pera_orchestrator::CodeOutcome,
+            WorkspaceObservation,
+            WorkspaceAction,
+            WorkspaceOutcome,
         >,
     ) -> Option<&str> {
         if let Some(message) = input.inbox.iter().rev().find_map(|event| match event {
@@ -136,7 +138,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl ParticipantOutput<CodeAction> for RecordingOutput {
+    impl ParticipantOutput<WorkspaceAction, WorkspaceOutcome> for RecordingOutput {
         async fn message_start(
             &mut self,
             _participant: &ParticipantId,
@@ -162,8 +164,8 @@ mod tests {
     }
 
     fn test_input(
-        events: Vec<TrajectoryEvent<CodeObservation, CodeAction, pera_orchestrator::CodeOutcome>>,
-    ) -> ParticipantInput<CodeObservation, CodeAction, pera_orchestrator::CodeOutcome> {
+        events: Vec<TrajectoryEvent<WorkspaceObservation, WorkspaceAction, WorkspaceOutcome>>,
+    ) -> ParticipantInput<WorkspaceObservation, WorkspaceAction, WorkspaceOutcome> {
         ParticipantInput {
             run_id: RunId::generate(),
             agent_loop_id: pera_core::WorkItemId::generate(),
@@ -174,12 +176,12 @@ mod tests {
                 instructions: "test".to_owned(),
             },
             limits: RunLimits::default(),
-            observation: CodeObservation {
+            observation: WorkspaceObservation {
                 available_tools: Vec::new(),
                 available_skills: Vec::new(),
                 active_skills: Vec::new(),
             },
-            inbox: Vec::<ParticipantInboxEvent<CodeAction, pera_orchestrator::CodeOutcome>>::new(),
+            inbox: Vec::<ParticipantInboxEvent<WorkspaceAction, WorkspaceOutcome>>::new(),
             trajectory: Trajectory {
                 run_id: RunId::generate(),
                 events,

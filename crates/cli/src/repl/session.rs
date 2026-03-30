@@ -7,11 +7,10 @@ use pera_agents::{
     ProviderBackedPromptBuilder,
 };
 use pera_orchestrator::{
-    CodeAction, InitialInboxMessage, Participant, ParticipantError, ParticipantId,
-    ParticipantOutput, RuntimeCodeEnvironment, RunLimits, RunRequest, TaskSpec,
-    TerminationCondition,
+    InitialInboxMessage, Participant, ParticipantError, ParticipantId, ParticipantOutput,
+    RunLimits, RunRequest, TaskSpec, TerminationCondition,
 };
-use pera_runtime::{CodeEnvironment, FileSystemSkillRuntimeLoader};
+use pera_runtime::{AgentWorkspace, WorkspaceAction, WorkspaceObservation, WorkspaceOutcome};
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -23,19 +22,14 @@ use crate::repl::renderer::render_transport_output;
 use crate::repl::transport::{InboundTransportEvent, OutboundTransportEvent};
 
 pub async fn run_repl(agent_config: AgentConfig) -> Result<(), CliError> {
-    let skill_runtime = FileSystemSkillRuntimeLoader::new(&agent_config.root)
-        .load()
-        .map_err(CliError::Store)?;
     info!(
         root = %agent_config.root.display(),
         catalog_root = %agent_config.root.join("catalog").join("skills").display(),
-        discovered_skill_count = skill_runtime.catalog().skills().count(),
-        "loaded skill runtime for repl",
+        "building agent workspace for repl",
     );
-    let environment = RuntimeCodeEnvironment::new(
-        CodeEnvironment::new(&agent_config.root, Some(skill_runtime))
-            .map_err(|error| CliError::UnexpectedStateOwned(error.to_string()))?,
-    );
+    let environment = AgentWorkspace::from_root(&agent_config.root)
+        .await
+        .map_err(|error| CliError::UnexpectedStateOwned(error.to_string()))?;
     let (console_input_tx, console_input_rx) = mpsc::unbounded_channel();
     let (console_output_tx, console_output_rx) = mpsc::unbounded_channel();
 
@@ -70,10 +64,10 @@ pub async fn run_repl(agent_config: AgentConfig) -> Result<(), CliError> {
 
     let participants: Vec<
         Box<
-            dyn Participant<
-                    Observation = pera_orchestrator::CodeObservation,
-                    Action = CodeAction,
-                    Outcome = pera_orchestrator::CodeOutcome,
+                    dyn Participant<
+                    Observation = WorkspaceObservation,
+                    Action = WorkspaceAction,
+                    Outcome = WorkspaceOutcome,
                 >,
         >,
     > = vec![
@@ -156,7 +150,7 @@ struct TransportBackedOutput {
 }
 
 #[async_trait]
-impl ParticipantOutput<CodeAction, pera_orchestrator::CodeOutcome> for TransportBackedOutput {
+impl ParticipantOutput<WorkspaceAction, WorkspaceOutcome> for TransportBackedOutput {
     async fn message_start(
         &mut self,
         participant: &ParticipantId,
@@ -249,12 +243,12 @@ impl ParticipantOutput<CodeAction, pera_orchestrator::CodeOutcome> for Transport
     async fn action_planned(
         &mut self,
         participant: &ParticipantId,
-        action: &CodeAction,
+        action: &WorkspaceAction,
     ) -> Result<(), ParticipantError> {
         let action = match action {
-            CodeAction::LoadSkill { skill_name } => format!("load skill {skill_name}"),
-            CodeAction::UnloadSkill { skill_name } => format!("unload skill {skill_name}"),
-            CodeAction::ExecuteCode { language, .. } => format!("execute {language} code"),
+            WorkspaceAction::LoadSkill { skill_name } => format!("load skill {skill_name}"),
+            WorkspaceAction::UnloadSkill { skill_name } => format!("unload skill {skill_name}"),
+            WorkspaceAction::ExecuteCode { language, .. } => format!("execute {language} code"),
             other => format!("{other:?}"),
         };
         self.output_tx
@@ -268,21 +262,21 @@ impl ParticipantOutput<CodeAction, pera_orchestrator::CodeOutcome> for Transport
     async fn action_completed(
         &mut self,
         participant: &ParticipantId,
-        action: &CodeAction,
-        outcome: &pera_orchestrator::CodeOutcome,
+        action: &WorkspaceAction,
+        outcome: &WorkspaceOutcome,
     ) -> Result<(), ParticipantError> {
         let status = match (action, outcome) {
             (
-                CodeAction::ExecuteCode { .. },
-                pera_orchestrator::CodeOutcome::CodeExecuted { .. },
+                WorkspaceAction::ExecuteCode { .. },
+                WorkspaceOutcome::CodeExecuted { .. },
             ) => "code execution completed".to_owned(),
             (
-                CodeAction::LoadSkill { skill_name },
-                pera_orchestrator::CodeOutcome::SkillLoaded { .. },
+                WorkspaceAction::LoadSkill { skill_name },
+                WorkspaceOutcome::SkillLoaded { .. },
             ) => format!("skill loaded: {skill_name}"),
             (
-                CodeAction::UnloadSkill { skill_name },
-                pera_orchestrator::CodeOutcome::SkillUnloaded { .. },
+                WorkspaceAction::UnloadSkill { skill_name },
+                WorkspaceOutcome::SkillUnloaded { .. },
             ) => format!("skill unloaded: {skill_name}"),
             _ => return Ok(()),
         };
@@ -292,13 +286,13 @@ impl ParticipantOutput<CodeAction, pera_orchestrator::CodeOutcome> for Transport
     async fn action_failed(
         &mut self,
         participant: &ParticipantId,
-        action: &CodeAction,
+        action: &WorkspaceAction,
         error: &str,
     ) -> Result<(), ParticipantError> {
         let status = match action {
-            CodeAction::ExecuteCode { .. } => format!("code execution failed: {error}"),
-            CodeAction::LoadSkill { skill_name } => format!("failed to load skill {skill_name}: {error}"),
-            CodeAction::UnloadSkill { skill_name } => {
+            WorkspaceAction::ExecuteCode { .. } => format!("code execution failed: {error}"),
+            WorkspaceAction::LoadSkill { skill_name } => format!("failed to load skill {skill_name}: {error}"),
+            WorkspaceAction::UnloadSkill { skill_name } => {
                 format!("failed to unload skill {skill_name}: {error}")
             }
             _ => return Ok(()),

@@ -13,8 +13,8 @@ use pera_core::{
 };
 
 use crate::{
-    ActionExecutionUpdate, ActionExecutor, ActionProcessorError, CodeEnvironment,
-    CodeEnvironmentAction, CodeEnvironmentEvent, CodeEnvironmentOutcome, CodeToolExecutor,
+    ActionExecutionUpdate, ActionExecutor, ActionProcessorError, AgentWorkspace,
+    AgentWorkspaceAction, AgentWorkspaceEvent, AgentWorkspaceOutcome, AgentWorkspaceToolExecutor,
     EventHub, ExecutionEngine, FileSystemEventLog, FileSystemRunStore, InMemoryRunStore,
     RecordingEventPublisher, RunExecutor, RunTransitionTrigger, TeeEventPublisher,
 };
@@ -134,11 +134,11 @@ impl ActionExecutor for RejectingActionExecutor {
 struct FakeCodeToolExecutor;
 
 #[async_trait]
-impl CodeToolExecutor for FakeCodeToolExecutor {
+impl AgentWorkspaceToolExecutor for FakeCodeToolExecutor {
     async fn execute_tool(
         &self,
         request: pera_core::ActionRequest,
-    ) -> Result<CanonicalValue, crate::CodeEnvironmentError> {
+    ) -> Result<CanonicalValue, crate::AgentWorkspaceError> {
         Ok(request
             .invocation
             .arguments
@@ -524,18 +524,20 @@ async fn execution_engine_recovers_waiting_runs_from_event_log() {
 async fn code_environment_executes_tools_through_async_executor() {
     let root = temp_root("code-env-tool");
     std::fs::create_dir_all(&root).unwrap();
-    let mut environment = CodeEnvironment::with_tool_executor(
-        &root,
+    let mut environment = AgentWorkspace::with_tool_executor(
         None,
         Arc::new(FakeCodeToolExecutor),
-    );
+        None,
+        None,
+    )
+    .unwrap();
     let observation = environment.reset().await.unwrap();
     assert_eq!(observation.available_tools.len(), 3);
     assert!(observation.available_skills.is_empty());
     assert!(observation.active_skills.is_empty());
 
     let outcome = environment
-        .step(CodeEnvironmentAction::CallTool {
+        .step(AgentWorkspaceAction::CallTool {
             skill: pera_core::ActionSkillRef {
                 skill_name: "test-skill".to_owned(),
                 skill_version: None,
@@ -550,14 +552,14 @@ async fn code_environment_executes_tools_through_async_executor() {
         .unwrap();
 
     match outcome {
-        CodeEnvironmentOutcome::ToolCall { value, .. } => {
+        AgentWorkspaceOutcome::ToolCall { value, .. } => {
             assert_eq!(value, CanonicalValue::S64(17));
         }
-        CodeEnvironmentOutcome::CodeExecuted { .. } => {
+        AgentWorkspaceOutcome::CodeExecuted { .. } => {
             panic!("expected tool call outcome");
         }
-        CodeEnvironmentOutcome::SkillLoaded { .. }
-        | CodeEnvironmentOutcome::SkillUnloaded { .. } => {
+        AgentWorkspaceOutcome::SkillLoaded { .. }
+        | AgentWorkspaceOutcome::SkillUnloaded { .. } => {
             panic!("expected tool call outcome");
         }
     }
@@ -569,17 +571,19 @@ async fn code_environment_executes_tools_through_async_executor() {
 async fn code_environment_submits_and_polls_deferred_actions() {
     let root = temp_root("code-env-submit");
     std::fs::create_dir_all(&root).unwrap();
-    let mut environment = CodeEnvironment::with_tool_executor(
-        &root,
+    let mut environment = AgentWorkspace::with_tool_executor(
         None,
         Arc::new(FakeCodeToolExecutor),
-    );
+        None,
+        None,
+    )
+    .unwrap();
     environment.reset().await.unwrap();
 
     let submitted = environment
         .submit(
             "agent".to_owned(),
-            CodeEnvironmentAction::CallTool {
+            AgentWorkspaceAction::CallTool {
                 skill: pera_core::ActionSkillRef {
                     skill_name: "test-skill".to_owned(),
                     skill_version: None,
@@ -605,10 +609,10 @@ async fn code_environment_submits_and_polls_deferred_actions() {
 
     assert!(events.iter().any(|event| matches!(
         event,
-        CodeEnvironmentEvent::ActionCompleted {
+        AgentWorkspaceEvent::ActionCompleted {
             actor,
             action_id,
-            outcome: CodeEnvironmentOutcome::ToolCall { value, .. },
+            outcome: AgentWorkspaceOutcome::ToolCall { value, .. },
         } if actor == "agent" && *action_id == submitted.action_id && *value == CanonicalValue::S64(17)
     )), "events: {:?}", events);
 

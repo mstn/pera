@@ -1,7 +1,7 @@
 use pera_orchestrator::{
-    CodeAction, CodeObservation, CodeOutcome, ParticipantId, ParticipantInboxEvent,
-    ParticipantInput, TrajectoryEvent,
+    ParticipantId, ParticipantInboxEvent, ParticipantInput, TrajectoryEvent,
 };
+use pera_runtime::{WorkspaceAction, WorkspaceObservation, WorkspaceOutcome};
 
 use crate::llm::LlmToolDefinition;
 
@@ -41,7 +41,7 @@ pub struct ActiveSkillPrompt {
 pub trait CodePromptBuilder: Send + Sync {
     fn build_context(
         &self,
-        input: &ParticipantInput<CodeObservation, CodeAction, CodeOutcome>,
+        input: &ParticipantInput<WorkspaceObservation, WorkspaceAction, WorkspaceOutcome>,
     ) -> PromptContext;
 
     fn build_system_prompt(&self, context: &PromptContext) -> String;
@@ -53,7 +53,7 @@ pub struct ProviderBackedPromptBuilder;
 impl CodePromptBuilder for ProviderBackedPromptBuilder {
     fn build_context(
         &self,
-        input: &ParticipantInput<CodeObservation, CodeAction, CodeOutcome>,
+        input: &ParticipantInput<WorkspaceObservation, WorkspaceAction, WorkspaceOutcome>,
     ) -> PromptContext {
         let inbox = input
             .inbox
@@ -155,7 +155,7 @@ impl CodePromptBuilder for ProviderBackedPromptBuilder {
     }
 }
 
-fn inbox_message(event: &ParticipantInboxEvent<CodeAction, CodeOutcome>) -> Option<PromptMessage> {
+fn inbox_message(event: &ParticipantInboxEvent<WorkspaceAction, WorkspaceOutcome>) -> Option<PromptMessage> {
     match event {
         ParticipantInboxEvent::Message { from, content } => Some(PromptMessage {
             role: role_for_participant(from),
@@ -177,7 +177,7 @@ fn inbox_message(event: &ParticipantInboxEvent<CodeAction, CodeOutcome>) -> Opti
 }
 
 fn trajectory_message(
-    event: &TrajectoryEvent<CodeObservation, CodeAction, CodeOutcome>,
+    event: &TrajectoryEvent<WorkspaceObservation, WorkspaceAction, WorkspaceOutcome>,
 ) -> Option<PromptMessage> {
     match event {
         TrajectoryEvent::ParticipantMessage {
@@ -199,24 +199,24 @@ fn role_for_participant(participant: &ParticipantId) -> String {
     }
 }
 
-fn action_completed_message(outcome: &CodeOutcome) -> Option<PromptMessage> {
+fn action_completed_message(outcome: &WorkspaceOutcome) -> Option<PromptMessage> {
     match outcome {
-        CodeOutcome::CodeExecuted { language, result } => Some(PromptMessage {
+        WorkspaceOutcome::CodeExecuted { language, result } => Some(PromptMessage {
             role: "system".to_owned(),
             content: format!(
                 "Code execution completed.\nLanguage: {language}\nResult:\n{}",
                 serde_json::to_string_pretty(result).unwrap_or_else(|_| format!("{result:?}"))
             ),
         }),
-        CodeOutcome::SkillLoaded { skill_name } => Some(PromptMessage {
+        WorkspaceOutcome::SkillLoaded { skill_name } => Some(PromptMessage {
             role: "system".to_owned(),
             content: format!("Skill loaded: {skill_name}"),
         }),
-        CodeOutcome::SkillUnloaded { skill_name } => Some(PromptMessage {
+        WorkspaceOutcome::SkillUnloaded { skill_name } => Some(PromptMessage {
             role: "system".to_owned(),
             content: format!("Skill unloaded: {skill_name}"),
         }),
-        CodeOutcome::ToolCall { .. } => None,
+        WorkspaceOutcome::ToolCall { .. } => None,
     }
 }
 
@@ -226,9 +226,11 @@ mod tests {
 
     use pera_core::{RunId, WorkItemId};
     use pera_orchestrator::{
-        CodeActiveSkill, CodeAvailableSkill, CodeObservation, CodeToolDefinition,
         ParticipantInboxEvent, ParticipantInput, ParticipantId, RunLimits, TaskSpec, Trajectory,
         TrajectoryEvent,
+    };
+    use pera_runtime::{
+        AgentWorkspaceTool, WorkspaceActiveSkill, WorkspaceAvailableSkill, WorkspaceObservation,
     };
     use serde_json::json;
 
@@ -253,8 +255,8 @@ mod tests {
                 max_messages: 10,
                 max_duration: Some(Duration::from_secs(10)),
             },
-            observation: CodeObservation {
-                available_tools: vec![CodeToolDefinition {
+            observation: WorkspaceObservation {
+                available_tools: vec![AgentWorkspaceTool {
                     name: "load_skill".to_owned(),
                     description: "Activate a skill.".to_owned(),
                     input_schema: json!({
@@ -265,11 +267,11 @@ mod tests {
                         "required": ["skill_name"]
                     }),
                 }],
-                available_skills: vec![CodeAvailableSkill {
+                available_skills: vec![WorkspaceAvailableSkill {
                     skill_name: "sqlite".to_owned(),
                     description: "Use when you need structured data queries.".to_owned(),
                 }],
-                active_skills: vec![CodeActiveSkill {
+                active_skills: vec![WorkspaceActiveSkill {
                     skill_name: "git".to_owned(),
                     instructions: "Use this skill for repository inspection.".to_owned(),
                     python_stub: "def status() -> str: ...".to_owned(),

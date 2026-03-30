@@ -6,9 +6,10 @@ use futures_util::StreamExt;
 use futures_util::stream::Stream;
 use pera_core::{RunId, WorkItemId};
 use pera_orchestrator::{
-    CodeAction, CodeObservation, CodeOutcome, Participant, ParticipantDecision,
+    Participant, ParticipantDecision,
     ParticipantError, ParticipantId, ParticipantInput, ParticipantOutput,
 };
+use pera_runtime::{WorkspaceAction, WorkspaceObservation, WorkspaceOutcome};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -168,9 +169,9 @@ where
     P: LlmProvider + 'static,
     B: CodePromptBuilder + 'static,
 {
-    type Observation = CodeObservation;
-    type Action = CodeAction;
-    type Outcome = CodeOutcome;
+    type Observation = WorkspaceObservation;
+    type Action = WorkspaceAction;
+    type Outcome = WorkspaceOutcome;
 
     fn id(&self) -> ParticipantId {
         ParticipantId::Agent
@@ -287,19 +288,19 @@ where
 
 fn map_tool_call_to_decision(
     tool_call: LlmToolCall,
-) -> Result<ParticipantDecision<CodeAction>, ParticipantError> {
+) -> Result<ParticipantDecision<WorkspaceAction>, ParticipantError> {
     match tool_call.name.as_str() {
         "load_skill" => {
             let skill_name = required_string_argument(&tool_call.arguments, "skill_name")?;
             Ok(ParticipantDecision::Action {
-                action: CodeAction::LoadSkill { skill_name },
+                action: WorkspaceAction::LoadSkill { skill_name },
                 execution: pera_orchestrator::ActionExecution::Immediate,
             })
         }
         "unload_skill" => {
             let skill_name = required_string_argument(&tool_call.arguments, "skill_name")?;
             Ok(ParticipantDecision::Action {
-                action: CodeAction::UnloadSkill { skill_name },
+                action: WorkspaceAction::UnloadSkill { skill_name },
                 execution: pera_orchestrator::ActionExecution::Immediate,
             })
         }
@@ -307,7 +308,7 @@ fn map_tool_call_to_decision(
             let language = required_string_argument(&tool_call.arguments, "language")?;
             let source = required_string_argument(&tool_call.arguments, "source")?;
             Ok(ParticipantDecision::Action {
-                action: CodeAction::ExecuteCode { language, source },
+                action: WorkspaceAction::ExecuteCode { language, source },
                 execution: pera_orchestrator::ActionExecution::DeferredBlocking,
             })
         }
@@ -343,18 +344,18 @@ fn status_for_tool_delta(tool_name: &str, arguments_delta: &str) -> Option<Strin
     }
 }
 
-fn status_for_action_decision(decision: &ParticipantDecision<CodeAction>) -> String {
+fn status_for_action_decision(decision: &ParticipantDecision<WorkspaceAction>) -> String {
     match decision {
         ParticipantDecision::Action {
-            action: CodeAction::LoadSkill { skill_name },
+            action: WorkspaceAction::LoadSkill { skill_name },
             ..
         } => format!("loading skill {skill_name}"),
         ParticipantDecision::Action {
-            action: CodeAction::UnloadSkill { skill_name },
+            action: WorkspaceAction::UnloadSkill { skill_name },
             ..
         } => format!("unloading skill {skill_name}"),
         ParticipantDecision::Action {
-            action: CodeAction::ExecuteCode { .. },
+            action: WorkspaceAction::ExecuteCode { .. },
             ..
         } => "executing code".to_owned(),
         ParticipantDecision::Action { .. } => "planning action".to_owned(),
@@ -380,7 +381,8 @@ mod tests {
     use serde_json::json;
 
     use super::{LlmToolCall, map_tool_call_to_decision};
-    use pera_orchestrator::{CodeAction, ParticipantDecision};
+    use pera_orchestrator::ParticipantDecision;
+    use pera_runtime::WorkspaceAction;
 
     #[test]
     fn maps_load_skill_tool_call_to_action() {
@@ -394,7 +396,7 @@ mod tests {
         assert_eq!(
             decision,
             ParticipantDecision::Action {
-                action: CodeAction::LoadSkill {
+                action: WorkspaceAction::LoadSkill {
                     skill_name: "secret-service".to_owned(),
                 },
                 execution: pera_orchestrator::ActionExecution::Immediate,
@@ -414,7 +416,7 @@ mod tests {
         assert_eq!(
             decision,
             ParticipantDecision::Action {
-                action: CodeAction::UnloadSkill {
+                action: WorkspaceAction::UnloadSkill {
                     skill_name: "secret-service".to_owned(),
                 },
                 execution: pera_orchestrator::ActionExecution::Immediate,
@@ -438,7 +440,7 @@ mod tests {
         assert_eq!(
             decision,
             ParticipantDecision::Action {
-                action: CodeAction::ExecuteCode {
+                action: WorkspaceAction::ExecuteCode {
                     language: "python".to_owned(),
                     source: "print(1)".to_owned(),
                 },
