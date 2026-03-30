@@ -13,16 +13,10 @@ use pera_orchestrator::{
     ActionRunStatus, Environment, EnvironmentError, EnvironmentEvent, ParticipantId,
     SubmittedAction, TaskSpec,
 };
-#[cfg(feature = "monty")]
 use pera_core::{
     ActionId, ActionRequest, ActionResult, ActionSkillRef, CanonicalInvocation, CanonicalValue,
     CodeArtifact, CodeArtifactId, CodeLanguage, ExecutionEvent, InputValues, RunId, ScriptName, SkillManifest,
     StartExecutionRequest, Value,
-};
-#[cfg(not(feature = "monty"))]
-use pera_core::{
-    ActionId, ActionRequest, ActionSkillRef, CanonicalInvocation, CanonicalValue, RunId,
-    SkillManifest, StartExecutionRequest, Value,
 };
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -33,9 +27,7 @@ use crate::{
     ActionExecutionUpdate, ActionExecutor, EventSubscription, ExecutionEngine, SkillRuntime,
     WasmtimeComponentActionExecutor,
 };
-#[cfg(feature = "monty")]
 use crate::{RunExecutor, interpreter::MontyInterpreter};
-#[cfg(feature = "monty")]
 use crate::{
     EventHub, FileSystemEventLog, FileSystemRunStore, FileSystemSkillRuntimeLoader,
     TeeEventPublisher,
@@ -283,7 +275,6 @@ impl std::fmt::Debug for AgentWorkspace {
 }
 
 impl AgentWorkspace {
-    #[cfg(feature = "monty")]
     pub async fn from_root(root: impl Into<PathBuf>) -> Result<Self, AgentWorkspaceError> {
         let root = root.into();
         let skill_runtime = FileSystemSkillRuntimeLoader::new(&root)
@@ -320,13 +311,6 @@ impl AgentWorkspace {
             Some(execution_engine),
             Some(execution_events),
         )
-    }
-
-    #[cfg(not(feature = "monty"))]
-    pub async fn from_root(_root: impl Into<PathBuf>) -> Result<Self, AgentWorkspaceError> {
-        Err(AgentWorkspaceError::new(
-            "AgentWorkspace::from_root requires the 'monty' feature",
-        ))
     }
 
     pub fn new(
@@ -516,7 +500,6 @@ impl AgentWorkspace {
             }
         }
 
-        #[cfg(feature = "monty")]
         if let Some(subscription) = &mut self.execution_events {
             let mut execution_events = Vec::new();
             loop {
@@ -582,7 +565,6 @@ impl AgentWorkspace {
         })
     }
 
-    #[cfg(feature = "monty")]
     async fn execute_code(
         &self,
         language: String,
@@ -658,18 +640,6 @@ impl AgentWorkspace {
         }
     }
 
-    #[cfg(not(feature = "monty"))]
-    async fn execute_code(
-        &self,
-        _language: String,
-        _source: String,
-    ) -> Result<AgentWorkspaceOutcome, AgentWorkspaceError> {
-        Err(AgentWorkspaceError::new(
-            "execute_code requires the 'monty' feature",
-        ))
-    }
-
-    #[cfg(feature = "monty")]
     async fn submit_execute_code(
         &mut self,
         actor: String,
@@ -702,19 +672,6 @@ impl AgentWorkspace {
         Ok(SubmittedAgentWorkspaceAction { action_id })
     }
 
-    #[cfg(not(feature = "monty"))]
-    async fn submit_execute_code(
-        &mut self,
-        _actor: String,
-        _language: String,
-        _source: String,
-    ) -> Result<SubmittedAgentWorkspaceAction, AgentWorkspaceError> {
-        Err(AgentWorkspaceError::new(
-            "execute_code requires the 'monty' feature",
-        ))
-    }
-
-    #[cfg(feature = "monty")]
     fn translate_execution_event(
         &mut self,
         event: ExecutionEvent,
@@ -959,7 +916,6 @@ fn workspace_status_to_action_run_status(status: AgentWorkspaceActionRunStatus) 
     }
 }
 
-#[cfg(feature = "monty")]
 fn parse_code_language(language: &str) -> Result<CodeLanguage, AgentWorkspaceError> {
     match language {
         "python" => Ok(CodeLanguage::Python),
