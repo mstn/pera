@@ -10,14 +10,14 @@ use async_trait::async_trait;
 use pera_canonical::CatalogSkill;
 use pera_canonical::render_python_stubs;
 use pera_orchestrator::{
-    ActionRunStatus, Environment, EnvironmentError, EnvironmentEvent, ParticipantId,
-    ScheduledAction, TaskSpec,
+    ActionError, ActionErrorOrigin, ActionRunStatus, Environment, EnvironmentError,
+    EnvironmentEvent, ParticipantId, ScheduledAction, TaskSpec,
 };
 use pera_core::{
     ActionId, CodeArtifact, CodeArtifactId, CodeLanguage, ExecutionEvent, InputValues,
     RunId, ScriptName, SkillManifest, StartExecutionRequest, Value,
 };
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 use crate::AgentWorkspaceTool;
 use crate::code_tools::default_agent_workspace_tools;
@@ -44,6 +44,23 @@ fn parse_participant_id(value: String) -> ParticipantId {
         "agent" => ParticipantId::Agent,
         "user" => ParticipantId::User,
         _ => ParticipantId::Custom(value),
+    }
+}
+
+fn action_error_from_workspace_error(error: AgentWorkspaceError) -> ActionError {
+    let detail = error.to_string();
+    if detail.contains("interpreter error:") {
+        ActionError {
+            user_message: "The generated code could not be executed.".to_owned(),
+            detail,
+            origin: ActionErrorOrigin::Interpreter,
+        }
+    } else {
+        ActionError {
+            user_message: "The requested action could not be started.".to_owned(),
+            detail,
+            origin: ActionErrorOrigin::Environment,
+        }
     }
 }
 
@@ -116,7 +133,7 @@ pub enum AgentWorkspaceEvent {
     ActionFailed {
         actor: String,
         action_id: ActionId,
-        error: String,
+        error: ActionError,
     },
     Notification {
         actor: String,
@@ -405,6 +422,12 @@ impl AgentWorkspace {
         language: String,
         source: String,
     ) -> Result<ScheduledAgentWorkspaceAction, AgentWorkspaceError> {
+        info!(
+            actor,
+            language,
+            source_len = source.len(),
+            "agent workspace submitting execute_code"
+        );
         let code_language = parse_code_language(&language)?;
         let request = pera_core::StartExecutionRequest {
             code: CodeArtifact {
@@ -421,7 +444,23 @@ impl AgentWorkspace {
             .execution_engine
             .submit(request)
             .await
-            .map_err(|error| AgentWorkspaceError::new(error.to_string()))?;
+            .map_err(|error| {
+                warn!(
+                    actor,
+                    language,
+                    action_id = %action_id,
+                    error = %error,
+                    "agent workspace failed to submit execute_code to execution engine"
+                );
+                AgentWorkspaceError::new(error.to_string())
+            })?;
+        info!(
+            actor,
+            language,
+            action_id = %action_id,
+            run_id = %run_id,
+            "agent workspace submitted execute_code to execution engine"
+        );
         self.execution_runs_by_id.insert(run_id, action_id);
         self.pending_execution_runs
             .insert(action_id, PendingExecutionRun { actor, language });
@@ -532,7 +571,11 @@ impl AgentWorkspace {
                 Ok(AgentWorkspaceEvent::ActionFailed {
                     actor: pending.actor,
                     action_id,
-                    error: message,
+                    error: ActionError {
+                        user_message: "The generated code could not be executed.".to_owned(),
+                        detail: message,
+                        origin: ActionErrorOrigin::Interpreter,
+                    },
                 })
             }
             ExecutionEvent::ActionFailed {
@@ -592,10 +635,16 @@ impl Environment for AgentWorkspace {
         &mut self,
         actor: ParticipantId,
         action: Self::Action,
-    ) -> Result<ScheduledAction, EnvironmentError> {
+    ) -> Result<ScheduledAction, ActionError> {
         let actor = format_participant_id(&actor);
         let scheduled = match action {
             AgentWorkspaceAction::ExecuteCode { language, source } => {
+                debug!(
+                    actor,
+                    language,
+                    source_len = source.len(),
+                    "agent workspace received deferred execute_code action"
+                );
                 self.submit_execute_code(actor, language, source).await
             }
             _ => Err(AgentWorkspaceError::new(
@@ -603,11 +652,9 @@ impl Environment for AgentWorkspace {
             )),
         };
 
-        scheduled
-            .map(|scheduled| ScheduledAction {
-                action_id: scheduled.action_id,
-            })
-            .map_err(|error: AgentWorkspaceError| EnvironmentError::new(error.to_string()))
+        scheduled.map(|scheduled| ScheduledAction {
+            action_id: scheduled.action_id,
+        }).map_err(action_error_from_workspace_error)
     }
 
     async fn poll_events(

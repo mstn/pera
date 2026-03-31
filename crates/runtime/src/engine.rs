@@ -9,7 +9,7 @@ use pera_core::{
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
-use tracing::error;
+use tracing::{debug, error, info};
 
 use crate::{
     ActionExecutionUpdate, ActionExecutor, ActionWorker, EventHub, EventSubscription, RunExecutor,
@@ -259,14 +259,35 @@ where
     ) -> Result<RunId, ExecutionEngineError> {
         let run_id = self.allocate_run_id();
         let code_id = self.allocate_code_id();
+        info!(
+            run_id = %run_id,
+            code_id = %code_id,
+            language = ?request.code.language,
+            script_name = request.code.script_name.as_str(),
+            source_len = request.code.source.len(),
+            "execution engine received submit request"
+        );
         request.code.id = code_id;
         let code_artifact = request.code.clone();
+        self.store
+            .save_code_artifact(run_id, &code_artifact)?;
+        info!(
+            run_id = %run_id,
+            artifact_id = %code_artifact.id,
+            "execution engine persisted code artifact before execution"
+        );
         let transition =
             self.run_executor
                 .start_run(request, run_id, code_id, pera_core::ActionId::generate)?;
-        self.store
-            .save_code_artifact(run_id, &code_artifact)?;
+        debug!(
+            run_id = %run_id,
+            status = ?transition.session.status,
+            action_count = transition.action_records.len(),
+            enqueued_action = transition.action_to_enqueue.as_ref().map(|action| action.id.as_hyphenated().to_string()),
+            "execution engine started run transition"
+        );
         self.apply_transition(transition).await?;
+        info!(run_id = %run_id, "execution engine submit completed");
         Ok(run_id)
     }
 

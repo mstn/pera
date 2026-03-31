@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use pera_core::{ActionId, RunId, WorkItemId};
+use tracing::{debug, warn};
 
 use crate::error::EvaluatorError;
 use crate::streaming::{NoopParticipantOutput, ParticipantOutput};
@@ -871,6 +872,12 @@ where
                     }
                     ActionExecution::DeferredBlocking | ActionExecution::DeferredNonBlocking => {
                         let blocking = execution == ActionExecution::DeferredBlocking;
+                        let deferred_action_id = ActionId::generate();
+                        debug!(
+                            participant = ?participant_id,
+                            blocking,
+                            "orchestrator scheduling deferred action"
+                        );
                         output
                             .action_planned(&participant_id, &action)
                             .await
@@ -885,6 +892,12 @@ where
                             .await
                         {
                             Ok(ScheduledAction { action_id }) => {
+                                debug!(
+                                    participant = ?participant_id,
+                                    action_id = %action_id,
+                                    blocking,
+                                    "orchestrator scheduled deferred action"
+                                );
                                 state.trajectory.push(TrajectoryEvent::ActionScheduled {
                                     participant: participant_id.clone(),
                                     action_id,
@@ -911,7 +924,21 @@ where
                                 );
                             }
                             Err(error) => {
-                                return Ok(Some(FinishReason::EnvironmentError(error.to_string())));
+                                warn!(
+                                    participant = ?participant_id,
+                                    blocking,
+                                    error = %error.detail,
+                                    "orchestrator failed to schedule deferred action"
+                                );
+                                state.submitted_actions.insert(
+                                    deferred_action_id,
+                                    (participant_id.clone(), action.clone()),
+                                );
+                                state.queue_environment_event(EnvironmentEvent::ActionFailed {
+                                    participant: participant_id.clone(),
+                                    action_id: deferred_action_id,
+                                    error,
+                                });
                             }
                         }
                     }

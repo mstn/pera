@@ -110,7 +110,7 @@ pub enum ParticipantInboxEvent<A, U> {
     },
     ActionFailed {
         action_id: ActionId,
-        error: String,
+        error: ActionError,
     },
     Notification {
         message: String,
@@ -120,6 +120,21 @@ pub enum ParticipantInboxEvent<A, U> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScheduledAction {
     pub action_id: ActionId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActionErrorOrigin {
+    Interpreter,
+    Environment,
+    ActionWorker,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionError {
+    pub user_message: String,
+    pub detail: String,
+    pub origin: ActionErrorOrigin,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,7 +187,7 @@ pub enum EnvironmentEvent<A, U> {
     ActionFailed {
         participant: ParticipantId,
         action_id: ActionId,
-        error: String,
+        error: ActionError,
     },
     Notification {
         participant: ParticipantId,
@@ -213,7 +228,7 @@ pub enum TrajectoryEvent<O, A, U> {
     ActionFailed {
         participant: ParticipantId,
         action_id: ActionId,
-        error: String,
+        error: ActionError,
     },
     ParticipantYielded {
         participant: ParticipantId,

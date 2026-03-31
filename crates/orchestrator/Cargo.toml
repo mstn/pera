@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 async-trait = "0.1"
 pera-core = { path = "../core" }
+tracing = "0.1"
 
 [dev-dependencies]
 tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread"] }

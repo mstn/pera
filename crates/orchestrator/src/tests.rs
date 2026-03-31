@@ -9,10 +9,10 @@ use crate::orchestrator::Orchestrator;
 use crate::streaming::ParticipantOutput;
 use crate::traits::{Environment, Evaluator, Participant};
 use crate::types::{
-    ActionExecution, EnvironmentEvent, EvalResult, FinishReason,
-    InitialInboxMessage, ParticipantDecision, ParticipantId, ParticipantInboxEvent, RunLimits,
-    ParticipantInput, RunRequest, ScheduledAction, TaskSpec, TerminationCondition, Trajectory,
-    TrajectoryEvent,
+    ActionError, ActionErrorOrigin, ActionExecution, EnvironmentEvent, EvalResult,
+    FinishReason, InitialInboxMessage, ParticipantDecision, ParticipantId, ParticipantInboxEvent,
+    ParticipantInput, RunLimits, RunRequest, ScheduledAction, TaskSpec, TerminationCondition,
+    Trajectory, TrajectoryEvent,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,7 +92,7 @@ impl Environment for FakeEnvironment {
         &mut self,
         _actor: ParticipantId,
         _action: Self::Action,
-    ) -> Result<ScheduledAction, EnvironmentError> {
+    ) -> Result<ScheduledAction, ActionError> {
         Ok(ScheduledAction {
             action_id: self.submitted_ids.pop_front().unwrap(),
         })

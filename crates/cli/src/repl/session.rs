@@ -7,7 +7,7 @@ use pera_agents::{
     ProviderBackedPromptBuilder,
 };
 use pera_orchestrator::{
-    InitialInboxMessage, ParticipantError, ParticipantId, ParticipantOutput,
+    ActionError, InitialInboxMessage, ParticipantError, ParticipantId, ParticipantOutput,
     RunLimits, RunRequest, TaskSpec, TerminationCondition,
 };
 use pera_runtime::{
@@ -303,13 +303,17 @@ impl ParticipantOutput<WorkspaceAction, WorkspaceOutcome> for TransportBackedOut
         &mut self,
         participant: &ParticipantId,
         action: &WorkspaceAction,
-        error: &str,
+        error: &ActionError,
     ) -> Result<(), ParticipantError> {
         let status = match action {
-            WorkspaceAction::ExecuteCode { .. } => format!("request failed: {error}"),
-            WorkspaceAction::LoadSkill { skill_name } => format!("failed to load skill {skill_name}: {error}"),
+            WorkspaceAction::ExecuteCode { .. } => {
+                format!("request failed: {}", error.user_message)
+            }
+            WorkspaceAction::LoadSkill { skill_name } => {
+                format!("failed to load skill {skill_name}: {}", error.user_message)
+            }
             WorkspaceAction::UnloadSkill { skill_name } => {
-                format!("failed to unload skill {skill_name}: {error}")
+                format!("failed to unload skill {skill_name}: {}", error.user_message)
             }
         };
         self.output_tx

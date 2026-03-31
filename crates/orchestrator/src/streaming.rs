@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use crate::error::ParticipantError;
-use crate::types::ParticipantId;
+use crate::types::{ActionError, ParticipantId};
 
 #[async_trait]
 pub trait ParticipantOutput<A, U = ()>: Send {
@@ -81,7 +81,7 @@ pub trait ParticipantOutput<A, U = ()>: Send {
         &mut self,
         participant: &ParticipantId,
         _action: &A,
-        _error: &str,
+        _error: &ActionError,
     ) -> Result<(), ParticipantError> {
         let _ = participant;
         Ok(())

@@ -166,7 +166,10 @@ fn inbox_message(event: &ParticipantInboxEvent<WorkspaceAction, WorkspaceOutcome
         }
         ParticipantInboxEvent::ActionFailed { error, .. } => Some(PromptMessage {
             role: "system".to_owned(),
-            content: format!("Action failed: {error}"),
+            content: format!(
+                "Action failed: {}\nOrigin: {:?}\nDetail:\n{}",
+                error.user_message, error.origin, error.detail
+            ),
         }),
         ParticipantInboxEvent::Notification { message } => Some(PromptMessage {
             role: "system".to_owned(),

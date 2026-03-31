@@ -3,8 +3,8 @@ use async_trait::async_trait;
 use crate::error::{EnvironmentError, EvaluatorError, ParticipantError};
 use crate::streaming::ParticipantOutput;
 use crate::types::{
-    EnvironmentEvent, EvalResult, ParticipantDecision, ParticipantId, ParticipantInput,
-    ScheduledAction, TaskSpec, Trajectory,
+    ActionError, EnvironmentEvent, EvalResult, ParticipantDecision, ParticipantId,
+    ParticipantInput, ScheduledAction, TaskSpec, Trajectory,
 };
 
 #[async_trait]
@@ -40,7 +40,7 @@ pub trait Environment: Send {
         &mut self,
         actor: ParticipantId,
         action: Self::Action,
-    ) -> Result<ScheduledAction, EnvironmentError>;
+    ) -> Result<ScheduledAction, ActionError>;
     async fn poll_events(
         &mut self,
     ) -> Result<Vec<EnvironmentEvent<Self::Action, Self::Outcome>>, EnvironmentError>;
