@@ -137,7 +137,18 @@ impl RunStore for FileSystemRunStore {
     }
 
     fn list_runs(&self) -> Result<Vec<RunId>, StoreError> {
-        list_id_entries(self.layout.runs_dir(), RunId::parse_str)
+        let mut run_ids = Vec::new();
+        for entry in fs::read_dir(self.layout.runs_dir()).map_err(io_error)? {
+            let entry = entry.map_err(io_error)?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let run_id = RunId::parse_str(&name)
+                .map_err(|_| StoreError::new(format!("invalid id entry '{name}'")))?;
+            if self.layout.run_record_path(run_id).exists() {
+                run_ids.push(run_id);
+            }
+        }
+        Ok(run_ids)
     }
 
     fn save_code_artifact(

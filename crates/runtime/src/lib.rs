@@ -27,7 +27,7 @@ pub use agent_workspace::{
     AgentWorkspaceEvent, AgentWorkspaceExecutionEngineHandle, AgentWorkspaceObservation,
     AgentWorkspaceOutcome, AgentWorkspaceSnapshot, ScheduledAgentWorkspaceAction,
 };
-pub use code_tools::{AgentWorkspaceTool, default_agent_workspace_tools};
+pub use code_tools::{AgentWorkspaceTool, agent_workspace_tools};
 pub type WorkspaceAction = AgentWorkspaceAction;
 pub type WorkspaceActionRunStatus = AgentWorkspaceActionRunStatus;
 pub type WorkspaceActiveSkill = AgentWorkspaceActiveSkill;

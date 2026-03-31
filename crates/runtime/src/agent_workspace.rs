@@ -20,7 +20,7 @@ use pera_core::{
 use tracing::{debug, info, warn};
 
 use crate::AgentWorkspaceTool;
-use crate::code_tools::default_agent_workspace_tools;
+use crate::code_tools::agent_workspace_tools;
 use crate::{EventSubscription, ExecutionEngine, SkillRuntime, WasmtimeComponentActionExecutor};
 use crate::{
     EventHub, FileSystemEventLog, FileSystemRunStore, FileSystemSkillRuntimeLoader,
@@ -343,8 +343,20 @@ impl AgentWorkspace {
             "code environment observation prepared",
         );
 
+        let available_skill_names = available_skills
+            .iter()
+            .map(|skill| skill.skill_name.clone())
+            .collect::<Vec<_>>();
+        let active_skill_names = active_skills
+            .iter()
+            .map(|skill| skill.skill_name.clone())
+            .collect::<Vec<_>>();
+
         Ok(AgentWorkspaceObservation {
-            available_tools: default_agent_workspace_tools(),
+            available_tools: agent_workspace_tools(
+                &available_skill_names,
+                &active_skill_names,
+            ),
             available_skills,
             active_skills,
         })

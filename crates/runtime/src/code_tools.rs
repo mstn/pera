@@ -7,40 +7,29 @@ pub struct AgentWorkspaceTool {
     pub input_schema: Value,
 }
 
-pub fn default_agent_workspace_tools() -> Vec<AgentWorkspaceTool> {
+pub fn agent_workspace_tools(
+    available_skill_names: &[String],
+    active_skill_names: &[String],
+) -> Vec<AgentWorkspaceTool> {
     vec![
         AgentWorkspaceTool {
             name: "load_skill".to_owned(),
             description:
                 "Load a skill by name so you can use it while working on the current request."
                     .to_owned(),
-            input_schema: json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "skill_name": {
-                        "type": "string",
-                        "description": "The name of the skill to load."
-                    }
-                },
-                "required": ["skill_name"]
-            }),
+            input_schema: skill_name_schema(
+                "The name of the skill to load.",
+                available_skill_names,
+            ),
         },
         AgentWorkspaceTool {
             name: "unload_skill".to_owned(),
             description: "Unload a previously loaded skill when you no longer need it."
                 .to_owned(),
-            input_schema: json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "skill_name": {
-                        "type": "string",
-                        "description": "The name of the skill to unload."
-                    }
-                },
-                "required": ["skill_name"]
-            }),
+            input_schema: skill_name_schema(
+                "The name of the skill to unload.",
+                active_skill_names,
+            ),
         },
         AgentWorkspaceTool {
             name: "execute_code".to_owned(),
@@ -68,4 +57,29 @@ pub fn default_agent_workspace_tools() -> Vec<AgentWorkspaceTool> {
             }),
         },
     ]
+}
+
+fn skill_name_schema(description: &str, skill_names: &[String]) -> Value {
+    let mut skill_name = json!({
+        "type": "string",
+        "description": description,
+    });
+    if !skill_names.is_empty() {
+        skill_name["enum"] = Value::Array(
+            skill_names
+                .iter()
+                .cloned()
+                .map(Value::String)
+                .collect(),
+        );
+    }
+
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "skill_name": skill_name
+        },
+        "required": ["skill_name"]
+    })
 }
