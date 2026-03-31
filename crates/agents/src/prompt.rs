@@ -216,7 +216,6 @@ fn action_completed_message(outcome: &WorkspaceOutcome) -> Option<PromptMessage>
             role: "system".to_owned(),
             content: format!("Skill unloaded: {skill_name}"),
         }),
-        WorkspaceOutcome::ToolCall { .. } => None,
     }
 }
 

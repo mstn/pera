@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use pera_canonical::{CatalogSkill, SkillCatalog, SkillMetadata};
@@ -11,11 +10,8 @@ use pera_core::{
     ExternalCall, InputValues, Interpreter, InterpreterError, InterpreterKind, InterpreterStep,
     RunStore, ScriptName, StartExecutionRequest, Suspension, Value,
 };
-use pera_orchestrator::{Environment, EnvironmentEvent, ParticipantId, TaskSpec};
-
 use crate::{
-    ActionExecutionUpdate, ActionExecutor, ActionProcessorError, AgentWorkspace,
-    AgentWorkspaceAction, AgentWorkspaceOutcome, AgentWorkspaceToolExecutor,
+    ActionExecutionUpdate, ActionExecutor, ActionProcessorError,
     EventHub, ExecutionEngine, FileSystemEventLog, FileSystemRunStore, InMemoryRunStore,
     RecordingEventPublisher, RunExecutor, RunTransitionTrigger, TeeEventPublisher,
 };
@@ -128,24 +124,6 @@ impl ActionExecutor for RejectingActionExecutor {
                 action.invocation.action_name.as_str()
             ),
         }
-    }
-}
-
-#[derive(Debug, Default)]
-struct FakeCodeToolExecutor;
-
-#[async_trait]
-impl AgentWorkspaceToolExecutor for FakeCodeToolExecutor {
-    async fn execute_tool(
-        &self,
-        request: pera_core::ActionRequest,
-    ) -> Result<CanonicalValue, crate::AgentWorkspaceError> {
-        Ok(request
-            .invocation
-            .arguments
-            .get("value")
-            .cloned()
-            .unwrap_or(CanonicalValue::Null))
     }
 }
 
@@ -517,120 +495,6 @@ async fn execution_engine_recovers_waiting_runs_from_event_log() {
         run_id: recovered_run_id,
         value: Value::Int(41),
     }));
-
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[tokio::test]
-async fn code_environment_executes_tools_through_async_executor() {
-    let root = temp_root("code-env-tool");
-    std::fs::create_dir_all(&root).unwrap();
-    let mut environment = AgentWorkspace::with_tool_executor(
-        None,
-        Arc::new(FakeCodeToolExecutor),
-        None,
-        None,
-    )
-    .unwrap();
-    let observation = environment
-        .reset(&TaskSpec {
-            id: "test".to_owned(),
-            instructions: "test".to_owned(),
-        })
-        .await
-        .unwrap();
-    assert_eq!(observation.available_tools.len(), 3);
-    assert!(observation.available_skills.is_empty());
-    assert!(observation.active_skills.is_empty());
-
-    let outcome = environment
-        .perform_now(
-            ParticipantId::Agent,
-            AgentWorkspaceAction::CallTool {
-                skill: pera_core::ActionSkillRef {
-                    skill_name: "test-skill".to_owned(),
-                    skill_version: None,
-                    profile_name: None,
-                },
-                invocation: pera_core::CanonicalInvocation {
-                    action_name: ActionName::new("echo"),
-                    arguments: BTreeMap::from([("value".to_owned(), CanonicalValue::S64(17))]),
-                },
-            },
-        )
-        .await
-        .unwrap();
-
-    match outcome {
-        AgentWorkspaceOutcome::ToolCall { value, .. } => {
-            assert_eq!(value, CanonicalValue::S64(17));
-        }
-        AgentWorkspaceOutcome::CodeExecuted { .. } => {
-            panic!("expected tool call outcome");
-        }
-        AgentWorkspaceOutcome::SkillLoaded { .. }
-        | AgentWorkspaceOutcome::SkillUnloaded { .. } => {
-            panic!("expected tool call outcome");
-        }
-    }
-
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[tokio::test]
-async fn code_environment_submits_and_polls_deferred_actions() {
-    let root = temp_root("code-env-submit");
-    std::fs::create_dir_all(&root).unwrap();
-    let mut environment = AgentWorkspace::with_tool_executor(
-        None,
-        Arc::new(FakeCodeToolExecutor),
-        None,
-        None,
-    )
-    .unwrap();
-    environment
-        .reset(&TaskSpec {
-            id: "test".to_owned(),
-            instructions: "test".to_owned(),
-        })
-        .await
-        .unwrap();
-
-    let submitted = environment
-        .schedule(
-            ParticipantId::Agent,
-            AgentWorkspaceAction::CallTool {
-                skill: pera_core::ActionSkillRef {
-                    skill_name: "test-skill".to_owned(),
-                    skill_version: None,
-                    profile_name: None,
-                },
-                invocation: pera_core::CanonicalInvocation {
-                    action_name: ActionName::new("echo"),
-                    arguments: BTreeMap::from([("value".to_owned(), CanonicalValue::S64(17))]),
-                },
-            },
-        )
-        .await
-        .unwrap();
-
-    let mut events = Vec::new();
-    for _ in 0..200 {
-        events = environment.poll_events().await.unwrap();
-        if !events.is_empty() {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
-
-    assert!(events.iter().any(|event| matches!(
-        event,
-        EnvironmentEvent::ActionCompleted {
-            participant: ParticipantId::Agent,
-            action_id,
-            outcome: AgentWorkspaceOutcome::ToolCall { value, .. },
-        } if *action_id == submitted.action_id && *value == CanonicalValue::S64(17)
-    )), "events: {:?}", events);
 
     let _ = std::fs::remove_dir_all(root);
 }

@@ -14,20 +14,14 @@ use pera_orchestrator::{
     ScheduledAction, TaskSpec,
 };
 use pera_core::{
-    ActionId, ActionRequest, ActionResult, ActionSkillRef, CanonicalInvocation, CanonicalValue,
-    CodeArtifact, CodeArtifactId, CodeLanguage, ExecutionEvent, InputValues, RunId, ScriptName, SkillManifest,
-    StartExecutionRequest, Value,
+    ActionId, CodeArtifact, CodeArtifactId, CodeLanguage, ExecutionEvent, InputValues,
+    RunId, ScriptName, SkillManifest, StartExecutionRequest, Value,
 };
-use tokio::task::JoinHandle;
 use tracing::debug;
 
 use crate::AgentWorkspaceTool;
 use crate::code_tools::default_agent_workspace_tools;
-use crate::{
-    ActionExecutionUpdate, ActionExecutor, EventSubscription, ExecutionEngine, SkillRuntime,
-    WasmtimeComponentActionExecutor,
-};
-use crate::{RunExecutor, interpreter::MontyInterpreter};
+use crate::{EventSubscription, ExecutionEngine, SkillRuntime, WasmtimeComponentActionExecutor};
 use crate::{
     EventHub, FileSystemEventLog, FileSystemRunStore, FileSystemSkillRuntimeLoader,
     TeeEventPublisher,
@@ -85,10 +79,6 @@ pub enum AgentWorkspaceAction {
     UnloadSkill {
         skill_name: String,
     },
-    CallTool {
-        skill: ActionSkillRef,
-        invocation: CanonicalInvocation,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,11 +92,6 @@ pub enum AgentWorkspaceOutcome {
     },
     SkillUnloaded {
         skill_name: String,
-    },
-    ToolCall {
-        skill: ActionSkillRef,
-        invocation: CanonicalInvocation,
-        value: CanonicalValue,
     },
 }
 
@@ -189,37 +174,6 @@ impl Display for AgentWorkspaceError {
 
 impl Error for AgentWorkspaceError {}
 
-#[async_trait]
-pub trait AgentWorkspaceToolExecutor: Send + Sync {
-    async fn execute_tool(
-        &self,
-        request: ActionRequest,
-    ) -> Result<CanonicalValue, AgentWorkspaceError>;
-}
-
-#[async_trait]
-impl AgentWorkspaceToolExecutor for WasmtimeComponentActionExecutor {
-    async fn execute_tool(
-        &self,
-        request: ActionRequest,
-    ) -> Result<CanonicalValue, AgentWorkspaceError> {
-        match self.execute(request).await {
-            ActionExecutionUpdate::Completed(result) => Ok(result.value),
-            ActionExecutionUpdate::Failed { message, .. } => {
-                Err(AgentWorkspaceError::new(message))
-            }
-            ActionExecutionUpdate::Claimed { .. } => Err(AgentWorkspaceError::new(
-                "unexpected claimed update returned by tool executor",
-            )),
-        }
-    }
-}
-
-struct PendingCodeAction {
-    actor: String,
-    handle: JoinHandle<Result<AgentWorkspaceOutcome, AgentWorkspaceError>>,
-}
-
 #[derive(Debug, Clone)]
 struct PendingExecutionRun {
     actor: String,
@@ -253,22 +207,17 @@ where
 }
 
 pub struct AgentWorkspace {
-    skill_runtime: Option<Arc<SkillRuntime>>,
-    tool_executor: Option<Arc<dyn AgentWorkspaceToolExecutor>>,
-    pending_actions: BTreeMap<ActionId, PendingCodeAction>,
+    skill_runtime: Arc<SkillRuntime>,
     pending_execution_runs: BTreeMap<ActionId, PendingExecutionRun>,
     execution_runs_by_id: BTreeMap<RunId, ActionId>,
-    execution_engine: Option<Arc<dyn AgentWorkspaceExecutionEngineHandle>>,
-    execution_events: Option<EventSubscription>,
+    execution_engine: Arc<dyn AgentWorkspaceExecutionEngineHandle>,
+    execution_events: EventSubscription,
     active_skill_names: BTreeSet<String>,
 }
 
 impl std::fmt::Debug for AgentWorkspace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentWorkspace")
-            .field("has_skill_runtime", &self.skill_runtime.is_some())
-            .field("has_tool_executor", &self.tool_executor.is_some())
-            .field("pending_actions", &self.pending_actions.len())
             .field("pending_execution_runs", &self.pending_execution_runs.len())
             .finish()
     }
@@ -280,8 +229,6 @@ impl AgentWorkspace {
         let skill_runtime = FileSystemSkillRuntimeLoader::new(&root)
             .load()
             .map_err(|error| AgentWorkspaceError::new(error.to_string()))?;
-        let action_executor = WasmtimeComponentActionExecutor::new(skill_runtime.clone())
-            .map_err(|error| AgentWorkspaceError::new(error.to_string()))?;
         let event_hub = EventHub::new();
         let event_log = FileSystemEventLog::new(&root)
             .map_err(|error| AgentWorkspaceError::new(error.to_string()))?;
@@ -289,14 +236,16 @@ impl AgentWorkspace {
             .read_events()
             .map_err(|error| AgentWorkspaceError::new(error.to_string()))?;
         let publisher = TeeEventPublisher::new(event_log, event_hub.publisher());
-        let run_executor =
-            RunExecutor::with_skill_catalog(MontyInterpreter::new(), skill_runtime.catalog().clone());
         let execution_engine = Arc::new(ExecutionEngine::new(
-            run_executor,
+            crate::RunExecutor::with_skill_catalog(
+                crate::interpreter::MontyInterpreter::new(),
+                skill_runtime.catalog().clone(),
+            ),
             FileSystemRunStore::new(&root)
                 .map_err(|error| AgentWorkspaceError::new(error.to_string()))?,
             publisher,
-            action_executor,
+            WasmtimeComponentActionExecutor::new(skill_runtime.clone())
+                .map_err(|error| AgentWorkspaceError::new(error.to_string()))?,
             event_hub,
         ));
         let execution_events = execution_engine.subscribe();
@@ -306,53 +255,25 @@ impl AgentWorkspace {
             .map_err(|error| AgentWorkspaceError::new(error.to_string()))?;
 
         Self::new(
-            Some(skill_runtime),
-            None,
-            Some(execution_engine),
-            Some(execution_events),
+            skill_runtime,
+            execution_engine,
+            execution_events,
         )
     }
 
     pub fn new(
-        skill_runtime: Option<SkillRuntime>,
-        tool_executor: Option<Arc<dyn AgentWorkspaceToolExecutor>>,
-        execution_engine: Option<Arc<dyn AgentWorkspaceExecutionEngineHandle>>,
-        execution_events: Option<EventSubscription>,
+        skill_runtime: SkillRuntime,
+        execution_engine: Arc<dyn AgentWorkspaceExecutionEngineHandle>,
+        execution_events: EventSubscription,
     ) -> Result<Self, AgentWorkspaceError> {
-        let tool_executor = match tool_executor {
-            Some(tool_executor) => Some(tool_executor),
-            None => skill_runtime
-                .clone()
-                .map(WasmtimeComponentActionExecutor::new)
-                .transpose()
-                .map_err(|error| AgentWorkspaceError::new(error.to_string()))?
-                .map(|executor| Arc::new(executor) as Arc<dyn AgentWorkspaceToolExecutor>),
-        };
-
         Ok(Self {
-            skill_runtime: skill_runtime.map(Arc::new),
-            tool_executor,
-            pending_actions: BTreeMap::new(),
+            skill_runtime: Arc::new(skill_runtime),
             pending_execution_runs: BTreeMap::new(),
             execution_runs_by_id: BTreeMap::new(),
             execution_engine,
             execution_events,
             active_skill_names: BTreeSet::new(),
         })
-    }
-
-    pub fn with_tool_executor(
-        skill_runtime: Option<SkillRuntime>,
-        tool_executor: Arc<dyn AgentWorkspaceToolExecutor>,
-        execution_engine: Option<Arc<dyn AgentWorkspaceExecutionEngineHandle>>,
-        execution_events: Option<EventSubscription>,
-    ) -> Result<Self, AgentWorkspaceError> {
-        Self::new(
-            skill_runtime,
-            Some(tool_executor),
-            execution_engine,
-            execution_events,
-        )
     }
 
     pub fn activate_skill(&mut self, skill_name: impl Into<String>) {
@@ -363,48 +284,32 @@ impl AgentWorkspace {
         self.active_skill_names.remove(skill_name);
     }
 
-    async fn build_observation(&self) -> Result<AgentWorkspaceObservation, AgentWorkspaceError> {
-        let (available_skills, active_skills) = match &self.skill_runtime {
-            Some(runtime) => {
-                let mut available_skills = Vec::new();
-                let mut active_skills = Vec::new();
+    async fn describe_workspace(&self) -> Result<AgentWorkspaceObservation, AgentWorkspaceError> {
+        let runtime = &self.skill_runtime;
+        let mut available_skills = Vec::new();
+        let mut active_skills = Vec::new();
 
-                for catalog_skill in runtime.catalog().skills() {
-                    let skill_name = catalog_skill.metadata.skill_name.clone();
-                    if self.active_skill_names.contains(&skill_name) {
-                        let instructions =
-                            active_skill_instructions(runtime.root(), catalog_skill).await?;
-                        active_skills.push(AgentWorkspaceActiveSkill {
-                            skill_name,
-                            instructions,
-                            python_stub: render_python_stubs(&catalog_skill.world),
-                        });
-                    } else {
-                        let description =
-                            available_skill_description(runtime.root(), catalog_skill);
-                        available_skills.push(AgentWorkspaceAvailableSkill {
-                            skill_name,
-                            description,
-                        });
-                    }
-                }
-
-                (available_skills, active_skills)
+        for catalog_skill in runtime.catalog().skills() {
+            let skill_name = catalog_skill.metadata.skill_name.clone();
+            if self.active_skill_names.contains(&skill_name) {
+                let instructions = active_skill_instructions(runtime.root(), catalog_skill).await?;
+                active_skills.push(AgentWorkspaceActiveSkill {
+                    skill_name,
+                    instructions,
+                    python_stub: render_python_stubs(&catalog_skill.world),
+                });
+            } else {
+                let description = available_skill_description(runtime.root(), catalog_skill);
+                available_skills.push(AgentWorkspaceAvailableSkill {
+                    skill_name,
+                    description,
+                });
             }
-            None => (Vec::new(), Vec::new()),
-        };
+        }
 
         debug!(
-            skill_runtime_root = self
-                .skill_runtime
-                .as_ref()
-                .map(|runtime| runtime.root().display().to_string())
-                .unwrap_or_else(|| "<none>".to_owned()),
-            catalog_skills_root = self
-                .skill_runtime
-                .as_ref()
-                .map(|runtime| catalog_skills_root(runtime.root()).display().to_string())
-                .unwrap_or_else(|| "<none>".to_owned()),
+            skill_runtime_root = runtime.root().display().to_string(),
+            catalog_skills_root = catalog_skills_root(runtime.root()).display().to_string(),
             available_skill_count = available_skills.len(),
             active_skill_count = active_skills.len(),
             active_skill_names = ?self.active_skill_names,
@@ -421,59 +326,23 @@ impl AgentWorkspace {
     async fn collect_pending_events(
         &mut self,
     ) -> Result<Vec<AgentWorkspaceEvent>, AgentWorkspaceError> {
-        let ready_action_ids = self
-            .pending_actions
-            .iter()
-            .filter_map(|(action_id, pending)| pending.handle.is_finished().then_some(*action_id))
-            .collect::<Vec<_>>();
         let mut events = Vec::new();
 
-        for action_id in ready_action_ids {
-            let pending = self.pending_actions.remove(&action_id).ok_or_else(|| {
-                AgentWorkspaceError::new(format!("missing pending action '{action_id}'"))
-            })?;
-            let actor = pending.actor;
-            match pending.handle.await {
-                Ok(Ok(outcome)) => {
-                    events.push(AgentWorkspaceEvent::ActionCompleted {
-                        actor,
-                        action_id,
-                        outcome,
-                    });
-                }
-                Ok(Err(error)) => {
-                    events.push(AgentWorkspaceEvent::ActionFailed {
-                        actor,
-                        action_id,
-                        error: error.to_string(),
-                    });
-                }
-                Err(error) => {
-                    events.push(AgentWorkspaceEvent::ActionFailed {
-                        actor,
-                        action_id,
-                        error: error.to_string(),
-                    });
-                }
-            }
+        let mut execution_events = Vec::new();
+        loop {
+            let Some(event) = self
+                .execution_events
+                .try_recv()
+                .map_err(|error| AgentWorkspaceError::new(error.to_string()))?
+            else {
+                break;
+            };
+            execution_events.push(event);
         }
 
-        if let Some(subscription) = &mut self.execution_events {
-            let mut execution_events = Vec::new();
-            loop {
-                let Some(event) = subscription
-                    .try_recv()
-                    .map_err(|error| AgentWorkspaceError::new(error.to_string()))?
-                else {
-                    break;
-                };
-                execution_events.push(event);
-            }
-
-            for event in execution_events {
-                if let Some(mapped) = self.translate_execution_event(event) {
-                    events.push(mapped?);
-                }
+        for event in execution_events {
+            if let Some(mapped) = self.translate_execution_event(event) {
+                events.push(mapped?);
             }
         }
 
@@ -485,14 +354,11 @@ impl AgentWorkspace {
         action: AgentWorkspaceAction,
     ) -> Result<AgentWorkspaceOutcome, AgentWorkspaceError> {
         match action {
-            AgentWorkspaceAction::ExecuteCode { language, source } => {
-                self.execute_code(language, source).await
-            }
+            AgentWorkspaceAction::ExecuteCode { .. } => Err(AgentWorkspaceError::new(
+                "execute_code must be scheduled through the execution engine",
+            )),
             AgentWorkspaceAction::LoadSkill { skill_name } => self.load_skill(skill_name),
             AgentWorkspaceAction::UnloadSkill { skill_name } => Ok(self.unload_skill(skill_name)),
-            AgentWorkspaceAction::CallTool { skill, invocation } => {
-                call_tool(self.tool_executor.clone(), skill, invocation).await
-            }
         }
     }
 
@@ -515,87 +381,10 @@ impl AgentWorkspace {
     }
 
     fn skill_exists(&self, skill_name: &str) -> bool {
-        self.skill_runtime.as_ref().is_some_and(|runtime| {
-            runtime
-                .catalog()
-                .skills()
-                .any(|skill| skill.metadata.skill_name == skill_name)
-        })
-    }
-
-    async fn execute_code(
-        &self,
-        language: String,
-        source: String,
-    ) -> Result<AgentWorkspaceOutcome, AgentWorkspaceError> {
-        let runtime = self
-            .skill_runtime
-            .as_ref()
-            .ok_or_else(|| AgentWorkspaceError::new("no skill runtime is configured"))?;
-        let tool_executor = self
-            .tool_executor
-            .as_ref()
-            .ok_or_else(|| AgentWorkspaceError::new("no tool executor is configured"))?;
-
-        let code_language = match language.as_str() {
-            "python" => CodeLanguage::Python,
-            other => {
-                return Err(AgentWorkspaceError::new(format!(
-                    "unsupported execute_code language '{other}'"
-                )));
-            }
-        };
-
-        let executor =
-            RunExecutor::with_skill_catalog(MontyInterpreter::new(), runtime.catalog().clone());
-        let mut transition = executor
-            .start_run(
-                pera_core::StartExecutionRequest {
-                    code: CodeArtifact {
-                        id: CodeArtifactId::generate(),
-                        language: code_language,
-                        script_name: ScriptName::new("execute_code"),
-                        source,
-                        inputs: Vec::new(),
-                    },
-                    inputs: InputValues::new(),
-                },
-                RunId::generate(),
-                CodeArtifactId::generate(),
-                ActionId::generate,
-            )
-            .map_err(|error| AgentWorkspaceError::new(error.to_string()))?;
-
-        loop {
-            if let Some(action_request) = transition.action_to_enqueue.clone() {
-                let action_id = action_request.id;
-                let value = tool_executor.execute_tool(action_request.clone()).await?;
-                transition = executor
-                    .complete_action(
-                        transition.session,
-                        action_request,
-                        ActionResult { action_id, value },
-                        ActionId::generate,
-                    )
-                    .map_err(|error| AgentWorkspaceError::new(error.to_string()))?;
-                continue;
-            }
-
-            return match transition.session.status {
-                pera_core::ExecutionStatus::Completed(output) => {
-                    Ok(AgentWorkspaceOutcome::CodeExecuted {
-                        language,
-                        result: output.value,
-                    })
-                }
-                pera_core::ExecutionStatus::Failed(message) => {
-                    Err(AgentWorkspaceError::new(message))
-                }
-                other => Err(AgentWorkspaceError::new(format!(
-                    "unexpected execution status after execute_code: {other:?}"
-                ))),
-            };
-        }
+        self.skill_runtime
+            .catalog()
+            .skills()
+            .any(|skill| skill.metadata.skill_name == skill_name)
     }
 
     async fn submit_execute_code(
@@ -604,10 +393,6 @@ impl AgentWorkspace {
         language: String,
         source: String,
     ) -> Result<ScheduledAgentWorkspaceAction, AgentWorkspaceError> {
-        let engine = self
-            .execution_engine
-            .as_ref()
-            .ok_or_else(|| AgentWorkspaceError::new("no execution engine is configured"))?;
         let code_language = parse_code_language(&language)?;
         let request = pera_core::StartExecutionRequest {
             code: CodeArtifact {
@@ -620,7 +405,8 @@ impl AgentWorkspace {
             inputs: InputValues::new(),
         };
         let action_id = ActionId::generate();
-        let run_id = engine
+        let run_id = self
+            .execution_engine
             .submit(request)
             .await
             .map_err(|error| AgentWorkspaceError::new(error.to_string()))?;
@@ -734,16 +520,15 @@ impl Environment for AgentWorkspace {
     type Snapshot = AgentWorkspaceSnapshot;
 
     async fn reset(&mut self, _task: &TaskSpec) -> Result<Self::Observation, EnvironmentError> {
-        self.pending_actions.clear();
         self.pending_execution_runs.clear();
         self.execution_runs_by_id.clear();
-        self.build_observation()
+        self.describe_workspace()
             .await
             .map_err(|error| EnvironmentError::new(error.to_string()))
     }
 
     async fn observe(&self) -> Result<Self::Observation, EnvironmentError> {
-        self.build_observation()
+        self.describe_workspace()
             .await
             .map_err(|error| EnvironmentError::new(error.to_string()))
     }
@@ -764,23 +549,18 @@ impl Environment for AgentWorkspace {
         action: Self::Action,
     ) -> Result<ScheduledAction, EnvironmentError> {
         let actor = format_participant_id(&actor);
-        let submitted = if let AgentWorkspaceAction::ExecuteCode { language, source } = action {
-            self.submit_execute_code(actor, language, source).await
-        } else {
-            let action_id = ActionId::generate();
-            let outcome = self
-                .run_action(action)
-                .await
-                .map_err(|error| EnvironmentError::new(error.to_string()))?;
-            let handle = tokio::spawn(async move { Ok(outcome) });
-            self.pending_actions
-                .insert(action_id, PendingCodeAction { actor, handle });
-            Ok(ScheduledAgentWorkspaceAction { action_id })
+        let scheduled = match action {
+            AgentWorkspaceAction::ExecuteCode { language, source } => {
+                self.submit_execute_code(actor, language, source).await
+            }
+            _ => Err(AgentWorkspaceError::new(
+                "only deferred actions can be scheduled; use perform_now for immediate actions",
+            )),
         };
 
-        submitted
-            .map(|submitted| ScheduledAction {
-                action_id: submitted.action_id,
+        scheduled
+            .map(|scheduled| ScheduledAction {
+                action_id: scheduled.action_id,
             })
             .map_err(|error: AgentWorkspaceError| EnvironmentError::new(error.to_string()))
     }
@@ -896,31 +676,6 @@ fn parse_code_language(language: &str) -> Result<CodeLanguage, AgentWorkspaceErr
             "unsupported execute_code language '{other}'"
         ))),
     }
-}
-
-async fn call_tool(
-    tool_executor: Option<Arc<dyn AgentWorkspaceToolExecutor>>,
-    skill: ActionSkillRef,
-    invocation: CanonicalInvocation,
-) -> Result<AgentWorkspaceOutcome, AgentWorkspaceError> {
-    let tool_executor = tool_executor
-        .as_ref()
-        .ok_or_else(|| AgentWorkspaceError::new("no tool executor is configured"))?;
-
-    let value = tool_executor
-        .execute_tool(ActionRequest {
-            id: ActionId::generate(),
-            run_id: RunId::generate(),
-            skill: skill.clone(),
-            invocation: invocation.clone(),
-        })
-        .await?;
-
-    Ok(AgentWorkspaceOutcome::ToolCall {
-        skill,
-        invocation,
-        value,
-    })
 }
 
 async fn active_skill_instructions(
