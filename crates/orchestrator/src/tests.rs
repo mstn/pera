@@ -11,7 +11,7 @@ use crate::traits::{Environment, Evaluator, Participant};
 use crate::types::{
     ActionExecution, EnvironmentEvent, EvalResult, FinishReason,
     InitialInboxMessage, ParticipantDecision, ParticipantId, ParticipantInboxEvent, RunLimits,
-    ParticipantInput, RunRequest, SubmittedAction, TaskSpec, TerminationCondition, Trajectory,
+    ParticipantInput, RunRequest, ScheduledAction, TaskSpec, TerminationCondition, Trajectory,
     TrajectoryEvent,
 };
 
@@ -78,7 +78,7 @@ impl Environment for FakeEnvironment {
         Ok(self.observation.clone())
     }
 
-    async fn step(
+    async fn perform_now(
         &mut self,
         _actor: ParticipantId,
         _action: Self::Action,
@@ -88,12 +88,12 @@ impl Environment for FakeEnvironment {
             .unwrap_or(Ok(TestOutcome("ok")))
     }
 
-    async fn submit(
+    async fn schedule(
         &mut self,
         _actor: ParticipantId,
         _action: Self::Action,
-    ) -> Result<SubmittedAction, EnvironmentError> {
-        Ok(SubmittedAction {
+    ) -> Result<ScheduledAction, EnvironmentError> {
+        Ok(ScheduledAction {
             action_id: self.submitted_ids.pop_front().unwrap(),
         })
     }
@@ -269,7 +269,7 @@ async fn orchestrator_delivers_deferred_completion_via_inbox() {
     ))));
     assert!(result.trajectory.events.iter().any(|event| matches!(
         event,
-        TrajectoryEvent::ActionSubmitted { action_id, .. } if *action_id == submitted_action_id
+        TrajectoryEvent::ActionScheduled { action_id, .. } if *action_id == submitted_action_id
     )));
 }
 

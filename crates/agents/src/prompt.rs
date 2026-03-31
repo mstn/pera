@@ -172,7 +172,7 @@ fn inbox_message(event: &ParticipantInboxEvent<WorkspaceAction, WorkspaceOutcome
             role: "system".to_owned(),
             content: message.clone(),
         }),
-        ParticipantInboxEvent::ActionAccepted { .. } => None,
+        ParticipantInboxEvent::ActionScheduled { .. } => None,
     }
 }
 

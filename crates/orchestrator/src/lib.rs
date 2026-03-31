@@ -11,7 +11,7 @@ pub use traits::{Environment, Evaluator, NoopEvaluator, Participant};
 pub use types::{
     ActionExecution, ActionRunStatus, EnvironmentEvent, EvalResult, FinishReason,
     InitialInboxMessage, ParticipantDecision, ParticipantId, ParticipantInboxEvent, RunLimits,
-    ParticipantInput, RunRequest, RunResult, SubmittedAction, TaskSpec, TerminationCondition, Trajectory,
+    ParticipantInput, RunRequest, RunResult, ScheduledAction, TaskSpec, TerminationCondition, Trajectory,
     TrajectoryEvent,
 };
 

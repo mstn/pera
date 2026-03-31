@@ -11,7 +11,7 @@ use pera_canonical::CatalogSkill;
 use pera_canonical::render_python_stubs;
 use pera_orchestrator::{
     ActionRunStatus, Environment, EnvironmentError, EnvironmentEvent, ParticipantId,
-    SubmittedAction, TaskSpec,
+    ScheduledAction, TaskSpec,
 };
 use pera_core::{
     ActionId, ActionRequest, ActionResult, ActionSkillRef, CanonicalInvocation, CanonicalValue,
@@ -112,7 +112,7 @@ pub enum AgentWorkspaceOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentWorkspaceEvent {
-    ActionAccepted {
+    ActionScheduled {
         actor: String,
         action_id: ActionId,
         action: AgentWorkspaceAction,
@@ -161,7 +161,7 @@ pub enum AgentWorkspaceActionRunStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SubmittedAgentWorkspaceAction {
+pub struct ScheduledAgentWorkspaceAction {
     pub action_id: ActionId,
 }
 
@@ -603,7 +603,7 @@ impl AgentWorkspace {
         actor: String,
         language: String,
         source: String,
-    ) -> Result<SubmittedAgentWorkspaceAction, AgentWorkspaceError> {
+    ) -> Result<ScheduledAgentWorkspaceAction, AgentWorkspaceError> {
         let engine = self
             .execution_engine
             .as_ref()
@@ -627,7 +627,7 @@ impl AgentWorkspace {
         self.execution_runs_by_id.insert(run_id, action_id);
         self.pending_execution_runs
             .insert(action_id, PendingExecutionRun { actor, language });
-        Ok(SubmittedAgentWorkspaceAction { action_id })
+        Ok(ScheduledAgentWorkspaceAction { action_id })
     }
 
     fn translate_execution_event(
@@ -748,7 +748,7 @@ impl Environment for AgentWorkspace {
             .map_err(|error| EnvironmentError::new(error.to_string()))
     }
 
-    async fn step(
+    async fn perform_now(
         &mut self,
         _actor: ParticipantId,
         action: Self::Action,
@@ -758,11 +758,11 @@ impl Environment for AgentWorkspace {
             .map_err(|error| EnvironmentError::new(error.to_string()))
     }
 
-    async fn submit(
+    async fn schedule(
         &mut self,
         actor: ParticipantId,
         action: Self::Action,
-    ) -> Result<SubmittedAction, EnvironmentError> {
+    ) -> Result<ScheduledAction, EnvironmentError> {
         let actor = format_participant_id(&actor);
         let submitted = if let AgentWorkspaceAction::ExecuteCode { language, source } = action {
             self.submit_execute_code(actor, language, source).await
@@ -775,11 +775,11 @@ impl Environment for AgentWorkspace {
             let handle = tokio::spawn(async move { Ok(outcome) });
             self.pending_actions
                 .insert(action_id, PendingCodeAction { actor, handle });
-            Ok(SubmittedAgentWorkspaceAction { action_id })
+            Ok(ScheduledAgentWorkspaceAction { action_id })
         };
 
         submitted
-            .map(|submitted| SubmittedAction {
+            .map(|submitted| ScheduledAction {
                 action_id: submitted.action_id,
             })
             .map_err(|error: AgentWorkspaceError| EnvironmentError::new(error.to_string()))
@@ -816,11 +816,11 @@ fn agent_workspace_event_to_environment_event(
     event: AgentWorkspaceEvent,
 ) -> EnvironmentEvent<AgentWorkspaceAction, AgentWorkspaceOutcome> {
     match event {
-        AgentWorkspaceEvent::ActionAccepted {
+        AgentWorkspaceEvent::ActionScheduled {
             actor,
             action_id,
             action,
-        } => EnvironmentEvent::ActionAccepted {
+        } => EnvironmentEvent::ActionScheduled {
             participant: parse_participant_id(actor),
             action_id,
             action,

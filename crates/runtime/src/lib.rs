@@ -26,7 +26,7 @@ pub use agent_workspace::{
     AgentWorkspaceActiveSkill, AgentWorkspaceAvailableSkill, AgentWorkspaceError,
     AgentWorkspaceEvent, AgentWorkspaceExecutionEngineHandle, AgentWorkspaceObservation,
     AgentWorkspaceOutcome, AgentWorkspaceSnapshot, AgentWorkspaceToolExecutor,
-    SubmittedAgentWorkspaceAction,
+    ScheduledAgentWorkspaceAction,
 };
 pub use code_tools::{AgentWorkspaceTool, default_agent_workspace_tools};
 pub type WorkspaceAction = AgentWorkspaceAction;
@@ -37,7 +37,7 @@ pub type WorkspaceObservation = AgentWorkspaceObservation;
 pub type WorkspaceOutcome = AgentWorkspaceOutcome;
 pub type WorkspaceSnapshot = AgentWorkspaceSnapshot;
 pub type WorkspaceToolDefinition = AgentWorkspaceTool;
-pub type SubmittedWorkspaceAction = SubmittedAgentWorkspaceAction;
+pub type ScheduledWorkspaceAction = ScheduledAgentWorkspaceAction;
 pub type WorkspaceParticipantDyn = dyn pera_orchestrator::Participant<
     Observation = WorkspaceObservation,
     Action = WorkspaceAction,

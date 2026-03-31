@@ -100,7 +100,7 @@ pub enum ParticipantInboxEvent<A, U> {
         from: ParticipantId,
         content: String,
     },
-    ActionAccepted {
+    ActionScheduled {
         action_id: ActionId,
         action: A,
     },
@@ -118,7 +118,7 @@ pub enum ParticipantInboxEvent<A, U> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SubmittedAction {
+pub struct ScheduledAction {
     pub action_id: ActionId,
 }
 
@@ -145,7 +145,7 @@ pub enum ActionRunStatus {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EnvironmentEvent<A, U> {
-    ActionAccepted {
+    ActionScheduled {
         participant: ParticipantId,
         action_id: ActionId,
         action: A,
@@ -191,7 +191,7 @@ pub enum TrajectoryEvent<O, A, U> {
         run_id: RunId,
         status: ActionRunStatus,
     },
-    ActionSubmitted {
+    ActionScheduled {
         participant: ParticipantId,
         action_id: ActionId,
         action: A,

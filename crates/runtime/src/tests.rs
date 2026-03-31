@@ -544,7 +544,7 @@ async fn code_environment_executes_tools_through_async_executor() {
     assert!(observation.active_skills.is_empty());
 
     let outcome = environment
-        .step(
+        .perform_now(
             ParticipantId::Agent,
             AgentWorkspaceAction::CallTool {
                 skill: pera_core::ActionSkillRef {
@@ -597,7 +597,7 @@ async fn code_environment_submits_and_polls_deferred_actions() {
         .unwrap();
 
     let submitted = environment
-        .submit(
+        .schedule(
             ParticipantId::Agent,
             AgentWorkspaceAction::CallTool {
                 skill: pera_core::ActionSkillRef {

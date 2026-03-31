@@ -9,7 +9,7 @@ use crate::traits::{Environment, Evaluator, NoopEvaluator, Participant};
 use crate::types::{
     ActionExecution, ActionRunStatus, EnvironmentEvent, FinishReason, InitialInboxMessage,
     ParticipantDecision, ParticipantId, ParticipantInboxEvent, ParticipantInput, RunRequest,
-    RunResult, SubmittedAction, TerminationCondition, Trajectory, TrajectoryEvent,
+    RunResult, ScheduledAction, TerminationCondition, Trajectory, TrajectoryEvent,
 };
 
 type BoxedParticipant<O, A, U> = Box<dyn Participant<Observation = O, Action = A, Outcome = U>>;
@@ -345,14 +345,14 @@ where
 
     fn apply_environment_event(&mut self, event: EnvironmentEvent<A, U>) {
         match event {
-            EnvironmentEvent::ActionAccepted {
+            EnvironmentEvent::ActionScheduled {
                 participant,
                 action_id,
                 action,
             } => {
                 if let Some(participant) = self.participant_mut(&participant) {
                     participant
-                        .deliver(ParticipantInboxEvent::ActionAccepted { action_id, action });
+                        .deliver(ParticipantInboxEvent::ActionScheduled { action_id, action });
                 }
             }
             EnvironmentEvent::ActionRunStatus {
@@ -726,7 +726,7 @@ where
                             })?;
                     }
                 }
-                EnvironmentEvent::ActionAccepted { .. } | EnvironmentEvent::Notification { .. } => {}
+                EnvironmentEvent::ActionScheduled { .. } | EnvironmentEvent::Notification { .. } => {}
             }
             state.apply_environment_event(event);
         }
@@ -837,7 +837,7 @@ where
                         let action_id = ActionId::generate();
                         match self
                             .environment
-                            .step(participant_id.clone(), action.clone())
+                            .perform_now(participant_id.clone(), action.clone())
                             .await
                         {
                             Ok(outcome) => {
@@ -891,18 +891,18 @@ where
                             })?;
                         match self
                             .environment
-                            .submit(participant_id.clone(), action.clone())
+                            .schedule(participant_id.clone(), action.clone())
                             .await
                         {
-                            Ok(SubmittedAction { action_id }) => {
-                                state.trajectory.push(TrajectoryEvent::ActionSubmitted {
+                            Ok(ScheduledAction { action_id }) => {
+                                state.trajectory.push(TrajectoryEvent::ActionScheduled {
                                     participant: participant_id.clone(),
                                     action_id,
                                     action: action.clone(),
                                     execution,
                                 });
                                 if let Some(participant) = state.participant_mut(&participant_id) {
-                                    participant.deliver(ParticipantInboxEvent::ActionAccepted {
+                                    participant.deliver(ParticipantInboxEvent::ActionScheduled {
                                         action_id,
                                         action: action.clone(),
                                     });
