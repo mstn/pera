@@ -28,7 +28,11 @@ impl FileSystemLayout {
     }
 
     pub fn runs_dir(&self) -> PathBuf {
-        self.root.join("runs")
+        self.execution_dir().join("runs")
+    }
+
+    pub fn execution_dir(&self) -> PathBuf {
+        self.root.join("execution")
     }
 
     pub fn orchestration_dir(&self) -> PathBuf {
