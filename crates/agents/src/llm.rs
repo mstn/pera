@@ -267,12 +267,20 @@ where
                 output.message_end(&ParticipantId::Agent).await?;
             }
             let decision = map_tool_call_to_decision(tool_call)?;
-            output
-                .status_update(
-                    &ParticipantId::Agent,
-                    &status_for_action_decision(&decision),
-                )
-                .await?;
+            if !matches!(
+                decision,
+                ParticipantDecision::Action {
+                    action: WorkspaceAction::ExecuteCode { .. },
+                    ..
+                }
+            ) {
+                output
+                    .status_update(
+                        &ParticipantId::Agent,
+                        &status_for_action_decision(&decision),
+                    )
+                    .await?;
+            }
             return Ok(decision);
         }
 
@@ -352,7 +360,6 @@ fn status_for_action_decision(decision: &ParticipantDecision<WorkspaceAction>) -
             action: WorkspaceAction::ExecuteCode { .. },
             ..
         } => "executing code".to_owned(),
-        ParticipantDecision::Action { .. } => "planning action".to_owned(),
         ParticipantDecision::Message { .. }
         | ParticipantDecision::FinalMessage { .. }
         | ParticipantDecision::Yield

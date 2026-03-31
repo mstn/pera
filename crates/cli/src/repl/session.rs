@@ -187,10 +187,11 @@ impl ParticipantOutput<WorkspaceAction, WorkspaceOutcome> for TransportBackedOut
         participant: &ParticipantId,
         status: &str,
     ) -> Result<(), ParticipantError> {
+        let text = display_status(status);
         self.output_tx
             .send(OutboundTransportEvent::Status {
                 participant: participant.clone(),
-                text: status.to_owned(),
+                text,
             })
             .map_err(|_| ParticipantError::new("stream output channel is closed"))
     }
@@ -250,11 +251,13 @@ impl ParticipantOutput<WorkspaceAction, WorkspaceOutcome> for TransportBackedOut
         participant: &ParticipantId,
         action: &WorkspaceAction,
     ) -> Result<(), ParticipantError> {
+        if matches!(action, WorkspaceAction::ExecuteCode { .. }) {
+            return Ok(());
+        }
         let action = match action {
             WorkspaceAction::LoadSkill { skill_name } => format!("load skill {skill_name}"),
             WorkspaceAction::UnloadSkill { skill_name } => format!("unload skill {skill_name}"),
-            WorkspaceAction::ExecuteCode { language, .. } => format!("execute {language} code"),
-            other => format!("{other:?}"),
+            WorkspaceAction::ExecuteCode { .. } => unreachable!("execute_code is hidden from the REPL"),
         };
         self.output_tx
             .send(OutboundTransportEvent::ActionPlanned {
@@ -270,6 +273,9 @@ impl ParticipantOutput<WorkspaceAction, WorkspaceOutcome> for TransportBackedOut
         action: &WorkspaceAction,
         outcome: &WorkspaceOutcome,
     ) -> Result<(), ParticipantError> {
+        if matches!(action, WorkspaceAction::ExecuteCode { .. }) {
+            return Ok(());
+        }
         let status = match (action, outcome) {
             (
                 WorkspaceAction::ExecuteCode { .. },
@@ -300,12 +306,11 @@ impl ParticipantOutput<WorkspaceAction, WorkspaceOutcome> for TransportBackedOut
         error: &str,
     ) -> Result<(), ParticipantError> {
         let status = match action {
-            WorkspaceAction::ExecuteCode { .. } => format!("code execution failed: {error}"),
+            WorkspaceAction::ExecuteCode { .. } => format!("request failed: {error}"),
             WorkspaceAction::LoadSkill { skill_name } => format!("failed to load skill {skill_name}: {error}"),
             WorkspaceAction::UnloadSkill { skill_name } => {
                 format!("failed to unload skill {skill_name}: {error}")
             }
-            _ => return Ok(()),
         };
         self.output_tx
             .send(OutboundTransportEvent::ActionFailed {
@@ -314,6 +319,27 @@ impl ParticipantOutput<WorkspaceAction, WorkspaceOutcome> for TransportBackedOut
             })
             .map_err(|_| ParticipantError::new("stream output channel is closed"))
     }
+}
+
+fn display_status(status: &str) -> String {
+    if is_execution_status(status) {
+        "working".to_owned()
+    } else {
+        status.to_owned()
+    }
+}
+
+fn is_execution_status(status: &str) -> bool {
+    matches!(
+        status,
+        "preparing code execution"
+            | "executing code"
+            | "code execution submitted"
+            | "running code"
+            | "waiting for skill action"
+            | "resuming code execution"
+    ) || status.starts_with("skill action claimed by ")
+        || status.starts_with("skill action failed: ")
 }
 
 fn read_console_input(

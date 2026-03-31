@@ -4,16 +4,38 @@ use crate::{ActionId, RunId, Value};
 pub enum ExecutionEvent {
     RunSubmitted { run_id: RunId },
     RunStarted { run_id: RunId },
-    ActionEnqueued { run_id: RunId, action_id: ActionId },
+    ActionEnqueued {
+        run_id: RunId,
+        action_id: ActionId,
+        #[serde(default)]
+        skill_name: String,
+        #[serde(default)]
+        action_name: String,
+    },
     ActionClaimed {
         run_id: RunId,
         action_id: ActionId,
+        #[serde(default)]
+        skill_name: String,
+        #[serde(default)]
+        action_name: String,
         worker_id: String,
     },
-    ActionCompleted { run_id: RunId, action_id: ActionId },
+    ActionCompleted {
+        run_id: RunId,
+        action_id: ActionId,
+        #[serde(default)]
+        skill_name: String,
+        #[serde(default)]
+        action_name: String,
+    },
     ActionFailed {
         run_id: RunId,
         action_id: ActionId,
+        #[serde(default)]
+        skill_name: String,
+        #[serde(default)]
+        action_name: String,
         message: String,
     },
     RunResumed { run_id: RunId },

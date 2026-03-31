@@ -130,16 +130,24 @@ pub enum AgentWorkspaceActionRunStatus {
     RunStarted,
     ActionEnqueued {
         engine_action_id: ActionId,
+        skill_name: String,
+        action_name: String,
     },
     ActionClaimed {
         engine_action_id: ActionId,
+        skill_name: String,
+        action_name: String,
         worker_id: String,
     },
     ActionCompleted {
         engine_action_id: ActionId,
+        skill_name: String,
+        action_name: String,
     },
     ActionFailed {
         engine_action_id: ActionId,
+        skill_name: String,
+        action_name: String,
         message: String,
     },
     RunResumed,
@@ -208,6 +216,7 @@ where
 
 pub struct AgentWorkspace {
     skill_runtime: Arc<SkillRuntime>,
+    queued_events: Vec<AgentWorkspaceEvent>,
     pending_execution_runs: BTreeMap<ActionId, PendingExecutionRun>,
     execution_runs_by_id: BTreeMap<RunId, ActionId>,
     execution_engine: Arc<dyn AgentWorkspaceExecutionEngineHandle>,
@@ -268,6 +277,7 @@ impl AgentWorkspace {
     ) -> Result<Self, AgentWorkspaceError> {
         Ok(Self {
             skill_runtime: Arc::new(skill_runtime),
+            queued_events: Vec::new(),
             pending_execution_runs: BTreeMap::new(),
             execution_runs_by_id: BTreeMap::new(),
             execution_engine,
@@ -327,6 +337,8 @@ impl AgentWorkspace {
         &mut self,
     ) -> Result<Vec<AgentWorkspaceEvent>, AgentWorkspaceError> {
         let mut events = Vec::new();
+
+        events.append(&mut self.queued_events);
 
         let mut execution_events = Vec::new();
         loop {
@@ -413,6 +425,18 @@ impl AgentWorkspace {
         self.execution_runs_by_id.insert(run_id, action_id);
         self.pending_execution_runs
             .insert(action_id, PendingExecutionRun { actor, language });
+        self.queued_events
+            .push(AgentWorkspaceEvent::ActionRunStatus {
+                actor: self
+                    .pending_execution_runs
+                    .get(&action_id)
+                    .expect("pending execution run must exist after insertion")
+                    .actor
+                    .clone(),
+                action_id,
+                run_id,
+                status: AgentWorkspaceActionRunStatus::RunSubmitted,
+            });
         Ok(ScheduledAgentWorkspaceAction { action_id })
     }
 
@@ -439,15 +463,23 @@ impl AgentWorkspace {
             }),
             ExecutionEvent::ActionEnqueued {
                 action_id: engine_action_id,
+                skill_name,
+                action_name,
                 ..
             } => Ok(AgentWorkspaceEvent::ActionRunStatus {
                 actor: pending.actor,
                 action_id,
                 run_id,
-                status: AgentWorkspaceActionRunStatus::ActionEnqueued { engine_action_id },
+                status: AgentWorkspaceActionRunStatus::ActionEnqueued {
+                    engine_action_id,
+                    skill_name,
+                    action_name,
+                },
             }),
             ExecutionEvent::ActionClaimed {
                 action_id: engine_action_id,
+                skill_name,
+                action_name,
                 worker_id,
                 ..
             } => Ok(AgentWorkspaceEvent::ActionRunStatus {
@@ -456,17 +488,25 @@ impl AgentWorkspace {
                 run_id,
                 status: AgentWorkspaceActionRunStatus::ActionClaimed {
                     engine_action_id,
+                    skill_name,
+                    action_name,
                     worker_id,
                 },
             }),
             ExecutionEvent::ActionCompleted {
                 action_id: engine_action_id,
+                skill_name,
+                action_name,
                 ..
             } => Ok(AgentWorkspaceEvent::ActionRunStatus {
                 actor: pending.actor,
                 action_id,
                 run_id,
-                status: AgentWorkspaceActionRunStatus::ActionCompleted { engine_action_id },
+                status: AgentWorkspaceActionRunStatus::ActionCompleted {
+                    engine_action_id,
+                    skill_name,
+                    action_name,
+                },
             }),
             ExecutionEvent::RunResumed { .. } => Ok(AgentWorkspaceEvent::ActionRunStatus {
                 actor: pending.actor,
@@ -497,6 +537,8 @@ impl AgentWorkspace {
             }
             ExecutionEvent::ActionFailed {
                 action_id: engine_action_id,
+                skill_name,
+                action_name,
                 message,
                 ..
             } => Ok(AgentWorkspaceEvent::ActionRunStatus {
@@ -505,6 +547,8 @@ impl AgentWorkspace {
                 run_id,
                 status: AgentWorkspaceActionRunStatus::ActionFailed {
                     engine_action_id,
+                    skill_name,
+                    action_name,
                     message,
                 },
             }),
@@ -520,6 +564,7 @@ impl Environment for AgentWorkspace {
     type Snapshot = AgentWorkspaceSnapshot;
 
     async fn reset(&mut self, _task: &TaskSpec) -> Result<Self::Observation, EnvironmentError> {
+        self.queued_events.clear();
         self.pending_execution_runs.clear();
         self.execution_runs_by_id.clear();
         self.describe_workspace()
@@ -645,24 +690,48 @@ fn workspace_status_to_action_run_status(status: AgentWorkspaceActionRunStatus) 
     match status {
         AgentWorkspaceActionRunStatus::RunSubmitted => ActionRunStatus::RunSubmitted,
         AgentWorkspaceActionRunStatus::RunStarted => ActionRunStatus::RunStarted,
-        AgentWorkspaceActionRunStatus::ActionEnqueued { engine_action_id } => {
-            ActionRunStatus::ActionEnqueued { engine_action_id }
+        AgentWorkspaceActionRunStatus::ActionEnqueued {
+            engine_action_id,
+            skill_name,
+            action_name,
+        } => {
+            ActionRunStatus::ActionEnqueued {
+                engine_action_id,
+                skill_name,
+                action_name,
+            }
         }
         AgentWorkspaceActionRunStatus::ActionClaimed {
             engine_action_id,
+            skill_name,
+            action_name,
             worker_id,
         } => ActionRunStatus::ActionClaimed {
             engine_action_id,
+            skill_name,
+            action_name,
             worker_id,
         },
-        AgentWorkspaceActionRunStatus::ActionCompleted { engine_action_id } => {
-            ActionRunStatus::ActionCompleted { engine_action_id }
+        AgentWorkspaceActionRunStatus::ActionCompleted {
+            engine_action_id,
+            skill_name,
+            action_name,
+        } => {
+            ActionRunStatus::ActionCompleted {
+                engine_action_id,
+                skill_name,
+                action_name,
+            }
         }
         AgentWorkspaceActionRunStatus::ActionFailed {
             engine_action_id,
+            skill_name,
+            action_name,
             message,
         } => ActionRunStatus::ActionFailed {
             engine_action_id,
+            skill_name,
+            action_name,
             message,
         },
         AgentWorkspaceActionRunStatus::RunResumed => ActionRunStatus::RunResumed,

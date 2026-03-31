@@ -64,33 +64,42 @@ pub async fn render_transport_output(
                         ephemeral_line_active = true;
                     }
                     OutboundTransportEvent::ToolCallStarted { participant, tool_name } => {
-                        render_ephemeral_line(
-                            &format!("{} tool> {} ...", participant_label(&participant), tool_name)
+                        clear_ephemeral_line(&mut ephemeral_line_active, &mut active_status_line)?;
+                        print_colored_persisted_line(
+                            &format!(
+                                "{} debug> tool {} ...",
+                                participant_label(&participant),
+                                tool_name
+                            ),
+                            "36",
                         )?;
-                        ephemeral_line_active = true;
                     }
                     OutboundTransportEvent::ToolCallDelta {
                         participant,
                         tool_name,
                         delta,
                     } => {
-                        render_ephemeral_line(&format!(
-                            "{} tool> {} {}",
-                            participant_label(&participant),
-                            tool_name,
-                            delta
-                        ))?;
-                        ephemeral_line_active = true;
+                        let _ = delta;
+                        clear_ephemeral_line(&mut ephemeral_line_active, &mut active_status_line)?;
+                        print_colored_persisted_line(
+                            &format!(
+                                "{} debug> tool {} arguments ...",
+                                participant_label(&participant),
+                                tool_name,
+                            ),
+                            "36",
+                        )?;
                     }
                     OutboundTransportEvent::ToolCallCompleted { participant, tool_name } => {
-                        if tool_name != "load_skill" && tool_name != "unload_skill" {
-                            render_ephemeral_line(&format!(
-                                "{} tool> {} ready",
+                        clear_ephemeral_line(&mut ephemeral_line_active, &mut active_status_line)?;
+                        print_colored_persisted_line(
+                            &format!(
+                                "{} debug> tool {} ready",
                                 participant_label(&participant),
-                                tool_name
-                            ))?;
-                            ephemeral_line_active = true;
-                        }
+                                tool_name,
+                            ),
+                            "36",
+                        )?;
                     }
                     OutboundTransportEvent::ActionPlanned { participant, action } => {
                         clear_ephemeral_line(&mut ephemeral_line_active, &mut active_status_line)?;
@@ -171,6 +180,12 @@ fn clear_ephemeral_line(
 
 fn print_persisted_line(text: &str) -> Result<(), CliError> {
     print!("\r\x1b[2K{text}\n");
+    print!("you> ");
+    flush_stdout()
+}
+
+fn print_colored_persisted_line(text: &str, ansi_color: &str) -> Result<(), CliError> {
+    print!("\r\x1b[2K\x1b[{ansi_color}m{text}\x1b[0m\n");
     print!("you> ");
     flush_stdout()
 }

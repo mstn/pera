@@ -954,11 +954,41 @@ fn format_action_run_status<A>(action: &A, status: &ActionRunStatus) -> String {
     match status {
         ActionRunStatus::RunSubmitted => "code execution submitted".to_owned(),
         ActionRunStatus::RunStarted => "running code".to_owned(),
+        ActionRunStatus::ActionEnqueued {
+            skill_name,
+            action_name,
+            ..
+        } if !skill_name.is_empty() && !action_name.is_empty() => {
+            format!("querying {skill_name}.{action_name}")
+        }
         ActionRunStatus::ActionEnqueued { .. } => "waiting for skill action".to_owned(),
+        ActionRunStatus::ActionClaimed {
+            skill_name,
+            action_name,
+            worker_id,
+            ..
+        } if !skill_name.is_empty() && !action_name.is_empty() => {
+            format!("running {skill_name}.{action_name} ({worker_id})")
+        }
         ActionRunStatus::ActionClaimed { worker_id, .. } => {
             format!("running skill action ({worker_id})")
         }
+        ActionRunStatus::ActionCompleted {
+            skill_name,
+            action_name,
+            ..
+        } if !skill_name.is_empty() && !action_name.is_empty() => {
+            format!("completed {skill_name}.{action_name}")
+        }
         ActionRunStatus::ActionCompleted { .. } => "skill action completed".to_owned(),
+        ActionRunStatus::ActionFailed {
+            skill_name,
+            action_name,
+            message,
+            ..
+        } if !skill_name.is_empty() && !action_name.is_empty() => {
+            format!("failed {skill_name}.{action_name}: {message}")
+        }
         ActionRunStatus::ActionFailed { message, .. } => {
             format!("skill action failed: {message}")
         }

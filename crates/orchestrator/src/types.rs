@@ -128,16 +128,24 @@ pub enum ActionRunStatus {
     RunStarted,
     ActionEnqueued {
         engine_action_id: ActionId,
+        skill_name: String,
+        action_name: String,
     },
     ActionClaimed {
         engine_action_id: ActionId,
+        skill_name: String,
+        action_name: String,
         worker_id: String,
     },
     ActionCompleted {
         engine_action_id: ActionId,
+        skill_name: String,
+        action_name: String,
     },
     ActionFailed {
         engine_action_id: ActionId,
+        skill_name: String,
+        action_name: String,
         message: String,
     },
     RunResumed,

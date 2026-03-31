@@ -303,11 +303,15 @@ where
             ActionExecutionUpdate::Claimed {
                 run_id,
                 action_id,
+                skill_name,
+                action_name,
                 worker_id,
             } => {
                 self.publisher.publish(ExecutionEvent::ActionClaimed {
                     run_id,
                     action_id,
+                    skill_name,
+                    action_name,
                     worker_id,
                 })?;
             }
@@ -325,11 +329,15 @@ where
             ActionExecutionUpdate::Failed {
                 run_id,
                 action_id,
+                skill_name,
+                action_name,
                 message,
             } => {
                 self.publisher.publish(ExecutionEvent::ActionFailed {
                     run_id,
                     action_id,
+                    skill_name,
+                    action_name,
                     message: message.clone(),
                 })?;
                 let session = self.store.load_run(run_id)?;
@@ -349,10 +357,18 @@ where
         let message = error.to_string();
 
         match update {
-            ActionExecutionUpdate::Claimed { run_id, action_id, .. } => {
+            ActionExecutionUpdate::Claimed {
+                run_id,
+                action_id,
+                skill_name,
+                action_name,
+                ..
+            } => {
                 self.publisher.publish(ExecutionEvent::ActionFailed {
                     run_id,
                     action_id,
+                    skill_name,
+                    action_name,
                     message: message.clone(),
                 })?;
                 let session = self.store.load_run(run_id)?;
@@ -365,6 +381,8 @@ where
                 self.publisher.publish(ExecutionEvent::ActionFailed {
                     run_id,
                     action_id: result.action_id,
+                    skill_name: action.request.skill.skill_name.clone(),
+                    action_name: action.request.invocation.action_name.as_str().to_owned(),
                     message: message.clone(),
                 })?;
                 let session = self.store.load_run(run_id)?;
@@ -374,11 +392,15 @@ where
             ActionExecutionUpdate::Failed {
                 run_id,
                 action_id,
+                skill_name,
+                action_name,
                 message: action_message,
             } => {
                 self.publisher.publish(ExecutionEvent::ActionFailed {
                     run_id,
                     action_id,
+                    skill_name,
+                    action_name,
                     message: action_message,
                 })?;
                 let session = self.store.load_run(run_id)?;
@@ -434,10 +456,23 @@ where
             RunTransitionTrigger::Resumed {
                 completed_action_id,
             } => {
-                events.push(ExecutionEvent::ActionCompleted {
-                    run_id,
-                    action_id: completed_action_id,
-                });
+                if let Some(completed_action) = transition
+                    .action_records
+                    .iter()
+                    .find(|record| record.request.id == completed_action_id)
+                {
+                    events.push(ExecutionEvent::ActionCompleted {
+                        run_id,
+                        action_id: completed_action_id,
+                        skill_name: completed_action.request.skill.skill_name.clone(),
+                        action_name: completed_action
+                            .request
+                            .invocation
+                            .action_name
+                            .as_str()
+                            .to_owned(),
+                    });
+                }
                 events.push(ExecutionEvent::RunResumed { run_id });
             }
             RunTransitionTrigger::Failed => {}
@@ -447,6 +482,8 @@ where
             events.push(ExecutionEvent::ActionEnqueued {
                 run_id,
                 action_id: action.id,
+                skill_name: action.skill.skill_name.clone(),
+                action_name: action.invocation.action_name.as_str().to_owned(),
             });
         }
 

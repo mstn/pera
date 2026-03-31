@@ -45,12 +45,16 @@ pub enum ActionExecutionUpdate {
     Claimed {
         run_id: RunId,
         action_id: ActionId,
+        skill_name: String,
+        action_name: String,
         worker_id: String,
     },
     Completed(ActionResult),
     Failed {
         run_id: RunId,
         action_id: ActionId,
+        skill_name: String,
+        action_name: String,
         message: String,
     },
 }
@@ -91,6 +95,8 @@ where
             let _ = self.update_tx.send(ActionExecutionUpdate::Claimed {
                 run_id: action.run_id,
                 action_id: action.id,
+                skill_name: action.skill.skill_name.clone(),
+                action_name: action.invocation.action_name.as_str().to_owned(),
                 worker_id: self.worker_id.clone(),
             });
 
@@ -369,6 +375,8 @@ impl ActionExecutor for WasmtimeComponentActionExecutor {
                 return ActionExecutionUpdate::Failed {
                     run_id: action.run_id,
                     action_id: action.id,
+                    skill_name: action.skill.skill_name.clone(),
+                    action_name: action.invocation.action_name.as_str().to_owned(),
                     message: error.to_string(),
                 };
             }
@@ -383,6 +391,7 @@ impl ActionExecutor for WasmtimeComponentActionExecutor {
         let run_id = action.run_id;
         let action_id = action.id;
         let action_skill = action.skill.clone();
+        let action_name = action.invocation.action_name.as_str().to_owned();
         let runtime = Arc::clone(&self.runtime);
         let runtime_for_task = Arc::clone(&runtime);
         let execute_started_at = Instant::now();
@@ -409,6 +418,8 @@ impl ActionExecutor for WasmtimeComponentActionExecutor {
                 ActionExecutionUpdate::Failed {
                     run_id,
                     action_id,
+                    skill_name: action_skill.skill_name.clone(),
+                    action_name: action_name.clone(),
                     message: error.to_string(),
                 }
             }
@@ -417,6 +428,8 @@ impl ActionExecutor for WasmtimeComponentActionExecutor {
                 ActionExecutionUpdate::Failed {
                     run_id,
                     action_id,
+                    skill_name: action_skill.skill_name.clone(),
+                    action_name,
                     message: error.to_string(),
                 }
             }

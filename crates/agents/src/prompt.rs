@@ -210,11 +210,15 @@ fn action_completed_message(outcome: &WorkspaceOutcome) -> Option<PromptMessage>
         }),
         WorkspaceOutcome::SkillLoaded { skill_name } => Some(PromptMessage {
             role: "system".to_owned(),
-            content: format!("Skill loaded: {skill_name}"),
+            content: format!(
+                "Skill loaded: {skill_name}. This skill is now active and ready to use. Do not call load_skill for {skill_name} again unless it is later unloaded."
+            ),
         }),
         WorkspaceOutcome::SkillUnloaded { skill_name } => Some(PromptMessage {
             role: "system".to_owned(),
-            content: format!("Skill unloaded: {skill_name}"),
+            content: format!(
+                "Skill unloaded: {skill_name}. This skill is no longer active and must be loaded again before use."
+            ),
         }),
     }
 }
