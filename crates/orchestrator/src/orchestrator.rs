@@ -710,10 +710,7 @@ where
                 } => {
                     if let Some((_, action)) = state.submitted_actions.get(action_id) {
                         output
-                            .status_update(
-                                participant,
-                                &format_action_run_status(action, status),
-                            )
+                            .status_update(participant, &format_action_run_status(action, status))
                             .await
                             .map_err(|error| {
                                 EvaluatorError::new(format!(
@@ -738,7 +735,8 @@ where
                             })?;
                     }
                 }
-                EnvironmentEvent::ActionScheduled { .. } | EnvironmentEvent::Notification { .. } => {}
+                EnvironmentEvent::ActionScheduled { .. }
+                | EnvironmentEvent::Notification { .. } => {}
             }
             state.apply_environment_event(event);
         }
@@ -853,17 +851,14 @@ where
                             .await
                         {
                             Ok(outcome) => {
-                                state.submitted_actions.insert(
+                                state
+                                    .submitted_actions
+                                    .insert(action_id, (participant_id.clone(), action.clone()));
+                                state.queue_environment_event(EnvironmentEvent::ActionCompleted {
                                     action_id,
-                                    (participant_id.clone(), action.clone()),
-                                );
-                                state.queue_environment_event(
-                                    EnvironmentEvent::ActionCompleted {
-                                        action_id,
-                                        participant: participant_id.clone(),
-                                        outcome,
-                                    },
-                                );
+                                    participant: participant_id.clone(),
+                                    outcome,
+                                });
                             }
                             Err(error) => {
                                 return Ok(Some(FinishReason::EnvironmentError(error.to_string())));
@@ -918,10 +913,9 @@ where
                                     }
                                 }
                                 state.pending_actions.insert(action_id);
-                                state.submitted_actions.insert(
-                                    action_id,
-                                    (participant_id.clone(), action.clone()),
-                                );
+                                state
+                                    .submitted_actions
+                                    .insert(action_id, (participant_id.clone(), action.clone()));
                             }
                             Err(error) => {
                                 warn!(

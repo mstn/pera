@@ -803,9 +803,10 @@ async fn active_skill_instructions(
         return Ok(String::new());
     };
     let instructions_path = profile_dir.join(&instructions.source);
-    tokio::fs::read_to_string(&instructions_path)
+    let source = tokio::fs::read_to_string(&instructions_path)
         .await
-        .map_err(|error| AgentWorkspaceError::new(error.to_string()))
+        .map_err(|error| AgentWorkspaceError::new(error.to_string()))?;
+    Ok(strip_markdown_frontmatter(&source).to_owned())
 }
 
 fn available_skill_description(runtime_root: &Path, catalog_skill: &CatalogSkill) -> String {
@@ -885,4 +886,19 @@ fn frontmatter_when_to_use(source: &str) -> Option<String> {
         .get("when_to_use")
         .and_then(serde_yaml::Value::as_str)
         .map(ToOwned::to_owned)
+}
+
+fn strip_markdown_frontmatter(source: &str) -> &str {
+    let Some(rest) = source.strip_prefix("---\n").or_else(|| source.strip_prefix("---\r\n")) else {
+        return source;
+    };
+
+    if let Some(index) = rest.find("\n---\n") {
+        return rest[index + 5..].trim_start_matches(['\n', '\r']);
+    }
+    if let Some(index) = rest.find("\n---\r\n") {
+        return rest[index + 6..].trim_start_matches(['\n', '\r']);
+    }
+
+    source
 }

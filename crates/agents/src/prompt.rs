@@ -1,12 +1,11 @@
-use pera_orchestrator::{
-    ParticipantId, ParticipantInboxEvent, ParticipantInput, TrajectoryEvent,
-};
+use pera_orchestrator::{ParticipantId, ParticipantInboxEvent, ParticipantInput, TrajectoryEvent};
 use pera_runtime::{WorkspaceAction, WorkspaceObservation, WorkspaceOutcome};
 
 use crate::llm::LlmToolDefinition;
 
 const BASE_SYSTEM_PROMPT: &str = include_str!("prompts/base_system.md");
 const SKILLS_SYSTEM_PROMPT: &str = include_str!("prompts/skills_system.md");
+const CODE_GENERATION_SYSTEM_PROMPT: &str = include_str!("prompts/code_generation_system.md");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptMessage {
@@ -116,9 +115,7 @@ impl CodePromptBuilder for ProviderBackedPromptBuilder {
             prompt.push('\n');
         }
         if !context.available_skills.is_empty() {
-            prompt.push_str(
-                "\nUse the `load_skill` tool before relying on a skill. Available skills are listed below.\n",
-            );
+            prompt.push_str("\nAvailable skills are listed below.\n");
             prompt.push_str("<available-skills>\n");
             for skill in &context.available_skills {
                 prompt.push_str("- name: ");
@@ -135,9 +132,14 @@ impl CodePromptBuilder for ProviderBackedPromptBuilder {
             prompt.push_str("</available-skills>\n");
         }
 
+        prompt.push('\n');
+        prompt.push_str(CODE_GENERATION_SYSTEM_PROMPT);
+        if !CODE_GENERATION_SYSTEM_PROMPT.ends_with('\n') {
+            prompt.push('\n');
+        }
+
         for skill in &context.active_skills {
             if !skill.instructions.trim().is_empty() {
-                prompt.push_str("\nInstructions:\n");
                 prompt.push_str(&skill.instructions);
                 prompt.push('\n');
             }
@@ -155,15 +157,15 @@ impl CodePromptBuilder for ProviderBackedPromptBuilder {
     }
 }
 
-fn inbox_message(event: &ParticipantInboxEvent<WorkspaceAction, WorkspaceOutcome>) -> Option<PromptMessage> {
+fn inbox_message(
+    event: &ParticipantInboxEvent<WorkspaceAction, WorkspaceOutcome>,
+) -> Option<PromptMessage> {
     match event {
         ParticipantInboxEvent::Message { from, content } => Some(PromptMessage {
             role: role_for_participant(from),
             content: content.clone(),
         }),
-        ParticipantInboxEvent::ActionCompleted { outcome, .. } => {
-            action_completed_message(outcome)
-        }
+        ParticipantInboxEvent::ActionCompleted { outcome, .. } => action_completed_message(outcome),
         ParticipantInboxEvent::ActionFailed { error, .. } => Some(PromptMessage {
             role: "system".to_owned(),
             content: format!(
@@ -232,7 +234,7 @@ mod tests {
 
     use pera_core::{RunId, WorkItemId};
     use pera_orchestrator::{
-        ParticipantInboxEvent, ParticipantInput, ParticipantId, RunLimits, TaskSpec, Trajectory,
+        ParticipantId, ParticipantInboxEvent, ParticipantInput, RunLimits, TaskSpec, Trajectory,
         TrajectoryEvent,
     };
     use pera_runtime::{
@@ -300,6 +302,7 @@ mod tests {
         let prompt = builder.build_system_prompt(&context);
 
         assert!(prompt.contains("Use the `load_skill` tool before relying on a skill."));
+        assert!(prompt.contains("Do not import a module for this skill."));
         assert!(prompt.contains("<available-skills>"));
         assert!(prompt.contains("- name: sqlite"));
         assert!(prompt.contains("when_to_use: Use when you need structured data queries."));
