@@ -255,13 +255,17 @@ where
 
     async fn handle_submit(
         &mut self,
-        request: StartExecutionRequest,
+        mut request: StartExecutionRequest,
     ) -> Result<RunId, ExecutionEngineError> {
         let run_id = self.allocate_run_id();
         let code_id = self.allocate_code_id();
+        request.code.id = code_id;
+        let code_artifact = request.code.clone();
         let transition =
             self.run_executor
                 .start_run(request, run_id, code_id, pera_core::ActionId::generate)?;
+        self.store
+            .save_code_artifact(run_id, &code_artifact)?;
         self.apply_transition(transition).await?;
         Ok(run_id)
     }

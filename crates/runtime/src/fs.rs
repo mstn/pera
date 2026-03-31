@@ -3,8 +3,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use pera_core::{
-    ActionId, ActionRecord, EventPublisher, ExecutionEvent, ExecutionSession, RunId, RunStore,
-    StoreError,
+    ActionId, ActionRecord, CodeArtifact, CodeLanguage, EventPublisher, ExecutionEvent,
+    ExecutionSession, RunId, RunStore, StoreError,
 };
 
 #[derive(Debug, Clone)]
@@ -68,6 +68,28 @@ impl FileSystemLayout {
         self.run_dir(run_id).join("actions")
     }
 
+    fn run_artifacts_dir(&self, run_id: RunId) -> PathBuf {
+        self.run_dir(run_id).join("artifacts")
+    }
+
+    fn run_code_artifacts_dir(&self, run_id: RunId) -> PathBuf {
+        self.run_artifacts_dir(run_id).join("code")
+    }
+
+    fn run_code_artifact_path(&self, run_id: RunId, artifact: &CodeArtifact) -> PathBuf {
+        self.run_code_artifacts_dir(run_id)
+            .join(format!("{}.{}", artifact.id.as_hyphenated(), code_extension(artifact.language)))
+    }
+
+    fn run_code_artifact_metadata_path(
+        &self,
+        run_id: RunId,
+        artifact: &CodeArtifact,
+    ) -> PathBuf {
+        self.run_code_artifacts_dir(run_id)
+            .join(format!("{}.meta.json", artifact.id.as_hyphenated()))
+    }
+
     fn run_action_path(&self, run_id: RunId, action_id: ActionId) -> PathBuf {
         self.run_actions_dir(run_id)
             .join(format!("{}.json", action_id.as_hyphenated()))
@@ -116,6 +138,27 @@ impl RunStore for FileSystemRunStore {
 
     fn list_runs(&self) -> Result<Vec<RunId>, StoreError> {
         list_id_entries(self.layout.runs_dir(), RunId::parse_str)
+    }
+
+    fn save_code_artifact(
+        &mut self,
+        run_id: RunId,
+        artifact: &CodeArtifact,
+    ) -> Result<(), StoreError> {
+        let source_path = self.layout.run_code_artifact_path(run_id, artifact);
+        if let Some(parent) = source_path.parent() {
+            create_dir_all(parent)?;
+        }
+        fs::write(&source_path, artifact.source.as_bytes()).map_err(io_error)?;
+        write_json(
+            self.layout.run_code_artifact_metadata_path(run_id, artifact),
+            &serde_json::json!({
+                "artifact_id": artifact.id,
+                "language": artifact.language,
+                "script_name": artifact.script_name.as_str(),
+                "path": source_path.file_name().and_then(|name| name.to_str()).unwrap_or_default(),
+            }),
+        )
     }
 
     fn save_action(&mut self, action: ActionRecord) -> Result<(), StoreError> {
@@ -221,6 +264,12 @@ fn append_line(path: impl AsRef<Path>, line: &str) -> Result<(), StoreError> {
         .open(path)
         .map_err(io_error)?;
     writeln!(file, "{line}").map_err(io_error)
+}
+
+fn code_extension(language: CodeLanguage) -> &'static str {
+    match language {
+        CodeLanguage::Python => "py",
+    }
 }
 
 fn create_dir_all(path: impl AsRef<Path>) -> Result<(), StoreError> {

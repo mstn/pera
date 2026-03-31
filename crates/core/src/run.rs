@@ -57,6 +57,14 @@ pub trait RunStore {
 
     fn list_runs(&self) -> Result<Vec<RunId>, StoreError>;
 
+    fn save_code_artifact(
+        &mut self,
+        _run_id: RunId,
+        _artifact: &CodeArtifact,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+
     fn save_action(&mut self, action: ActionRecord) -> Result<(), StoreError>;
 
     fn load_action(&self, action_id: ActionId) -> Result<ActionRecord, StoreError>;
