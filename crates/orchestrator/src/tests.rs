@@ -207,6 +207,59 @@ async fn orchestrator_handles_single_participant_immediate_action() {
 }
 
 #[tokio::test]
+async fn orchestrator_delivers_immediate_completion_via_inbox() {
+    let seen_inboxes = Arc::new(Mutex::new(Vec::new()));
+    let agent = FakeParticipant {
+        id: ParticipantId::Agent,
+        decisions: VecDeque::from([
+            Ok(ParticipantDecision::Action {
+                action: TestAction("run"),
+                execution: ActionExecution::Immediate,
+            }),
+            Ok(ParticipantDecision::Finish),
+        ]),
+        seen_inboxes: Arc::clone(&seen_inboxes),
+    };
+    let user = FakeParticipant {
+        id: ParticipantId::User,
+        decisions: VecDeque::from([Ok(ParticipantDecision::Finish)]),
+        seen_inboxes: Arc::new(Mutex::new(Vec::new())),
+    };
+    let environment = FakeEnvironment {
+        observation: TestObservation("initial"),
+        terminal: None,
+        immediate_outcomes: VecDeque::from([Ok(TestOutcome("done"))]),
+        submitted_events: VecDeque::new(),
+        submitted_ids: VecDeque::new(),
+    };
+    let participants = vec![
+        Box::new(user) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
+        Box::new(agent) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
+    ];
+    let mut orchestrator = Orchestrator::from_participants(participants, environment);
+    let mut request = test_request();
+    request.initial_messages.push(InitialInboxMessage {
+        to: ParticipantId::Agent,
+        from: ParticipantId::User,
+        content: "go".to_owned(),
+    });
+    request.initial_messages.push(InitialInboxMessage {
+        to: ParticipantId::User,
+        from: ParticipantId::Custom("system".to_owned()),
+        content: "done".to_owned(),
+    });
+
+    let result = orchestrator.run(request).await.unwrap();
+
+    assert_eq!(result.finish_reason, FinishReason::ParticipantsFinished);
+    let inboxes = seen_inboxes.lock().unwrap();
+    assert!(inboxes.iter().any(|inbox| inbox.iter().any(|event| matches!(
+        event,
+        ParticipantInboxEvent::ActionCompleted { outcome, .. } if *outcome == TestOutcome("done")
+    ))));
+}
+
+#[tokio::test]
 async fn orchestrator_delivers_deferred_completion_via_inbox() {
     let seen_inboxes = Arc::new(Mutex::new(Vec::new()));
     let submitted_action_id =

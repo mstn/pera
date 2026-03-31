@@ -244,6 +244,7 @@ struct RunState<O, A, U> {
     trajectory: Trajectory<O, A, U>,
     pending_actions: BTreeSet<ActionId>,
     submitted_actions: BTreeMap<ActionId, (ParticipantId, A)>,
+    queued_environment_events: Vec<EnvironmentEvent<A, U>>,
     participants: Vec<ParticipantState<O, A, U>>,
 }
 
@@ -271,6 +272,7 @@ where
             trajectory,
             pending_actions: BTreeSet::new(),
             submitted_actions: BTreeMap::new(),
+            queued_environment_events: Vec::new(),
             participants: participants
                 .into_iter()
                 .map(ParticipantState::new)
@@ -341,6 +343,14 @@ where
 
     fn take_submitted_action(&mut self, action_id: &ActionId) -> Option<(ParticipantId, A)> {
         self.submitted_actions.remove(action_id)
+    }
+
+    fn queue_environment_event(&mut self, event: EnvironmentEvent<A, U>) {
+        self.queued_environment_events.push(event);
+    }
+
+    fn drain_environment_events(&mut self) -> Vec<EnvironmentEvent<A, U>> {
+        std::mem::take(&mut self.queued_environment_events)
     }
 
     fn apply_environment_event(&mut self, event: EnvironmentEvent<A, U>) {
@@ -665,9 +675,10 @@ where
             return Ok(Some(FinishReason::EnvironmentTerminated(reason)));
         }
 
-        let events = self.environment.poll_events().await.map_err(|error| {
+        let mut events = state.drain_environment_events();
+        events.extend(self.environment.poll_events().await.map_err(|error| {
             EvaluatorError::new(format!("failed to poll environment events: {error}"))
-        })?;
+        })?);
         if events.is_empty() {
             return Ok(None);
         }
@@ -841,40 +852,19 @@ where
                             .await
                         {
                             Ok(outcome) => {
-                                output
-                                    .action_completed(&participant_id, &action, &outcome)
-                                    .await
-                                    .map_err(|error| {
-                                        EvaluatorError::new(format!(
-                                            "failed to emit action completion output: {error}"
-                                        ))
-                                    })?;
-                                state.trajectory.push(TrajectoryEvent::ActionCompleted {
-                                    participant: participant_id,
+                                state.submitted_actions.insert(
                                     action_id,
-                                    outcome,
-                                });
-                                let observation = self.environment.observe().await.map_err(|error| {
-                                    EvaluatorError::new(format!(
-                                        "failed to refresh observation after immediate action: {error}"
-                                    ))
-                                })?;
-                                state.record_observation(observation);
+                                    (participant_id.clone(), action.clone()),
+                                );
+                                state.queue_environment_event(
+                                    EnvironmentEvent::ActionCompleted {
+                                        action_id,
+                                        participant: participant_id.clone(),
+                                        outcome,
+                                    },
+                                );
                             }
                             Err(error) => {
-                                output
-                                    .action_failed(&participant_id, &action, &error.to_string())
-                                    .await
-                                    .map_err(|emit_error| {
-                                        EvaluatorError::new(format!(
-                                            "failed to emit action failure output: {emit_error}"
-                                        ))
-                                    })?;
-                                state.trajectory.push(TrajectoryEvent::ActionFailed {
-                                    participant: participant_id,
-                                    action_id,
-                                    error: error.to_string(),
-                                });
                                 return Ok(Some(FinishReason::EnvironmentError(error.to_string())));
                             }
                         }
