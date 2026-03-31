@@ -41,6 +41,14 @@ pub enum OutboundTransportEvent {
         participant: ParticipantId,
         action: String,
     },
+    ActionCompleted {
+        participant: ParticipantId,
+        status: String,
+    },
+    ActionFailed {
+        participant: ParticipantId,
+        status: String,
+    },
 }
 
 pub fn participant_label(participant: &ParticipantId) -> &str {

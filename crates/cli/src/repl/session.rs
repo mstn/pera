@@ -100,6 +100,7 @@ pub async fn run_repl(agent_config: AgentConfig) -> Result<(), CliError> {
         pera_orchestrator::Orchestrator::from_participants(participants, environment);
     let mut output = TransportBackedOutput {
         output_tx: console_output_tx,
+        show_tool_events: agent_config.debug,
     };
     let result = orchestrator
         .run_with_output(
@@ -141,6 +142,7 @@ pub async fn run_repl(agent_config: AgentConfig) -> Result<(), CliError> {
 
 struct TransportBackedOutput {
     output_tx: mpsc::UnboundedSender<OutboundTransportEvent>,
+    show_tool_events: bool,
 }
 
 #[async_trait]
@@ -198,6 +200,9 @@ impl ParticipantOutput<WorkspaceAction, WorkspaceOutcome> for TransportBackedOut
         participant: &ParticipantId,
         tool_name: &str,
     ) -> Result<(), ParticipantError> {
+        if !self.show_tool_events {
+            return Ok(());
+        }
         self.output_tx
             .send(OutboundTransportEvent::ToolCallStarted {
                 participant: participant.clone(),
@@ -212,6 +217,9 @@ impl ParticipantOutput<WorkspaceAction, WorkspaceOutcome> for TransportBackedOut
         tool_name: &str,
         delta: &str,
     ) -> Result<(), ParticipantError> {
+        if !self.show_tool_events {
+            return Ok(());
+        }
         self.output_tx
             .send(OutboundTransportEvent::ToolCallDelta {
                 participant: participant.clone(),
@@ -226,6 +234,9 @@ impl ParticipantOutput<WorkspaceAction, WorkspaceOutcome> for TransportBackedOut
         participant: &ParticipantId,
         tool_name: &str,
     ) -> Result<(), ParticipantError> {
+        if !self.show_tool_events {
+            return Ok(());
+        }
         self.output_tx
             .send(OutboundTransportEvent::ToolCallCompleted {
                 participant: participant.clone(),
@@ -274,7 +285,12 @@ impl ParticipantOutput<WorkspaceAction, WorkspaceOutcome> for TransportBackedOut
             ) => format!("skill unloaded: {skill_name}"),
             _ => return Ok(()),
         };
-        self.status_update(participant, &status).await
+        self.output_tx
+            .send(OutboundTransportEvent::ActionCompleted {
+                participant: participant.clone(),
+                status,
+            })
+            .map_err(|_| ParticipantError::new("stream output channel is closed"))
     }
 
     async fn action_failed(
@@ -291,7 +307,12 @@ impl ParticipantOutput<WorkspaceAction, WorkspaceOutcome> for TransportBackedOut
             }
             _ => return Ok(()),
         };
-        self.status_update(participant, &status).await
+        self.output_tx
+            .send(OutboundTransportEvent::ActionFailed {
+                participant: participant.clone(),
+                status,
+            })
+            .map_err(|_| ParticipantError::new("stream output channel is closed"))
     }
 }
 

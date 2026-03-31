@@ -273,12 +273,6 @@ where
                     &status_for_action_decision(&decision),
                 )
                 .await?;
-            output
-                .action_planned(&ParticipantId::Agent, match &decision {
-                    ParticipantDecision::Action { action, .. } => action,
-                    _ => unreachable!(),
-                })
-                .await?;
             return Ok(decision);
         }
 
