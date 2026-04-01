@@ -116,9 +116,11 @@ impl CodePromptBuilder for ProviderBackedPromptBuilder {
         if !SKILLS_SYSTEM_PROMPT.ends_with('\n') {
             prompt.push('\n');
         }
-        if !context.available_skills.is_empty() {
-            prompt.push_str("\nAvailable skills are listed below.\n");
-            prompt.push_str("<available-skills>\n");
+        prompt.push_str("\nAvailable skills are listed below.\n");
+        prompt.push_str("<available-skills>\n");
+        if context.available_skills.is_empty() {
+            prompt.push_str("no skill available\n");
+        } else {
             for skill in &context.available_skills {
                 prompt.push_str("- name: ");
                 prompt.push_str(&skill.skill_name);
@@ -131,20 +133,13 @@ impl CodePromptBuilder for ProviderBackedPromptBuilder {
                 }
                 prompt.push('\n');
             }
-            prompt.push_str("</available-skills>\n");
         }
+        prompt.push_str("</available-skills>\n");
 
         prompt.push('\n');
         prompt.push_str(CODE_GENERATION_SYSTEM_PROMPT);
         if !CODE_GENERATION_SYSTEM_PROMPT.ends_with('\n') {
             prompt.push('\n');
-        }
-
-        for skill in &context.active_skills {
-            if !skill.instructions.trim().is_empty() {
-                prompt.push_str(&skill.instructions);
-                prompt.push('\n');
-            }
         }
 
         prompt
@@ -345,7 +340,7 @@ mod tests {
         assert!(prompt.contains("- name: sqlite"));
         assert!(prompt.contains("when_to_use: Use when you need structured data queries."));
         assert!(prompt.contains("</available-skills>"));
-        assert!(prompt.contains("Use this skill for repository inspection."));
+        assert!(!prompt.contains("Use this skill for repository inspection."));
         assert!(!prompt.contains("def status() -> str: ..."));
         assert_eq!(task_message.role, "user");
         assert!(task_message.content.contains("<task>"));
