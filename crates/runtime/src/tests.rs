@@ -3,17 +3,17 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::{
+    ActionExecutionUpdate, ActionExecutor, ActionProcessorError, EventHub, ExecutionEngine,
+    FileSystemEventLog, FileSystemRunStore, InMemoryRunStore, RecordingEventPublisher, RunExecutor,
+    RunTransitionTrigger, TeeEventPublisher,
+};
 use pera_canonical::{CatalogSkill, SkillCatalog, SkillMetadata};
 use pera_core::{
-    ActionName, ActionResult, CanonicalValue, CodeArtifact, CodeArtifactId, CodeLanguage, CompiledProgram,
-    EventPublisher, ExecutionEvent, ExecutionOutput, ExecutionSnapshot, ExecutionStatus,
-    ExternalCall, InputValues, Interpreter, InterpreterError, InterpreterKind, InterpreterStep,
-    RunStore, ScriptName, StartExecutionRequest, Suspension, Value,
-};
-use crate::{
-    ActionExecutionUpdate, ActionExecutor, ActionProcessorError,
-    EventHub, ExecutionEngine, FileSystemEventLog, FileSystemRunStore, InMemoryRunStore,
-    RecordingEventPublisher, RunExecutor, RunTransitionTrigger, TeeEventPublisher,
+    ActionName, ActionResult, CanonicalValue, CodeArtifact, CodeArtifactId, CodeLanguage,
+    CompiledProgram, EventPublisher, ExecutionEvent, ExecutionOutput, ExecutionSnapshot,
+    ExecutionStatus, ExternalCall, InputValues, Interpreter, InterpreterError, InterpreterKind,
+    InterpreterStep, RunStore, ScriptName, StartExecutionRequest, Suspension, Value,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -79,10 +79,7 @@ struct EchoActionExecutor;
 
 #[async_trait]
 impl ActionExecutor for EchoActionExecutor {
-    async fn execute(
-        &self,
-        action: pera_core::ActionRequest,
-    ) -> ActionExecutionUpdate {
+    async fn execute(&self, action: pera_core::ActionRequest) -> ActionExecutionUpdate {
         let result = match action.invocation.arguments.get("value") {
             Some(CanonicalValue::S64(value)) => Ok(CanonicalValue::S64(*value)),
             Some(CanonicalValue::S32(value)) => Ok(CanonicalValue::S32(*value)),
@@ -104,6 +101,8 @@ impl ActionExecutor for EchoActionExecutor {
             Err(error) => ActionExecutionUpdate::Failed {
                 run_id: action.run_id,
                 action_id: action.id,
+                skill_name: action.skill.skill_name.clone(),
+                action_name: action.invocation.action_name.as_str().to_owned(),
                 message: error.to_string(),
             },
         }
@@ -119,6 +118,8 @@ impl ActionExecutor for RejectingActionExecutor {
         ActionExecutionUpdate::Failed {
             run_id: action.run_id,
             action_id: action.id,
+            skill_name: action.skill.skill_name.clone(),
+            action_name: action.invocation.action_name.as_str().to_owned(),
             message: format!(
                 "no action processor is configured for '{}'",
                 action.invocation.action_name.as_str()
@@ -273,10 +274,7 @@ fn run_executor_annotates_actions_from_skill_catalog() {
 
     let action = transition.action_to_enqueue.unwrap();
     assert_eq!(action.invocation.action_name.as_str(), "resolve-mission");
-    assert_eq!(
-        action.skill.skill_name.as_str(),
-        "secret-service"
-    );
+    assert_eq!(action.skill.skill_name.as_str(), "secret-service");
     assert_eq!(
         action.skill.profile_name.as_deref(),
         Some("secret-service-default")
@@ -296,7 +294,11 @@ fn run_executor_rejects_unknown_actions_when_catalog_is_configured() {
         )
         .unwrap_err();
 
-    assert!(error.to_string().contains("unknown external action 'missing'"));
+    assert!(
+        error
+            .to_string()
+            .contains("unknown external action 'missing'")
+    );
 }
 
 #[test]
@@ -313,7 +315,10 @@ fn run_executor_fails_run() {
         .unwrap();
     let failed = executor.fail_run(started.session.clone(), "boom");
 
-    assert_eq!(failed.session.status, ExecutionStatus::Failed("boom".to_owned()));
+    assert_eq!(
+        failed.session.status,
+        ExecutionStatus::Failed("boom".to_owned())
+    );
     assert_eq!(started.trigger, RunTransitionTrigger::Started);
     assert_eq!(failed.trigger, RunTransitionTrigger::Failed);
 }
@@ -322,7 +327,8 @@ fn run_executor_fails_run() {
 async fn execution_engine_manages_multiple_runs() {
     let event_hub = EventHub::new();
     let publisher = TeeEventPublisher::new(RecordingEventPublisher::new(), event_hub.publisher());
-    let run_executor = RunExecutor::with_skill_catalog(FakeInterpreter, single_action_catalog("echo"));
+    let run_executor =
+        RunExecutor::with_skill_catalog(FakeInterpreter, single_action_catalog("echo"));
     let action_executor = EchoActionExecutor;
     let engine = ExecutionEngine::new(
         run_executor,
@@ -361,19 +367,20 @@ async fn execution_engine_manages_multiple_runs() {
         .cloned()
         .collect();
 
-    assert!(run_a_events
-        .iter()
-        .any(|event| matches!(event, ExecutionEvent::ActionClaimed { run_id, .. } if *run_id == run_a)));
-    assert!(run_b_events
-        .iter()
-        .any(|event| matches!(event, ExecutionEvent::ActionClaimed { run_id, .. } if *run_id == run_b)));
+    assert!(run_a_events.iter().any(
+        |event| matches!(event, ExecutionEvent::ActionClaimed { run_id, .. } if *run_id == run_a)
+    ));
+    assert!(run_b_events.iter().any(
+        |event| matches!(event, ExecutionEvent::ActionClaimed { run_id, .. } if *run_id == run_b)
+    ));
 }
 
 #[tokio::test]
 async fn execution_engine_emits_action_failure_and_run_failure() {
     let event_hub = EventHub::new();
     let publisher = TeeEventPublisher::new(RecordingEventPublisher::new(), event_hub.publisher());
-    let run_executor = RunExecutor::with_skill_catalog(FakeInterpreter, single_action_catalog("missing"));
+    let run_executor =
+        RunExecutor::with_skill_catalog(FakeInterpreter, single_action_catalog("missing"));
     let action_executor = RejectingActionExecutor;
     let engine = ExecutionEngine::new(
         run_executor,
@@ -399,8 +406,13 @@ async fn execution_engine_emits_action_failure_and_run_failure() {
         ExecutionEvent::ActionFailed {
             run_id: event_run_id,
             action_id: _,
+            skill_name,
+            action_name,
             message,
-        } if *event_run_id == run_id && message.contains("no action processor")
+        } if *event_run_id == run_id
+            && skill_name == "test-skill"
+            && action_name == "missing"
+            && message.contains("no action processor")
     )));
     assert!(events.contains(&ExecutionEvent::RunFailed {
         run_id,
@@ -463,6 +475,21 @@ async fn execution_engine_recovers_waiting_runs_from_event_log() {
         ExecutionEvent::ActionEnqueued {
             run_id: transition.session.id,
             action_id: transition.action_to_enqueue.as_ref().unwrap().id,
+            skill_name: transition
+                .action_to_enqueue
+                .as_ref()
+                .unwrap()
+                .skill
+                .skill_name
+                .clone(),
+            action_name: transition
+                .action_to_enqueue
+                .as_ref()
+                .unwrap()
+                .invocation
+                .action_name
+                .as_str()
+                .to_owned(),
         },
     )
     .unwrap();
@@ -569,7 +596,11 @@ fn single_action_catalog_for_skill_with_profile(
     .unwrap()
 }
 
-fn single_action_world(skill_name: &str, world_name: &str, action_name: &str) -> pera_canonical::CanonicalWorld {
+fn single_action_world(
+    skill_name: &str,
+    world_name: &str,
+    action_name: &str,
+) -> pera_canonical::CanonicalWorld {
     pera_canonical::CanonicalWorld {
         package: Some(pera_canonical::CanonicalPackageRef {
             namespace: "tests".to_owned(),

@@ -9,10 +9,9 @@ use crate::orchestrator::Orchestrator;
 use crate::streaming::ParticipantOutput;
 use crate::traits::{Environment, Evaluator, Participant};
 use crate::types::{
-    ActionError, ActionErrorOrigin, ActionExecution, EnvironmentEvent, EvalResult,
-    FinishReason, InitialInboxMessage, ParticipantDecision, ParticipantId, ParticipantInboxEvent,
-    ParticipantInput, RunLimits, RunRequest, ScheduledAction, TaskSpec, TerminationCondition,
-    Trajectory, TrajectoryEvent,
+    ActionError, ActionExecution, EnvironmentEvent, EvalResult, FinishReason, InitialInboxMessage,
+    ParticipantDecision, ParticipantId, ParticipantInboxEvent, ParticipantInput, RunLimits,
+    RunRequest, ScheduledAction, TaskSpec, TerminationCondition, Trajectory, TrajectoryEvent,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,8 +180,22 @@ async fn orchestrator_handles_single_participant_immediate_action() {
         submitted_ids: VecDeque::new(),
     };
     let participants = vec![
-        Box::new(user) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
-        Box::new(agent) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
+        Box::new(user)
+            as Box<
+                dyn Participant<
+                        Observation = TestObservation,
+                        Action = TestAction,
+                        Outcome = TestOutcome,
+                    >,
+            >,
+        Box::new(agent)
+            as Box<
+                dyn Participant<
+                        Observation = TestObservation,
+                        Action = TestAction,
+                        Outcome = TestOutcome,
+                    >,
+            >,
     ];
     let mut orchestrator = Orchestrator::from_participants(participants, environment);
     let mut request = test_request();
@@ -233,8 +246,22 @@ async fn orchestrator_delivers_immediate_completion_via_inbox() {
         submitted_ids: VecDeque::new(),
     };
     let participants = vec![
-        Box::new(user) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
-        Box::new(agent) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
+        Box::new(user)
+            as Box<
+                dyn Participant<
+                        Observation = TestObservation,
+                        Action = TestAction,
+                        Outcome = TestOutcome,
+                    >,
+            >,
+        Box::new(agent)
+            as Box<
+                dyn Participant<
+                        Observation = TestObservation,
+                        Action = TestAction,
+                        Outcome = TestOutcome,
+                    >,
+            >,
     ];
     let mut orchestrator = Orchestrator::from_participants(participants, environment);
     let mut request = test_request();
@@ -253,17 +280,20 @@ async fn orchestrator_delivers_immediate_completion_via_inbox() {
 
     assert_eq!(result.finish_reason, FinishReason::ParticipantsFinished);
     let inboxes = seen_inboxes.lock().unwrap();
-    assert!(inboxes.iter().any(|inbox| inbox.iter().any(|event| matches!(
+    assert!(
+        inboxes.iter().any(|inbox| {
+            inbox.iter().any(|event| matches!(
         event,
         ParticipantInboxEvent::ActionCompleted { outcome, .. } if *outcome == TestOutcome("done")
-    ))));
+    ))
+        })
+    );
 }
 
 #[tokio::test]
 async fn orchestrator_delivers_deferred_completion_via_inbox() {
     let seen_inboxes = Arc::new(Mutex::new(Vec::new()));
-    let submitted_action_id =
-        ActionId::parse_str("00000000-0000-0000-0000-000000000123").unwrap();
+    let submitted_action_id = ActionId::parse_str("00000000-0000-0000-0000-000000000123").unwrap();
     let agent = FakeParticipant {
         id: ParticipantId::Agent,
         decisions: VecDeque::from([
@@ -296,8 +326,22 @@ async fn orchestrator_delivers_deferred_completion_via_inbox() {
         submitted_ids: VecDeque::from([submitted_action_id]),
     };
     let participants = vec![
-        Box::new(user) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
-        Box::new(agent) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
+        Box::new(user)
+            as Box<
+                dyn Participant<
+                        Observation = TestObservation,
+                        Action = TestAction,
+                        Outcome = TestOutcome,
+                    >,
+            >,
+        Box::new(agent)
+            as Box<
+                dyn Participant<
+                        Observation = TestObservation,
+                        Action = TestAction,
+                        Outcome = TestOutcome,
+                    >,
+            >,
     ];
     let mut orchestrator = Orchestrator::from_participants(participants, environment);
     let mut request = test_request();
@@ -315,11 +359,15 @@ async fn orchestrator_delivers_deferred_completion_via_inbox() {
     let result = orchestrator.run(request).await.unwrap();
     let inboxes = seen_inboxes.lock().unwrap();
 
-    assert!(inboxes.iter().any(|inbox| inbox.iter().any(|event| matches!(
-        event,
-        ParticipantInboxEvent::ActionCompleted { action_id, outcome }
-            if *action_id == submitted_action_id && *outcome == TestOutcome("completed")
-    ))));
+    assert!(
+        inboxes
+            .iter()
+            .any(|inbox| inbox.iter().any(|event| matches!(
+                event,
+                ParticipantInboxEvent::ActionCompleted { action_id, outcome }
+                    if *action_id == submitted_action_id && *outcome == TestOutcome("completed")
+            )))
+    );
     assert!(result.trajectory.events.iter().any(|event| matches!(
         event,
         TrajectoryEvent::ActionScheduled { action_id, .. } if *action_id == submitted_action_id
@@ -419,8 +467,7 @@ async fn orchestrator_starts_a_new_agent_loop_for_a_second_user_message() {
 #[tokio::test]
 async fn orchestrator_blocks_participant_on_deferred_blocking_action() {
     let seen_inboxes = Arc::new(Mutex::new(Vec::new()));
-    let submitted_action_id =
-        ActionId::parse_str("00000000-0000-0000-0000-000000000124").unwrap();
+    let submitted_action_id = ActionId::parse_str("00000000-0000-0000-0000-000000000124").unwrap();
     let agent = FakeParticipant {
         id: ParticipantId::Agent,
         decisions: VecDeque::from([
@@ -452,8 +499,22 @@ async fn orchestrator_blocks_participant_on_deferred_blocking_action() {
         submitted_ids: VecDeque::from([submitted_action_id]),
     };
     let participants = vec![
-        Box::new(user) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
-        Box::new(agent) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
+        Box::new(user)
+            as Box<
+                dyn Participant<
+                        Observation = TestObservation,
+                        Action = TestAction,
+                        Outcome = TestOutcome,
+                    >,
+            >,
+        Box::new(agent)
+            as Box<
+                dyn Participant<
+                        Observation = TestObservation,
+                        Action = TestAction,
+                        Outcome = TestOutcome,
+                    >,
+            >,
     ];
     let mut orchestrator = Orchestrator::from_participants(participants, environment);
     let mut request = test_request();
@@ -507,8 +568,22 @@ async fn orchestrator_alternates_two_participants() {
         submitted_ids: VecDeque::new(),
     };
     let participants = vec![
-        Box::new(agent) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
-        Box::new(user) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
+        Box::new(agent)
+            as Box<
+                dyn Participant<
+                        Observation = TestObservation,
+                        Action = TestAction,
+                        Outcome = TestOutcome,
+                    >,
+            >,
+        Box::new(user)
+            as Box<
+                dyn Participant<
+                        Observation = TestObservation,
+                        Action = TestAction,
+                        Outcome = TestOutcome,
+                    >,
+            >,
     ];
     let mut orchestrator = Orchestrator::from_participants(participants, environment);
     let mut request = test_request();
@@ -586,8 +661,22 @@ async fn orchestrator_can_terminate_when_a_specific_participant_finishes() {
         submitted_ids: VecDeque::new(),
     };
     let participants = vec![
-        Box::new(agent) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
-        Box::new(user) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
+        Box::new(agent)
+            as Box<
+                dyn Participant<
+                        Observation = TestObservation,
+                        Action = TestAction,
+                        Outcome = TestOutcome,
+                    >,
+            >,
+        Box::new(user)
+            as Box<
+                dyn Participant<
+                        Observation = TestObservation,
+                        Action = TestAction,
+                        Outcome = TestOutcome,
+                    >,
+            >,
     ];
     let mut orchestrator = Orchestrator::from_participants(participants, environment);
     let mut request = test_request();
@@ -636,8 +725,22 @@ async fn orchestrator_routes_participant_message_to_other_mailboxes() {
         submitted_ids: VecDeque::new(),
     };
     let participants = vec![
-        Box::new(user) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
-        Box::new(agent) as Box<dyn Participant<Observation = TestObservation, Action = TestAction, Outcome = TestOutcome>>,
+        Box::new(user)
+            as Box<
+                dyn Participant<
+                        Observation = TestObservation,
+                        Action = TestAction,
+                        Outcome = TestOutcome,
+                    >,
+            >,
+        Box::new(agent)
+            as Box<
+                dyn Participant<
+                        Observation = TestObservation,
+                        Action = TestAction,
+                        Outcome = TestOutcome,
+                    >,
+            >,
     ];
     let mut orchestrator = Orchestrator::from_participants(participants, environment);
     let mut request = test_request();
@@ -655,10 +758,14 @@ async fn orchestrator_routes_participant_message_to_other_mailboxes() {
         TrajectoryEvent::ParticipantMessage { participant, content }
             if *participant == ParticipantId::User && content == "hi"
     )));
-    assert!(agent_inboxes.iter().any(|inbox| inbox.iter().any(|event| matches!(
-        event,
-        ParticipantInboxEvent::Message { from, content }
-            if *from == ParticipantId::User
-                && content == "hi"
-    ))));
+    assert!(
+        agent_inboxes
+            .iter()
+            .any(|inbox| inbox.iter().any(|event| matches!(
+                event,
+                ParticipantInboxEvent::Message { from, content }
+                    if *from == ParticipantId::User
+                        && content == "hi"
+            )))
+    );
 }
