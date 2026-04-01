@@ -10,7 +10,7 @@ use crate::traits::{Environment, Evaluator, NoopEvaluator, Participant};
 use crate::types::{
     ActionExecution, ActionRunStatus, EnvironmentEvent, FinishReason, InitialInboxMessage,
     ParticipantDecision, ParticipantId, ParticipantInboxEvent, ParticipantInput, RunRequest,
-    RunResult, ScheduledAction, TerminationCondition, Trajectory, TrajectoryEvent,
+    RunResult, ScheduledAction, TerminationCondition, Trajectory, TrajectoryEvent, WorkItem,
 };
 
 type BoxedParticipant<O, A, U> = Box<dyn Participant<Observation = O, Action = A, Outcome = U>>;
@@ -26,12 +26,6 @@ struct RunCounters {
 struct InitialMessage {
     from: ParticipantId,
     content: String,
-}
-
-#[derive(Debug, Clone)]
-struct WorkItem {
-    id: WorkItemId,
-    initial_message: InitialMessage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,7 +67,8 @@ where
             inbox,
             work_item: WorkItem {
                 id: WorkItemId::generate(),
-                initial_message,
+                from: initial_message.from,
+                content: initial_message.content,
             },
             status: AgentLoopStatus::Ready,
             step_count: 0,
@@ -125,14 +120,15 @@ where
     ) -> Result<ParticipantDecision<A>, crate::error::ParticipantError> {
         self.on_mailbox_updated();
         let _ = (
-            &self.work_item.initial_message.from,
-            &self.work_item.initial_message.content,
+            &self.work_item.from,
+            &self.work_item.content,
         );
         let input = ParticipantInput {
             run_id: input.run_id,
             agent_loop_id: self.work_item.id,
             agent_loop_iteration: self.step_count + 1,
             participant: self.participant.id(),
+            work_item: Some(self.work_item.clone()),
             task: input.task,
             limits: input.limits,
             observation: input.observation,

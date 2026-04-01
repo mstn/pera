@@ -16,7 +16,7 @@ pub struct PromptMessage {
 #[derive(Debug, Clone)]
 pub struct PromptContext {
     pub task_id: String,
-    pub task_instructions: String,
+    pub work_item: Option<pera_orchestrator::WorkItem>,
     pub tools: Vec<LlmToolDefinition>,
     pub available_skills: Vec<AvailableSkillPrompt>,
     pub active_skills: Vec<ActiveSkillPrompt>,
@@ -44,6 +44,8 @@ pub trait CodePromptBuilder: Send + Sync {
     ) -> PromptContext;
 
     fn build_system_prompt(&self, context: &PromptContext) -> String;
+
+    fn build_user_task_message(&self, context: &PromptContext) -> Option<PromptMessage>;
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -68,7 +70,7 @@ impl CodePromptBuilder for ProviderBackedPromptBuilder {
 
         PromptContext {
             task_id: input.task.id.clone(),
-            task_instructions: input.task.instructions.clone(),
+            work_item: input.work_item.clone(),
             tools: input
                 .observation
                 .available_tools
@@ -143,17 +145,46 @@ impl CodePromptBuilder for ProviderBackedPromptBuilder {
                 prompt.push_str(&skill.instructions);
                 prompt.push('\n');
             }
-            if !skill.python_stub.trim().is_empty() {
-                prompt.push_str("Python stub:\n```python\n");
-                prompt.push_str(&skill.python_stub);
-                if !skill.python_stub.ends_with('\n') {
-                    prompt.push('\n');
-                }
-                prompt.push_str("```\n");
-            }
         }
 
         prompt
+    }
+
+    fn build_user_task_message(&self, context: &PromptContext) -> Option<PromptMessage> {
+        let work_item = context.work_item.as_ref()?;
+        let mut content = String::new();
+        content.push_str("<task>\n");
+        content.push_str(&work_item.content);
+        if !work_item.content.ends_with('\n') {
+            content.push('\n');
+        }
+        content.push_str("</task>\n");
+
+        let declarations = context
+            .active_skills
+            .iter()
+            .filter_map(|skill| {
+                let stub = skill.python_stub.trim();
+                if stub.is_empty() {
+                    None
+                } else {
+                    Some(stub)
+                }
+            })
+            .collect::<Vec<_>>();
+
+        if !declarations.is_empty() {
+            content.push('\n');
+            content.push_str("<declarations>\n```python\n");
+            content.push_str(&declarations.join("\n\n"));
+            content.push('\n');
+            content.push_str("```\n</declarations>\n");
+        }
+
+        Some(PromptMessage {
+            role: "user".to_owned(),
+            content,
+        })
     }
 }
 
@@ -252,6 +283,11 @@ mod tests {
             agent_loop_id: WorkItemId::generate(),
             agent_loop_iteration: 1,
             participant: ParticipantId::Agent,
+            work_item: Some(pera_orchestrator::WorkItem {
+                id: WorkItemId::generate(),
+                from: ParticipantId::User,
+                content: "Help me inspect the repo".to_owned(),
+            }),
             task: TaskSpec {
                 id: "task".to_owned(),
                 instructions: "Do the work".to_owned(),
@@ -300,14 +336,21 @@ mod tests {
 
         let context = builder.build_context(&input);
         let prompt = builder.build_system_prompt(&context);
+        let task_message = builder.build_user_task_message(&context).unwrap();
 
-        assert!(prompt.contains("Use the `load_skill` tool before relying on a skill."));
-        assert!(prompt.contains("Do not import a module for this skill."));
+        assert!(prompt.contains("You are a helpful assistant that solves user tasks."));
+        assert!(prompt.contains("Skills are instruction packages that extend agent capabilities."));
+        assert!(prompt.contains("The prompt includes a user message with:"));
         assert!(prompt.contains("<available-skills>"));
         assert!(prompt.contains("- name: sqlite"));
         assert!(prompt.contains("when_to_use: Use when you need structured data queries."));
         assert!(prompt.contains("</available-skills>"));
         assert!(prompt.contains("Use this skill for repository inspection."));
-        assert!(prompt.contains("def status() -> str: ..."));
+        assert!(!prompt.contains("def status() -> str: ..."));
+        assert_eq!(task_message.role, "user");
+        assert!(task_message.content.contains("<task>"));
+        assert!(task_message.content.contains("Help me inspect the repo"));
+        assert!(task_message.content.contains("<declarations>"));
+        assert!(task_message.content.contains("def status() -> str: ..."));
     }
 }

@@ -51,3 +51,5 @@ LLMs can be faster, cheaper, and more reliable when generating Python code inste
 
 - [Monty](https://github.com/pydantic/monty/)
 - [wasmCloud](https://github.com/wasmcloud/wasmcloud)
+- [Agentica](https://github.com/symbolica-ai/agentica-server)
+- [tau2-bench](https://github.com/sierra-research/tau2-bench)

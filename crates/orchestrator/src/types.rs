@@ -29,6 +29,13 @@ pub struct TaskSpec {
     pub instructions: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkItem {
+    pub id: WorkItemId,
+    pub from: ParticipantId,
+    pub content: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunLimits {
     pub max_steps: usize,
@@ -261,6 +268,7 @@ pub struct ParticipantInput<O, A, U> {
     pub agent_loop_id: WorkItemId,
     pub agent_loop_iteration: usize,
     pub participant: ParticipantId,
+    pub work_item: Option<WorkItem>,
     pub task: TaskSpec,
     pub limits: RunLimits,
     pub observation: O,

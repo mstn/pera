@@ -452,7 +452,12 @@ mod tests {
 }
 
 fn prompt_messages(context: &PromptContext) -> Vec<PromptMessage> {
-    let mut messages = context.transcript.clone();
+    let builder = ProviderBackedPromptBuilder;
+    let mut messages = Vec::new();
+    if let Some(task_message) = builder.build_user_task_message(context) {
+        messages.push(task_message);
+    }
+    messages.extend(context.transcript.clone());
     let overlap = suffix_prefix_overlap(&messages, &context.inbox);
     messages.extend(context.inbox.iter().skip(overlap).cloned());
     messages

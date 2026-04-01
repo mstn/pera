@@ -171,6 +171,7 @@ mod tests {
             agent_loop_id: pera_core::WorkItemId::generate(),
             agent_loop_iteration: 1,
             participant: ParticipantId::Agent,
+            work_item: None,
             task: TaskSpec {
                 id: "repl".to_owned(),
                 instructions: "test".to_owned(),

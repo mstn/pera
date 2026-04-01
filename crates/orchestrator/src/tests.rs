@@ -9,9 +9,10 @@ use crate::orchestrator::Orchestrator;
 use crate::streaming::ParticipantOutput;
 use crate::traits::{Environment, Evaluator, Participant};
 use crate::types::{
-    ActionError, ActionExecution, EnvironmentEvent, EvalResult, FinishReason, InitialInboxMessage,
-    ParticipantDecision, ParticipantId, ParticipantInboxEvent, ParticipantInput, RunLimits,
-    RunRequest, ScheduledAction, TaskSpec, TerminationCondition, Trajectory, TrajectoryEvent,
+    ActionError, ActionExecution, EnvironmentEvent, EvalResult, FinishReason,
+    InitialInboxMessage, ParticipantDecision, ParticipantId, ParticipantInboxEvent,
+    ParticipantInput, RunLimits, RunRequest, ScheduledAction, TaskSpec, TerminationCondition,
+    Trajectory, TrajectoryEvent, WorkItem,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +31,7 @@ struct FakeParticipant {
     id: ParticipantId,
     decisions: VecDeque<Result<ParticipantDecision<TestAction>, ParticipantError>>,
     seen_inboxes: Arc<Mutex<Vec<Vec<ParticipantInboxEvent<TestAction, TestOutcome>>>>>,
+    seen_work_items: Arc<Mutex<Vec<Option<WorkItem>>>>,
 }
 
 #[async_trait]
@@ -48,6 +50,10 @@ impl Participant for FakeParticipant {
         _output: &mut dyn ParticipantOutput<Self::Action, Self::Outcome>,
     ) -> Result<ParticipantDecision<Self::Action>, ParticipantError> {
         self.seen_inboxes.lock().unwrap().push(input.inbox);
+        self.seen_work_items
+            .lock()
+            .unwrap()
+            .push(input.work_item);
         self.decisions
             .pop_front()
             .unwrap_or(Ok(ParticipantDecision::Finish))
@@ -166,11 +172,13 @@ async fn orchestrator_handles_single_participant_immediate_action() {
             Ok(ParticipantDecision::Finish),
         ]),
         seen_inboxes: Arc::new(Mutex::new(Vec::new())),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
     };
     let user = FakeParticipant {
         id: ParticipantId::User,
         decisions: VecDeque::from([Ok(ParticipantDecision::Finish)]),
         seen_inboxes: Arc::new(Mutex::new(Vec::new())),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
     };
     let environment = FakeEnvironment {
         observation: TestObservation("initial"),
@@ -232,11 +240,13 @@ async fn orchestrator_delivers_immediate_completion_via_inbox() {
             Ok(ParticipantDecision::Finish),
         ]),
         seen_inboxes: Arc::clone(&seen_inboxes),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
     };
     let user = FakeParticipant {
         id: ParticipantId::User,
         decisions: VecDeque::from([Ok(ParticipantDecision::Finish)]),
         seen_inboxes: Arc::new(Mutex::new(Vec::new())),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
     };
     let environment = FakeEnvironment {
         observation: TestObservation("initial"),
@@ -305,11 +315,13 @@ async fn orchestrator_delivers_deferred_completion_via_inbox() {
             Ok(ParticipantDecision::Finish),
         ]),
         seen_inboxes: Arc::clone(&seen_inboxes),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
     };
     let user = FakeParticipant {
         id: ParticipantId::User,
         decisions: VecDeque::from([Ok(ParticipantDecision::Finish)]),
         seen_inboxes: Arc::new(Mutex::new(Vec::new())),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
     };
     let environment = FakeEnvironment {
         observation: TestObservation("initial"),
@@ -377,6 +389,7 @@ async fn orchestrator_delivers_deferred_completion_via_inbox() {
 #[tokio::test]
 async fn orchestrator_starts_a_new_agent_loop_for_a_second_user_message() {
     let seen_inboxes = Arc::new(Mutex::new(Vec::new()));
+    let seen_work_items = Arc::new(Mutex::new(Vec::new()));
     let agent = FakeParticipant {
         id: ParticipantId::Agent,
         decisions: VecDeque::from([
@@ -389,6 +402,7 @@ async fn orchestrator_starts_a_new_agent_loop_for_a_second_user_message() {
             Ok(ParticipantDecision::Finish),
         ]),
         seen_inboxes: Arc::clone(&seen_inboxes),
+        seen_work_items: Arc::clone(&seen_work_items),
     };
     let user = FakeParticipant {
         id: ParticipantId::User,
@@ -402,6 +416,7 @@ async fn orchestrator_starts_a_new_agent_loop_for_a_second_user_message() {
             Ok(ParticipantDecision::Finish),
         ]),
         seen_inboxes: Arc::new(Mutex::new(Vec::new())),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
     };
     let environment = FakeEnvironment {
         observation: TestObservation("initial"),
@@ -447,6 +462,7 @@ async fn orchestrator_starts_a_new_agent_loop_for_a_second_user_message() {
         }
     );
     let seen_inboxes = seen_inboxes.lock().unwrap();
+    let seen_work_items = seen_work_items.lock().unwrap();
     assert_eq!(seen_inboxes.len(), 2);
     assert!(seen_inboxes[0].iter().any(|event| matches!(
         event,
@@ -462,6 +478,21 @@ async fn orchestrator_starts_a_new_agent_loop_for_a_second_user_message() {
             content,
         } if content == "request 2"
     )));
+    assert_eq!(
+        seen_work_items.as_slice(),
+        &[
+            Some(WorkItem {
+                id: seen_work_items[0].as_ref().unwrap().id,
+                from: ParticipantId::User,
+                content: "request 1".to_owned(),
+            }),
+            Some(WorkItem {
+                id: seen_work_items[1].as_ref().unwrap().id,
+                from: ParticipantId::User,
+                content: "request 2".to_owned(),
+            }),
+        ]
+    );
 }
 
 #[tokio::test]
@@ -478,11 +509,13 @@ async fn orchestrator_blocks_participant_on_deferred_blocking_action() {
             Ok(ParticipantDecision::Finish),
         ]),
         seen_inboxes: Arc::clone(&seen_inboxes),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
     };
     let user = FakeParticipant {
         id: ParticipantId::User,
         decisions: VecDeque::from([Ok(ParticipantDecision::Finish)]),
         seen_inboxes: Arc::new(Mutex::new(Vec::new())),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
     };
     let environment = FakeEnvironment {
         observation: TestObservation("initial"),
@@ -549,6 +582,7 @@ async fn orchestrator_alternates_two_participants() {
             Ok(ParticipantDecision::Finish),
         ]),
         seen_inboxes: Arc::clone(&seen_agent),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
     };
     let user = FakeParticipant {
         id: ParticipantId::User,
@@ -559,6 +593,7 @@ async fn orchestrator_alternates_two_participants() {
             Ok(ParticipantDecision::Finish),
         ]),
         seen_inboxes: Arc::clone(&seen_user),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
     };
     let environment = FakeEnvironment {
         observation: TestObservation("initial"),
@@ -615,6 +650,7 @@ async fn orchestrator_runs_evaluator_once_when_present() {
         id: ParticipantId::Agent,
         decisions: VecDeque::from([Ok(ParticipantDecision::Finish)]),
         seen_inboxes: Arc::new(Mutex::new(Vec::new())),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
     };
     let environment = FakeEnvironment {
         observation: TestObservation("initial"),
@@ -647,11 +683,13 @@ async fn orchestrator_can_terminate_when_a_specific_participant_finishes() {
         id: ParticipantId::Agent,
         decisions: VecDeque::from([Ok(ParticipantDecision::Yield)]),
         seen_inboxes: Arc::new(Mutex::new(Vec::new())),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
     };
     let user = FakeParticipant {
         id: ParticipantId::User,
         decisions: VecDeque::from([Ok(ParticipantDecision::Finish)]),
         seen_inboxes: Arc::new(Mutex::new(Vec::new())),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
     };
     let environment = FakeEnvironment {
         observation: TestObservation("initial"),
@@ -711,11 +749,13 @@ async fn orchestrator_routes_participant_message_to_other_mailboxes() {
             Ok(ParticipantDecision::Finish),
         ]),
         seen_inboxes: Arc::clone(&seen_user),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
     };
     let agent = FakeParticipant {
         id: ParticipantId::Agent,
         decisions: VecDeque::from([Ok(ParticipantDecision::Finish)]),
         seen_inboxes: Arc::clone(&seen_agent),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
     };
     let environment = FakeEnvironment {
         observation: TestObservation("initial"),
