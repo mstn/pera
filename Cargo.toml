@@ -2,6 +2,7 @@
 members = [
     "crates/core",
     "crates/canonical",
+    "crates/skills",
     "crates/runtime",
     "crates/orchestrator",
     "crates/agents",

@@ -1801,6 +1801,7 @@ dependencies = [
  "pera-evals",
  "pera-orchestrator",
  "pera-runtime",
+ "pera-skills",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1823,6 +1824,7 @@ version = "0.1.0"
 dependencies = [
  "pera-core",
  "pera-runtime",
+ "pera-skills",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1856,6 +1858,17 @@ dependencies = [
  "tracing",
  "wasmtime",
  "wasmtime-wasi",
+]
+
+[[package]]
+name = "pera-skills"
+version = "0.1.0"
+dependencies = [
+ "pera-core",
+ "pera-runtime",
+ "serde",
+ "serde_json",
+ "serde_yaml",
 ]
 
 [[package]]

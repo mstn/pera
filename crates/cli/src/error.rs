@@ -7,6 +7,7 @@ use std::process::ExitStatus;
 use pera_core::{RunId, StoreError};
 use pera_evals::EvalError;
 use pera_runtime::ExecutionEngineError;
+use pera_skills::SkillProvisionError;
 
 #[derive(Debug)]
 pub enum CliError {
@@ -102,6 +103,42 @@ impl From<EvalError> for CliError {
             EvalError::InvalidSpec(message)
             | EvalError::InvalidOverride(message)
             | EvalError::Internal(message) => Self::UnexpectedStateOwned(message),
+        }
+    }
+}
+
+impl From<SkillProvisionError> for CliError {
+    fn from(value: SkillProvisionError) -> Self {
+        match value {
+            SkillProvisionError::ReadFile { path, source } => Self::ReadFile { path, source },
+            SkillProvisionError::WriteFile { path, source } => Self::WriteFile { path, source },
+            SkillProvisionError::CreateDir { path, source } => Self::CreateDir { path, source },
+            SkillProvisionError::CopyPath {
+                source_path,
+                target_path,
+                source,
+            } => Self::CopyPath {
+                source_path,
+                target_path,
+                source,
+            },
+            SkillProvisionError::InvalidManifest(message)
+            | SkillProvisionError::InvalidArguments(message)
+            | SkillProvisionError::Runtime(message)
+            | SkillProvisionError::Internal(message) => Self::UnexpectedStateOwned(message),
+            SkillProvisionError::ToolNotInstalled { tool, hint } => {
+                Self::ToolNotInstalled { tool, hint }
+            }
+            SkillProvisionError::ToolIo { tool, source } => Self::ToolIo { tool, source },
+            SkillProvisionError::ToolFailed {
+                tool,
+                status,
+                stderr,
+            } => Self::ToolFailed {
+                tool,
+                status,
+                stderr,
+            },
         }
     }
 }
