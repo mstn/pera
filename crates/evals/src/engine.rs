@@ -46,10 +46,21 @@ pub struct EvalEngine;
 
 impl EvalEngine {
     pub fn resolve(&self, mode: EvalMode, request: EvalRequest) -> Result<EvalSession, EvalError> {
+        eprintln!(
+            "[eval] resolving spec mode={} path={}",
+            mode.as_str(),
+            request.spec_path.display()
+        );
         let mut loaded_spec = load_eval_spec(&request.spec_path, &request.overrides)?;
         if let Some(path) = request.output_folder {
+            eprintln!("[eval] overriding output folder to {}", path.display());
             loaded_spec.override_output_folder(path)?;
         }
+        eprintln!(
+            "[eval] resolved spec id={} output_folder={}",
+            loaded_spec.spec.id,
+            loaded_spec.spec.runtime.output_folder.display()
+        );
 
         Ok(EvalSession {
             mode,
@@ -59,7 +70,16 @@ impl EvalEngine {
     }
 
     pub async fn prepare(&self, session: &mut EvalSession) -> Result<(), EvalError> {
+        eprintln!(
+            "[eval] preparing runtime for spec id={}",
+            session.loaded_spec.spec.id
+        );
         let preparation = EvalRunner::new().prepare(&session.loaded_spec.spec).await?;
+        eprintln!(
+            "[eval] preparation complete project_root={} skills={}",
+            preparation.project.root.display(),
+            preparation.skills.len()
+        );
         session.preparation = Some(preparation);
         Ok(())
     }
@@ -79,6 +99,11 @@ impl EvalEngine {
         U: Clone + Send + Sync + 'static,
         T: EvalActionAdapter<A, U>,
     {
+        eprintln!(
+            "[eval] starting orchestrator run spec_id={} run_dir={}",
+            session.loaded_spec.spec.id,
+            run_dir.display()
+        );
         let evaluator = SpecEvaluator::new(session.loaded_spec.spec.clone(), action_adapter.clone());
         let mut orchestrator =
             Orchestrator::with_participants_and_evaluator(participants, environment, evaluator);
@@ -103,6 +128,11 @@ impl EvalEngine {
             )
             .await
             .map_err(|error: EvaluatorError| EvalError::Internal(error.to_string()))?;
+        eprintln!(
+            "[eval] orchestrator finished finish_reason={:?} trajectory_events={}",
+            result.finish_reason,
+            result.trajectory.events.len()
+        );
 
         let evaluation = result.evaluation.unwrap_or_else(|| pera_orchestrator::EvalResult {
             passed: false,
@@ -122,6 +152,12 @@ impl EvalEngine {
                 _ => None,
             });
         let trace = trajectory_trace_events(&result.trajectory, &action_adapter);
+        eprintln!(
+            "[eval] evaluation passed={} score={:?} trace_events={}",
+            evaluation.passed,
+            evaluation.score,
+            trace.len()
+        );
 
         Ok(EvalRunResult {
             passed: evaluation.passed,

@@ -1,6 +1,6 @@
 mod artifacts;
 
-use std::{env, path::PathBuf};
+use std::{env, path::PathBuf, sync::Arc};
 
 use clap::{Args, Subcommand};
 use pera_agents::{
@@ -17,6 +17,7 @@ use serde_yaml::{Mapping, Value};
 
 use self::artifacts::{RunArtifacts, create_run_artifacts, write_run_result};
 use crate::error::CliError;
+use crate::repl::prompt_debug::FilePromptDebugSink;
 
 #[derive(Debug, Args)]
 pub struct EvalCommand {
@@ -113,13 +114,18 @@ impl EvalModeCommand {
         for skill_name in &session.loaded_spec.spec.runtime.active_skills {
             environment.activate_skill(skill_name.clone());
         }
-        let agent = LlmAgentParticipant::new(
+        let openai_model = required_env_var("OPENAI_MODEL")?;
+        let agent = LlmAgentParticipant::with_debug_sink(
             OpenAiProvider::new(OpenAiProviderConfig {
                 api_key: required_env_var("OPENAI_API_KEY")?,
-                model: required_env_var("OPENAI_MODEL")?,
+                model: openai_model.clone(),
             })
             .map_err(|error| CliError::UnexpectedStateOwned(error.to_string()))?,
             ProviderBackedPromptBuilder,
+            Arc::new(FilePromptDebugSink::new(
+                workspace_root.clone(),
+                Some(openai_model),
+            )),
         );
         let user = ScriptedUserParticipant::<
             WorkspaceObservation,

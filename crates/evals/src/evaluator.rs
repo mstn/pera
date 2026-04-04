@@ -47,6 +47,11 @@ where
                 _ => None,
             })
             .collect::<Vec<_>>();
+        eprintln!(
+            "[eval] evaluating trajectory criteria={} requested_actions={}",
+            self.spec.evaluation.criteria.len(),
+            requested_actions.len()
+        );
 
         let mut failures = Vec::new();
         for criterion in &self.spec.evaluation.criteria {
@@ -55,8 +60,16 @@ where
                     actions,
                     allow_extra_actions,
                 } => {
+                    eprintln!(
+                        "[eval] criterion action_sequence expected_actions={} allow_extra_actions={}",
+                        actions.len(),
+                        allow_extra_actions
+                    );
                     if !matches_action_sequence(actions, &requested_actions, *allow_extra_actions) {
+                        eprintln!("[eval] criterion failed: action_sequence mismatch");
                         failures.push(format_action_sequence_failure(actions, &requested_actions));
+                    } else {
+                        eprintln!("[eval] criterion passed: action_sequence");
                     }
                 }
             }
