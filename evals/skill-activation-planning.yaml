@@ -1,0 +1,72 @@
+schema_version: 1
+id: skill-activation-planning
+description: Exercise the example skills currently shipped with the repository.
+
+runtime:
+  home_dir: .pera
+  skill_sources:
+    - id: local_examples
+      path: skills/examples
+  catalog:
+    - skill: secret-service
+      source: local_examples
+      profile: secret-service-default
+    - skill: weather-brief
+      source: local_examples
+      profile: weather-brief-default
+  active_skills: []
+
+scenario:
+  purpose: |
+    Evaluate whether the agent activates relevant skills before using code to work through a multi-skill planning request.
+  user:
+    task: |
+      Figure out whether tomorrow is a safe day to proceed with planned field work in Berlin.
+    reason: |
+      The user is deciding whether to move forward with operations and wants a quick go/no-go planning readout.
+    known_info: |
+      The operation is being planned for Berlin, the date of interest is 2026-04-05, and the user only cares about missions that are still planned rather than already assigned or resolved.
+    unknown_info: |
+      The user does not know the expected weather in Berlin for that date or whether there are any planned missions in Berlin that would be affected.
+    example_messages:
+      - Can you tell me if tomorrow looks safe for planned field work in Berlin?
+      - Before we proceed in Berlin on 2026-04-05, check the forecast and whether any missions there are still in planned status.
+  agent:
+    persona: Helpful operations assistant.
+  history: []
+
+evaluation:
+  criteria:
+    - type: action_sequence
+      actions:
+        - action: load_skill
+          arguments:
+            skill_name: weather-brief
+        - action: load_skill
+          arguments:
+            skill_name: secret-service
+        - action: execute_code
+          arguments:
+            language: python
+      allow_extra_actions: false
+
+optimization:
+  targets:
+    - kind: prompt
+      prompt: base_system
+    - kind: prompt
+      prompt: skills_system
+    - kind: prompt
+      skill: weather-brief
+      field: instructions
+    - kind: prompt
+      skill: weather-brief
+      field: when_to_use
+    - kind: prompt
+      skill: secret-service
+      field: instructions
+    - kind: prompt
+      skill: secret-service
+      field: when_to_use
+  max_epochs: 5
+  early_stop_on_pass: true
