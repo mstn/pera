@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 use crate::error::EvalError;
+use crate::execution::EvalPreparation;
 use crate::overrides::OverrideSet;
+use crate::runner::EvalRunner;
 use crate::spec::{LoadedEvalSpec, load_eval_spec};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +32,7 @@ pub struct EvalRequest {
 pub struct EvalSession {
     pub mode: EvalMode,
     pub loaded_spec: LoadedEvalSpec,
+    pub preparation: Option<EvalPreparation>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -42,6 +45,16 @@ impl EvalEngine {
             loaded_spec.override_output_folder(path)?;
         }
 
-        Ok(EvalSession { mode, loaded_spec })
+        Ok(EvalSession {
+            mode,
+            loaded_spec,
+            preparation: None,
+        })
+    }
+
+    pub async fn prepare(&self, session: &mut EvalSession) -> Result<(), EvalError> {
+        let preparation = EvalRunner::new().prepare(&session.loaded_spec.spec).await?;
+        session.preparation = Some(preparation);
+        Ok(())
     }
 }

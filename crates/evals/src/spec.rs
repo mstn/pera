@@ -37,13 +37,35 @@ impl LoadedEvalSpec {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct EvalSpec {
+    #[serde(default)]
+    pub schema_version: Option<u32>,
     pub id: String,
     pub runtime: EvalRuntimeSpec,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct EvalRuntimeSpec {
     pub output_folder: PathBuf,
+    #[serde(default)]
+    pub skill_sources: Vec<EvalSkillSourceSpec>,
+    #[serde(default)]
+    pub catalog: Vec<EvalCatalogSkillSpec>,
+    #[serde(default)]
+    pub active_skills: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EvalSkillSourceSpec {
+    pub id: String,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EvalCatalogSkillSpec {
+    pub skill: String,
+    pub source: String,
+    #[serde(default)]
+    pub profile: Option<String>,
 }
 
 pub fn load_eval_spec(path: &Path, overrides: &OverrideSet) -> Result<LoadedEvalSpec, EvalError> {
@@ -69,6 +91,35 @@ fn validate_eval_spec(spec: &EvalSpec) -> Result<(), EvalError> {
         return Err(EvalError::InvalidSpec(
             "spec runtime.output_folder cannot be empty".to_owned(),
         ));
+    }
+
+    let mut source_ids = std::collections::BTreeSet::new();
+    for source in &spec.runtime.skill_sources {
+        if source.id.trim().is_empty() {
+            return Err(EvalError::InvalidSpec(
+                "runtime.skill_sources.id cannot be empty".to_owned(),
+            ));
+        }
+        if !source_ids.insert(source.id.clone()) {
+            return Err(EvalError::InvalidSpec(format!(
+                "duplicate runtime.skill_sources id '{}'",
+                source.id
+            )));
+        }
+    }
+
+    for skill in &spec.runtime.catalog {
+        if skill.skill.trim().is_empty() {
+            return Err(EvalError::InvalidSpec(
+                "runtime.catalog.skill cannot be empty".to_owned(),
+            ));
+        }
+        if !source_ids.contains(&skill.source) {
+            return Err(EvalError::InvalidSpec(format!(
+                "runtime.catalog skill '{}' references unknown source '{}'",
+                skill.skill, skill.source
+            )));
+        }
     }
 
     Ok(())

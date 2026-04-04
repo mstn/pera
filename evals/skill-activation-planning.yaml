@@ -3,7 +3,7 @@ id: skill-activation-planning
 description: Exercise the example skills currently shipped with the repository.
 
 runtime:
-  output_folder: .pera/evals
+  output_folder: .pera
   skill_sources:
     - id: local_examples
       path: skills/examples

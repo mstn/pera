@@ -1821,6 +1821,8 @@ dependencies = [
 name = "pera-evals"
 version = "0.1.0"
 dependencies = [
+ "pera-core",
+ "pera-runtime",
  "serde",
  "serde_json",
  "serde_yaml",

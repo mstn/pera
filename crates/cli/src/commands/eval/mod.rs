@@ -60,7 +60,8 @@ struct EvalModeCommand {
 impl EvalModeCommand {
     async fn execute(&self, mode: EvalMode) -> Result<(), CliError> {
         let overrides = OverrideSet::from_cli(&self.set_values, &self.set_json_values)?;
-        let session = EvalEngine
+        let engine = EvalEngine;
+        let mut session = engine
             .resolve(
                 mode.into(),
                 EvalRequest {
@@ -70,6 +71,7 @@ impl EvalModeCommand {
                 },
             )
             .map_err(CliError::from)?;
+        engine.prepare(&mut session).await.map_err(CliError::from)?;
         let output_root =
             resolved_output_folder(&session.loaded_spec.spec, self.output_folder.as_ref())?;
         let artifacts = create_run_artifacts(

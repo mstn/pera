@@ -30,19 +30,20 @@ struct ManifestOverride {
 }
 
 pub fn create_run_artifacts(
-    output_root: &Path,
+    project_root: &Path,
     name: &str,
     mode: &str,
     spec_path: &Path,
     loaded: &LoadedEvalSpec,
     overrides: &OverrideSet,
 ) -> Result<RunArtifacts, CliError> {
-    fs::create_dir_all(output_root).map_err(|source| CliError::CreateDir {
-        path: output_root.to_path_buf(),
+    let output_root = project_root.join("evals");
+    fs::create_dir_all(&output_root).map_err(|source| CliError::CreateDir {
+        path: output_root.clone(),
         source,
     })?;
 
-    let run_dir = unique_run_dir(output_root, name);
+    let run_dir = unique_run_dir(&output_root, name);
     fs::create_dir_all(&run_dir).map_err(|source| CliError::CreateDir {
         path: run_dir.clone(),
         source,
