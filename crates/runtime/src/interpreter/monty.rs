@@ -186,6 +186,32 @@ fn monty_object_to_value(value: MontyObject) -> Result<Value, InterpreterError> 
             .map(monty_object_to_value)
             .collect::<Result<Vec<_>, _>>()
             .map(Value::List),
+        MontyObject::Tuple(items) => items
+            .into_iter()
+            .map(monty_object_to_value)
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::List),
+        MontyObject::NamedTuple {
+            type_name,
+            field_names,
+            values,
+        } => {
+            if field_names.len() != values.len() {
+                return Err(InterpreterError::new(
+                    "Monty namedtuple field_names and values must have the same length",
+                ));
+            }
+
+            let mut map = BTreeMap::new();
+            for (field_name, value) in field_names.into_iter().zip(values.into_iter()) {
+                map.insert(field_name, monty_object_to_value(value)?);
+            }
+
+            Ok(Value::Record {
+                name: type_name,
+                fields: map,
+            })
+        }
         MontyObject::Dict(entries) => {
             let mut map = BTreeMap::new();
 
@@ -230,4 +256,52 @@ fn monty_object_to_value(value: MontyObject) -> Result<Value, InterpreterError> 
 
 fn to_interpreter_error(error: impl std::fmt::Display) -> InterpreterError {
     InterpreterError::new(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use monty::MontyObject;
+    use pera_core::Value;
+
+    use super::monty_object_to_value;
+
+    #[test]
+    fn normalizes_tuple_as_list() {
+        let value = monty_object_to_value(MontyObject::Tuple(vec![
+            MontyObject::Int(1),
+            MontyObject::String("two".to_owned()),
+        ]))
+        .expect("tuple should normalize");
+
+        assert_eq!(
+            value,
+            Value::List(vec![Value::Int(1), Value::String("two".to_owned())])
+        );
+    }
+
+    #[test]
+    fn normalizes_namedtuple_as_record() {
+        let value = monty_object_to_value(MontyObject::NamedTuple {
+            type_name: "WeatherPair".to_owned(),
+            field_names: vec!["location".to_owned(), "day".to_owned()],
+            values: vec![
+                MontyObject::String("Berlin".to_owned()),
+                MontyObject::String("tomorrow".to_owned()),
+            ],
+        })
+        .expect("namedtuple should normalize");
+
+        let mut expected_fields = BTreeMap::new();
+        expected_fields.insert("location".to_owned(), Value::String("Berlin".to_owned()));
+        expected_fields.insert("day".to_owned(), Value::String("tomorrow".to_owned()));
+        assert_eq!(
+            value,
+            Value::Record {
+                name: "WeatherPair".to_owned(),
+                fields: expected_fields,
+            }
+        );
+    }
 }
