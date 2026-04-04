@@ -709,15 +709,19 @@ fn cache_input_metadata_dir(cache_dir: &Path) -> PathBuf {
 }
 
 fn cache_input_metadata_path(cache_dir: &Path, artifact_ref: &str) -> PathBuf {
-    let encoded = artifact_ref
-        .bytes()
-        .map(|byte| match byte {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' => (byte as char).to_string(),
-            b'.' | b'-' | b'_' => (byte as char).to_string(),
-            _ => format!("_{byte:02x}"),
-        })
-        .collect::<String>();
-    cache_input_metadata_dir(cache_dir).join(format!("{encoded}.json"))
+    // Artifact refs can be absolute paths inside deeply nested eval workspaces.
+    // Hash them into a short stable key so cache metadata filenames stay well
+    // below platform filename limits.
+    cache_input_metadata_dir(cache_dir).join(format!("{}.json", cache_input_metadata_key(artifact_ref)))
+}
+
+fn cache_input_metadata_key(artifact_ref: &str) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in artifact_ref.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
 }
 
 fn read_cache_input_snapshot(cache_dir: &Path, artifact_ref: &str) -> Option<CacheInputSnapshot> {
