@@ -1822,8 +1822,8 @@ dependencies = [
 name = "pera-evals"
 version = "0.1.0"
 dependencies = [
- "pera-core",
- "pera-runtime",
+ "async-trait",
+ "pera-orchestrator",
  "pera-skills",
  "serde",
  "serde_json",

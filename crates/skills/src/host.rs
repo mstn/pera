@@ -20,6 +20,7 @@ pub trait ProjectHost: Clone + Send + Sync + 'static {
     fn remove_dir_all(&self, path: &Path) -> Result<(), SkillProvisionError>;
     fn read_dir(&self, path: &Path) -> Result<Vec<ProjectEntry>, SkillProvisionError>;
     fn copy_file(&self, source: &Path, target: &Path) -> Result<(), SkillProvisionError>;
+    fn symlink_dir(&self, source: &Path, target: &Path) -> Result<(), SkillProvisionError>;
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -118,6 +119,33 @@ impl ProjectHost for FileSystemProjectHost {
             target_path: target.to_path_buf(),
             source: source_err,
         })?;
+        Ok(())
+    }
+
+    fn symlink_dir(&self, source: &Path, target: &Path) -> Result<(), SkillProvisionError> {
+        if let Some(parent) = target.parent() {
+            self.create_dir_all(parent)?;
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(source, target).map_err(|source_err| {
+                SkillProvisionError::CopyPath {
+                    source_path: source.to_path_buf(),
+                    target_path: target.to_path_buf(),
+                    source: source_err,
+                }
+            })?;
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_dir(source, target).map_err(|source_err| {
+                SkillProvisionError::CopyPath {
+                    source_path: source.to_path_buf(),
+                    target_path: target.to_path_buf(),
+                    source: source_err,
+                }
+            })?;
+        }
         Ok(())
     }
 }

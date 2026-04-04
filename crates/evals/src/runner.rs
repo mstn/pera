@@ -1,6 +1,10 @@
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
-use pera_skills::{FileSystemProjectHost, SkillProvisioner, UvxComponentizer};
+use pera_skills::{
+    CompiledSkill, FileSystemProjectHost, InstalledSkill, ProjectHost, SkillProvisioner,
+    UvxComponentizer,
+};
 
 use crate::error::EvalError;
 use crate::execution::{EvalPreparation, EvalProjectLayout, PreparedCatalogSkill};
@@ -78,11 +82,60 @@ impl EvalRunner {
 
         Ok(PreparedCatalogSkill {
             skill_name: installed.compiled.skill_name,
+            skill_version: installed.compiled.skill_version,
             profile_name: installed.compiled.profile_name,
             compiled_dir: installed.compiled.compiled_dir,
             catalog_dir: installed.catalog_dir,
             compiled_now: installed.compiled.compiled_now,
             uploaded_now: installed.uploaded_now,
         })
+    }
+
+    pub fn prepare_run_workspace(
+        &self,
+        preparation: &EvalPreparation,
+        run_dir: &Path,
+    ) -> Result<PathBuf, EvalError> {
+        let host = FileSystemProjectHost;
+        let workspace_root = run_dir.join("project");
+        host.create_dir_all(&workspace_root).map_err(EvalError::from)?;
+
+        let shared_catalog = preparation.project.root.join("catalog");
+        let shared_cache = preparation.project.root.join("cache");
+        let workspace_catalog = workspace_root.join("catalog");
+        let workspace_cache = workspace_root.join("cache");
+
+        if !host.exists(&workspace_catalog) {
+            host.symlink_dir(&shared_catalog, &workspace_catalog)
+                .map_err(EvalError::from)?;
+        }
+        if !host.exists(&workspace_cache) {
+            host.symlink_dir(&shared_cache, &workspace_cache)
+                .map_err(EvalError::from)?;
+        }
+
+        let provisioner =
+            SkillProvisioner::new(FileSystemProjectHost, UvxComponentizer::new(&self.uvx));
+        let _ = provisioner
+            .ensure_project_layout(&workspace_root)
+            .map_err(EvalError::from)?;
+        for skill in &preparation.skills {
+            let installed = InstalledSkill {
+                compiled: CompiledSkill {
+                    skill_name: skill.skill_name.clone(),
+                    skill_version: skill.skill_version.clone(),
+                    profile_name: skill.profile_name.clone(),
+                    compiled_dir: skill.compiled_dir.clone(),
+                    compiled_now: skill.compiled_now,
+                },
+                catalog_dir: skill.catalog_dir.clone(),
+                uploaded_now: skill.uploaded_now,
+            };
+            provisioner
+                .reset_installed_skill_state(&workspace_root, &installed, None)
+                .map_err(EvalError::from)?;
+        }
+
+        Ok(workspace_root)
     }
 }

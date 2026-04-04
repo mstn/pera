@@ -40,7 +40,13 @@ pub struct EvalSpec {
     #[serde(default)]
     pub schema_version: Option<u32>,
     pub id: String,
+    #[serde(default)]
+    pub description: Option<String>,
     pub runtime: EvalRuntimeSpec,
+    pub scenario: EvalScenarioSpec,
+    pub evaluation: EvalEvaluationSpec,
+    #[serde(default)]
+    pub optimization: Option<EvalOptimizationSpec>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -68,6 +74,80 @@ pub struct EvalCatalogSkillSpec {
     pub profile: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct EvalScenarioSpec {
+    pub purpose: String,
+    pub user: EvalUserSpec,
+    pub agent: EvalAgentSpec,
+    #[serde(default)]
+    pub history: Vec<EvalHistoryMessage>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EvalUserSpec {
+    pub task: String,
+    pub reason: String,
+    pub known_info: String,
+    pub unknown_info: String,
+    #[serde(default)]
+    pub example_messages: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct EvalAgentSpec {
+    #[serde(default)]
+    pub persona: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EvalHistoryMessage {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EvalEvaluationSpec {
+    pub criteria: Vec<EvalCriterionSpec>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum EvalCriterionSpec {
+    ActionSequence {
+        actions: Vec<EvalExpectedActionSpec>,
+        #[serde(default)]
+        allow_extra_actions: bool,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EvalExpectedActionSpec {
+    pub action: String,
+    #[serde(default)]
+    pub arguments: Option<Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EvalOptimizationSpec {
+    #[serde(default)]
+    pub targets: Vec<EvalOptimizationTargetSpec>,
+    #[serde(default)]
+    pub max_epochs: Option<usize>,
+    #[serde(default)]
+    pub early_stop_on_pass: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EvalOptimizationTargetSpec {
+    pub kind: String,
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default)]
+    pub skill: Option<String>,
+    #[serde(default)]
+    pub field: Option<String>,
+}
+
 pub fn load_eval_spec(path: &Path, overrides: &OverrideSet) -> Result<LoadedEvalSpec, EvalError> {
     let source = fs::read_to_string(path).map_err(|source| EvalError::ReadFile {
         path: path.to_path_buf(),
@@ -90,6 +170,21 @@ fn validate_eval_spec(spec: &EvalSpec) -> Result<(), EvalError> {
     if spec.runtime.output_folder.as_os_str().is_empty() {
         return Err(EvalError::InvalidSpec(
             "spec runtime.output_folder cannot be empty".to_owned(),
+        ));
+    }
+    if spec.scenario.purpose.trim().is_empty() {
+        return Err(EvalError::InvalidSpec(
+            "scenario.purpose cannot be empty".to_owned(),
+        ));
+    }
+    if spec.scenario.user.task.trim().is_empty() {
+        return Err(EvalError::InvalidSpec(
+            "scenario.user.task cannot be empty".to_owned(),
+        ));
+    }
+    if spec.evaluation.criteria.is_empty() {
+        return Err(EvalError::InvalidSpec(
+            "evaluation.criteria cannot be empty".to_owned(),
         ));
     }
 
@@ -119,6 +214,40 @@ fn validate_eval_spec(spec: &EvalSpec) -> Result<(), EvalError> {
                 "runtime.catalog skill '{}' references unknown source '{}'",
                 skill.skill, skill.source
             )));
+        }
+    }
+
+    let catalog_skill_names = spec
+        .runtime
+        .catalog
+        .iter()
+        .map(|skill| skill.skill.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    for skill_name in &spec.runtime.active_skills {
+        if !catalog_skill_names.contains(skill_name) {
+            return Err(EvalError::InvalidSpec(format!(
+                "runtime.active_skills contains '{}' which is not present in runtime.catalog",
+                skill_name
+            )));
+        }
+    }
+
+    for criterion in &spec.evaluation.criteria {
+        match criterion {
+            EvalCriterionSpec::ActionSequence { actions, .. } => {
+                if actions.is_empty() {
+                    return Err(EvalError::InvalidSpec(
+                        "action_sequence criteria require at least one action".to_owned(),
+                    ));
+                }
+                for action in actions {
+                    if action.action.trim().is_empty() {
+                        return Err(EvalError::InvalidSpec(
+                            "action_sequence action name cannot be empty".to_owned(),
+                        ));
+                    }
+                }
+            }
         }
     }
 

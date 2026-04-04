@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use pera_evals::{LoadedEvalSpec, OverrideSet};
+use pera_evals::{EvalRunResult, LoadedEvalSpec, OverrideSet};
 use serde::Serialize;
 
 use crate::error::CliError;
@@ -12,6 +12,7 @@ pub struct RunArtifacts {
     pub run_dir: PathBuf,
     pub resolved_spec_path: PathBuf,
     pub manifest_path: PathBuf,
+    pub result_path: PathBuf,
 }
 
 #[derive(Debug, Serialize)]
@@ -51,6 +52,7 @@ pub fn create_run_artifacts(
 
     let resolved_spec_path = run_dir.join("spec.resolved.yaml");
     let manifest_path = run_dir.join("run.json");
+    let result_path = run_dir.join("result.json");
 
     let resolved_bytes = serde_yaml::to_string(&loaded.raw).map_err(|error| {
         CliError::UnexpectedStateOwned(format!("failed to serialize resolved eval spec: {error}"))
@@ -85,6 +87,49 @@ pub fn create_run_artifacts(
         run_dir,
         resolved_spec_path,
         manifest_path,
+        result_path,
+    })
+}
+
+#[derive(Debug, Serialize)]
+struct PersistedRunResult<'a> {
+    passed: bool,
+    finish_reason: String,
+    evaluation: PersistedEvalResult<'a>,
+    final_agent_message: &'a Option<String>,
+    trace: &'a [pera_evals::EvalTraceEvent],
+    workspace_root: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PersistedEvalResult<'a> {
+    passed: bool,
+    score: Option<f64>,
+    summary: &'a Option<String>,
+}
+
+pub fn write_run_result(
+    artifacts: &RunArtifacts,
+    result: &EvalRunResult,
+) -> Result<(), CliError> {
+    let value = PersistedRunResult {
+        passed: result.passed,
+        finish_reason: format!("{:?}", result.finish_reason),
+        evaluation: PersistedEvalResult {
+            passed: result.evaluation.passed,
+            score: result.evaluation.score,
+            summary: &result.evaluation.summary,
+        },
+        final_agent_message: &result.final_agent_message,
+        trace: &result.trace,
+        workspace_root: result.workspace.root.display().to_string(),
+    };
+    let bytes = serde_json::to_vec_pretty(&value).map_err(|error| {
+        CliError::UnexpectedStateOwned(format!("failed to serialize eval run result: {error}"))
+    })?;
+    fs::write(&artifacts.result_path, bytes).map_err(|source| CliError::WriteFile {
+        path: artifacts.result_path.clone(),
+        source,
     })
 }
 

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use pera_core::{ActionSkillRef, SkillManifest, SkillVersion};
-use pera_runtime::{FileSystemLayout, FileSystemSkillRuntimeLoader};
+use pera_runtime::{FileSystemLayout, FileSystemSkillRuntimeLoader, SqliteCapabilityProvider};
 
 use crate::componentizer::Componentizer;
 use crate::error::SkillProvisionError;
@@ -205,6 +205,64 @@ where
             ..installed
         })
     }
+
+    pub fn reset_installed_skill_state(
+        &self,
+        project_root: &Path,
+        installed: &InstalledSkill,
+        selected_seed: Option<&str>,
+    ) -> Result<(), SkillProvisionError> {
+        let project_root = self.host.canonicalize(project_root)?;
+        let (manifest_path, manifest) = load_manifest(&self.host, &installed.catalog_dir)?;
+        let profile = manifest
+            .profiles
+            .iter()
+            .find(|profile| profile.name == installed.compiled.profile_name)
+            .ok_or_else(|| {
+                SkillProvisionError::InvalidManifest(format!(
+                    "profile '{}' not found in {}",
+                    installed.compiled.profile_name,
+                    manifest_path.display()
+                ))
+            })?;
+
+        let sqlite_specs = manifest
+            .defaults
+            .databases
+            .iter()
+            .filter(|database| database.engine == "sqlite")
+            .collect::<Vec<_>>();
+
+        let state_profile_dir = project_root
+            .join("state")
+            .join("skills")
+            .join(&manifest.skill.name)
+            .join(manifest.skill.version.as_str())
+            .join(&installed.compiled.profile_name)
+            .join("databases");
+        self.host.create_dir_all(&state_profile_dir)?;
+
+        for database in sqlite_specs {
+            let database_path = state_profile_dir.join(format!("{}.sqlite", database.name));
+            if self.host.exists(&database_path) {
+                std::fs::remove_file(&database_path).map_err(|source| {
+                    SkillProvisionError::WriteFile {
+                        path: database_path.clone(),
+                        source,
+                    }
+                })?;
+            }
+            initialize_sqlite_database(
+                &installed.catalog_dir,
+                profile.name.as_str(),
+                database,
+                selected_seed,
+                &database_path,
+            )?;
+        }
+
+        Ok(())
+    }
 }
 
 fn copy_skill_assets<H: ProjectHost>(
@@ -300,4 +358,112 @@ fn directories_equivalent<H: ProjectHost>(
     }
     Ok(host.read(&left_component)? == host.read(&right_component)?
         && host.read(&left_meta)? == host.read(&right_meta)?)
+}
+
+fn initialize_sqlite_database(
+    profile_dir: &Path,
+    profile_name: &str,
+    database: &pera_core::SkillDatabaseSpec,
+    selected_seed: Option<&str>,
+    database_path: &Path,
+) -> Result<(), SkillProvisionError> {
+    let provider = SqliteCapabilityProvider::new(database_path)
+        .map_err(|error| SkillProvisionError::Runtime(error.to_string()))?;
+
+    if database.on_load.as_deref() == Some("migrate") {
+        let Some(migrations) = &database.migrations else {
+            return Err(SkillProvisionError::InvalidManifest(format!(
+                "database '{}' requested migrate on load but has no migrations directory",
+                database.name
+            )));
+        };
+        let migrations_dir = profile_dir.join(&migrations.dir);
+        apply_sql_directory(&provider, &migrations_dir)?;
+    }
+
+    if let Some(seed_name) = resolve_seed_name(database, selected_seed)? {
+        let seeds = database.seeds.as_ref().ok_or_else(|| {
+            SkillProvisionError::InvalidManifest(format!(
+                "database '{}' does not define seeds",
+                database.name
+            ))
+        })?;
+        let seed_path = profile_dir.join(&seeds.dir).join(format!("{seed_name}.sql"));
+        apply_sql_file(&provider, &seed_path)?;
+    }
+
+    let _ = profile_name;
+    Ok(())
+}
+
+fn resolve_seed_name(
+    database: &pera_core::SkillDatabaseSpec,
+    selected_seed: Option<&str>,
+) -> Result<Option<String>, SkillProvisionError> {
+    match selected_seed {
+        None => Ok(database
+            .seeds
+            .as_ref()
+            .and_then(|seeds| seeds.default.clone())),
+        Some("") => {
+            let default_seed = database
+                .seeds
+                .as_ref()
+                .and_then(|seeds| seeds.default.clone())
+                .ok_or_else(|| {
+                    SkillProvisionError::InvalidManifest(format!(
+                        "database '{}' has no default seed",
+                        database.name
+                    ))
+                })?;
+            Ok(Some(default_seed))
+        }
+        Some(seed_name) => Ok(Some(seed_name.to_owned())),
+    }
+}
+
+fn apply_sql_directory(
+    provider: &SqliteCapabilityProvider,
+    dir: &Path,
+) -> Result<(), SkillProvisionError> {
+    let mut entries = std::fs::read_dir(dir)
+        .map_err(|source| SkillProvisionError::ReadFile {
+            path: dir.to_path_buf(),
+            source,
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| SkillProvisionError::ReadFile {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let path = entry.path();
+        if entry
+            .file_type()
+            .map_err(|source| SkillProvisionError::ReadFile {
+                path: path.clone(),
+                source,
+            })?
+            .is_file()
+            && path.extension().and_then(|ext| ext.to_str()) == Some("sql")
+        {
+            apply_sql_file(provider, &path)?;
+        }
+    }
+    Ok(())
+}
+
+fn apply_sql_file(
+    provider: &SqliteCapabilityProvider,
+    path: &Path,
+) -> Result<(), SkillProvisionError> {
+    let sql = std::fs::read_to_string(path).map_err(|source| SkillProvisionError::ReadFile {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    provider
+        .execute_batch(&sql)
+        .map_err(|error| SkillProvisionError::Runtime(error.to_string()))
 }
