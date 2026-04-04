@@ -153,6 +153,8 @@ fn test_request() -> RunRequest {
             max_steps_per_agent_loop: 12,
             max_actions: 12,
             max_messages: 12,
+            max_failed_actions: None,
+            max_consecutive_failed_actions: None,
             max_duration: None,
         },
         termination_condition: TerminationCondition::AllParticipantsFinished,

@@ -20,6 +20,19 @@ struct RunCounters {
     step_count: usize,
     action_count: usize,
     message_count: usize,
+    failed_action_count: usize,
+    consecutive_failed_action_count: usize,
+}
+
+impl RunCounters {
+    fn record_action_completed(&mut self) {
+        self.consecutive_failed_action_count = 0;
+    }
+
+    fn record_action_failed(&mut self) {
+        self.failed_action_count += 1;
+        self.consecutive_failed_action_count += 1;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -551,7 +564,10 @@ where
                 break reason;
             }
 
-            if let Some(reason) = self.poll_environment_phase(&mut state, output).await? {
+            if let Some(reason) = self
+                .poll_environment_phase(&mut state, &mut counters, &request, &started_at, output)
+                .await?
+            {
                 break reason;
             }
 
@@ -653,6 +669,22 @@ where
         if counters.step_count >= request.limits.max_steps {
             return Some(FinishReason::StepLimitExceeded);
         }
+        if let Some(max_failed_actions) = request.limits.max_failed_actions
+            && counters.failed_action_count >= max_failed_actions
+        {
+            return Some(FinishReason::FailedActionLimitExceeded {
+                total_failures: counters.failed_action_count,
+                consecutive_failures: counters.consecutive_failed_action_count,
+            });
+        }
+        if let Some(max_consecutive_failed_actions) = request.limits.max_consecutive_failed_actions
+            && counters.consecutive_failed_action_count >= max_consecutive_failed_actions
+        {
+            return Some(FinishReason::FailedActionLimitExceeded {
+                total_failures: counters.failed_action_count,
+                consecutive_failures: counters.consecutive_failed_action_count,
+            });
+        }
         if let Some(max_duration) = request.limits.max_duration
             && started_at.elapsed() >= max_duration
         {
@@ -664,6 +696,9 @@ where
     async fn poll_environment_phase(
         &mut self,
         state: &mut RunState<E::Observation, E::Action, E::Outcome>,
+        counters: &mut RunCounters,
+        request: &RunRequest,
+        started_at: &Instant,
         output: &mut dyn ParticipantOutput<E::Action, E::Outcome>,
     ) -> Result<Option<FinishReason>, EvaluatorError> {
         if let Some(reason) = self.environment.terminal_status().await.map_err(|error| {
@@ -687,6 +722,7 @@ where
                     action_id,
                     outcome,
                 } => {
+                    counters.record_action_completed();
                     if let Some((_, action)) = state.take_submitted_action(action_id) {
                         output
                             .action_completed(participant, &action, outcome)
@@ -720,6 +756,7 @@ where
                     action_id,
                     error,
                 } => {
+                    counters.record_action_failed();
                     if let Some((_, action)) = state.take_submitted_action(action_id) {
                         output
                             .action_failed(participant, &action, error)
@@ -735,6 +772,9 @@ where
                 | EnvironmentEvent::Notification { .. } => {}
             }
             state.apply_environment_event(event);
+            if let Some(reason) = self.enforce_run_limits(request, started_at, counters) {
+                return Ok(Some(reason));
+            }
         }
         let observation = self.environment.observe().await.map_err(|error| {
             EvaluatorError::new(format!(

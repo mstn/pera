@@ -114,7 +114,11 @@ impl EvalEngine {
                         id: session.loaded_spec.spec.id.clone(),
                         instructions: session.loaded_spec.spec.scenario.purpose.clone(),
                     },
-                    limits: RunLimits::default(),
+                    limits: RunLimits {
+                        max_failed_actions: Some(5),
+                        max_consecutive_failed_actions: Some(3),
+                        ..RunLimits::default()
+                    },
                     termination_condition: TerminationCondition::AnyOfParticipantsFinished(vec![
                         ParticipantId::Agent,
                     ]),

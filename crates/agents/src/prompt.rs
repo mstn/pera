@@ -292,6 +292,8 @@ mod tests {
                 max_steps_per_agent_loop: 10,
                 max_actions: 10,
                 max_messages: 10,
+                max_failed_actions: None,
+                max_consecutive_failed_actions: None,
                 max_duration: Some(Duration::from_secs(10)),
             },
             observation: WorkspaceObservation {

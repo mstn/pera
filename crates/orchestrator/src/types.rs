@@ -42,6 +42,8 @@ pub struct RunLimits {
     pub max_steps_per_agent_loop: usize,
     pub max_actions: usize,
     pub max_messages: usize,
+    pub max_failed_actions: Option<usize>,
+    pub max_consecutive_failed_actions: Option<usize>,
     pub max_duration: Option<Duration>,
 }
 
@@ -52,6 +54,8 @@ impl Default for RunLimits {
             max_steps_per_agent_loop: 64,
             max_actions: 64,
             max_messages: 64,
+            max_failed_actions: None,
+            max_consecutive_failed_actions: None,
             max_duration: None,
         }
     }
@@ -90,6 +94,10 @@ pub enum FinishReason {
         participant: ParticipantId,
     },
     ActionLimitExceeded,
+    FailedActionLimitExceeded {
+        total_failures: usize,
+        consecutive_failures: usize,
+    },
     MessageLimitExceeded,
     TimeLimitExceeded,
     ParticipantError {
