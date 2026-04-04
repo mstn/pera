@@ -1,14 +1,11 @@
 mod artifacts;
-mod overrides;
-mod spec;
 
 use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
+use pera_evals::{EvalEngine, EvalMode as EngineEvalMode, EvalRequest, EvalSpec, OverrideSet};
 
 use self::artifacts::{RunArtifacts, create_run_artifacts};
-use self::overrides::OverrideSet;
-use self::spec::{EvalSpec, load_eval_spec};
 use crate::error::CliError;
 
 #[derive(Debug, Args)]
@@ -63,17 +60,26 @@ struct EvalModeCommand {
 impl EvalModeCommand {
     async fn execute(&self, mode: EvalMode) -> Result<(), CliError> {
         let overrides = OverrideSet::from_cli(&self.set_values, &self.set_json_values)?;
-        let mut loaded = load_eval_spec(&self.spec, &overrides)?;
-        if let Some(path) = &self.output_folder {
-            loaded.override_output_folder(path.clone())?;
-        }
-        let output_root = resolved_output_folder(&loaded.spec, self.output_folder.as_ref())?;
+        let session = EvalEngine
+            .resolve(
+                mode.into(),
+                EvalRequest {
+                    spec_path: self.spec.clone(),
+                    output_folder: self.output_folder.clone(),
+                    overrides: overrides.clone(),
+                },
+            )
+            .map_err(CliError::from)?;
+        let output_root =
+            resolved_output_folder(&session.loaded_spec.spec, self.output_folder.as_ref())?;
         let artifacts = create_run_artifacts(
             &output_root,
-            self.name.as_deref().unwrap_or(&loaded.spec.id),
+            self.name
+                .as_deref()
+                .unwrap_or(&session.loaded_spec.spec.id),
             mode.as_str(),
             &self.spec,
-            &loaded,
+            &session.loaded_spec,
             &overrides,
         )?;
 
@@ -97,6 +103,15 @@ fn resolved_output_folder(
     }
 
     Ok(spec.runtime.output_folder.clone())
+}
+
+impl From<EvalMode> for EngineEvalMode {
+    fn from(value: EvalMode) -> Self {
+        match value {
+            EvalMode::Run => Self::Run,
+            EvalMode::Optimize => Self::Optimize,
+        }
+    }
 }
 
 fn print_summary(mode: EvalMode, artifacts: &RunArtifacts) {

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::process::ExitStatus;
 
 use pera_core::{RunId, StoreError};
+use pera_evals::EvalError;
 use pera_runtime::ExecutionEngineError;
 
 #[derive(Debug)]
@@ -90,6 +91,17 @@ impl Error for CliError {
             Self::ToolIo { source, .. } => Some(source),
             Self::ToolFailed { .. } => None,
             Self::UnexpectedStateOwned(_) => None,
+        }
+    }
+}
+
+impl From<EvalError> for CliError {
+    fn from(value: EvalError) -> Self {
+        match value {
+            EvalError::ReadFile { path, source } => Self::ReadFile { path, source },
+            EvalError::InvalidSpec(message)
+            | EvalError::InvalidOverride(message)
+            | EvalError::Internal(message) => Self::UnexpectedStateOwned(message),
         }
     }
 }

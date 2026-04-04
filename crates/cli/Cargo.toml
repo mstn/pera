@@ -11,6 +11,7 @@ dotenvy = "0.15"
 pera-agents = { path = "../agents" }
 pera-canonical = { path = "../canonical" }
 pera-core = { path = "../core" }
+pera-evals = { path = "../evals" }
 pera-orchestrator = { path = "../orchestrator" }
 pera-runtime = { path = "../runtime" }
 serde = { version = "1.0", features = ["derive"] }

@@ -1798,6 +1798,7 @@ dependencies = [
  "pera-agents",
  "pera-canonical",
  "pera-core",
+ "pera-evals",
  "pera-orchestrator",
  "pera-runtime",
  "serde",
@@ -1814,6 +1815,15 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "uuid",
+]
+
+[[package]]
+name = "pera-evals"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "serde_yaml",
 ]
 
 [[package]]

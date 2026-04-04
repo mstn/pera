@@ -1,7 +1,7 @@
 use serde_json::Value as JsonValue;
 use serde_yaml::{Mapping, Value};
 
-use crate::error::CliError;
+use crate::error::EvalError;
 
 #[derive(Debug, Clone, Default)]
 pub struct OverrideSet {
@@ -15,7 +15,7 @@ struct OverrideEntry {
 }
 
 impl OverrideSet {
-    pub fn from_cli(set_values: &[String], set_json_values: &[String]) -> Result<Self, CliError> {
+    pub fn from_cli(set_values: &[String], set_json_values: &[String]) -> Result<Self, EvalError> {
         let mut entries = Vec::new();
 
         for raw in set_values {
@@ -29,14 +29,12 @@ impl OverrideSet {
         for raw in set_json_values {
             let (path, value) = split_assignment(raw)?;
             let parsed: JsonValue = serde_json::from_str(value).map_err(|error| {
-                CliError::UnexpectedStateOwned(format!(
-                    "invalid JSON override for '{path}': {error}"
-                ))
+                EvalError::InvalidOverride(format!("invalid JSON override for '{path}': {error}"))
             })?;
             entries.push(OverrideEntry {
                 path: parse_path(path)?,
                 value: serde_yaml::to_value(parsed).map_err(|error| {
-                    CliError::UnexpectedStateOwned(format!(
+                    EvalError::Internal(format!(
                         "failed to convert JSON override for '{path}': {error}"
                     ))
                 })?,
@@ -46,7 +44,7 @@ impl OverrideSet {
         Ok(Self { entries })
     }
 
-    pub fn apply(&self, root: &mut Value) -> Result<(), CliError> {
+    pub fn apply(&self, root: &mut Value) -> Result<(), EvalError> {
         for entry in &self.entries {
             apply_override(root, &entry.path, entry.value.clone())?;
         }
@@ -58,13 +56,13 @@ impl OverrideSet {
     }
 }
 
-fn split_assignment(raw: &str) -> Result<(&str, &str), CliError> {
-    raw.split_once('=').ok_or(CliError::InvalidArguments(
-        "override values must use PATH=VALUE syntax",
-    ))
+fn split_assignment(raw: &str) -> Result<(&str, &str), EvalError> {
+    raw.split_once('=').ok_or_else(|| {
+        EvalError::InvalidOverride("override values must use PATH=VALUE syntax".to_owned())
+    })
 }
 
-fn parse_path(raw: &str) -> Result<Vec<String>, CliError> {
+fn parse_path(raw: &str) -> Result<Vec<String>, EvalError> {
     let path = raw
         .split('.')
         .map(str::trim)
@@ -73,7 +71,9 @@ fn parse_path(raw: &str) -> Result<Vec<String>, CliError> {
         .collect::<Vec<_>>();
 
     if path.is_empty() {
-        return Err(CliError::InvalidArguments("override path cannot be empty"));
+        return Err(EvalError::InvalidOverride(
+            "override path cannot be empty".to_owned(),
+        ));
     }
 
     Ok(path)
@@ -96,7 +96,7 @@ fn parse_scalar_value(raw: &str) -> Value {
     }
 }
 
-fn apply_override(root: &mut Value, path: &[String], value: Value) -> Result<(), CliError> {
+fn apply_override(root: &mut Value, path: &[String], value: Value) -> Result<(), EvalError> {
     let mut current = root;
 
     for segment in &path[..path.len() - 1] {
@@ -105,7 +105,7 @@ fn apply_override(root: &mut Value, path: &[String], value: Value) -> Result<(),
         }
 
         let mapping = current.as_mapping_mut().ok_or_else(|| {
-            CliError::UnexpectedStateOwned(format!(
+            EvalError::InvalidOverride(format!(
                 "override path '{}' traverses a non-object value",
                 path.join(".")
             ))
@@ -117,7 +117,7 @@ fn apply_override(root: &mut Value, path: &[String], value: Value) -> Result<(),
     }
 
     let mapping = current.as_mapping_mut().ok_or_else(|| {
-        CliError::UnexpectedStateOwned(format!(
+        EvalError::InvalidOverride(format!(
             "override path '{}' does not target an object field",
             path.join(".")
         ))

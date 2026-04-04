@@ -5,6 +5,7 @@ members = [
     "crates/runtime",
     "crates/orchestrator",
     "crates/agents",
+    "crates/evals",
     "crates/cli",
 ]
 resolver = "3"

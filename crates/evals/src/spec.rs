@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_yaml::{Mapping, Value};
 
-use super::overrides::OverrideSet;
-use crate::error::CliError;
+use crate::error::EvalError;
+use crate::overrides::OverrideSet;
 
 #[derive(Debug, Clone)]
 pub struct LoadedEvalSpec {
@@ -14,19 +14,17 @@ pub struct LoadedEvalSpec {
 }
 
 impl LoadedEvalSpec {
-    pub fn override_output_folder(&mut self, output_folder: PathBuf) -> Result<(), CliError> {
+    pub fn override_output_folder(&mut self, output_folder: PathBuf) -> Result<(), EvalError> {
         self.spec.runtime.output_folder = output_folder.clone();
 
         let root = self.raw.as_mapping_mut().ok_or_else(|| {
-            CliError::UnexpectedStateOwned("resolved eval spec root must be an object".to_owned())
+            EvalError::Internal("resolved eval spec root must be an object".to_owned())
         })?;
         let runtime = root
             .entry(Value::String("runtime".to_owned()))
             .or_insert_with(|| Value::Mapping(Mapping::new()));
         let runtime_mapping = runtime.as_mapping_mut().ok_or_else(|| {
-            CliError::UnexpectedStateOwned(
-                "resolved eval spec runtime must be an object".to_owned(),
-            )
+            EvalError::Internal("resolved eval spec runtime must be an object".to_owned())
         })?;
         runtime_mapping.insert(
             Value::String("output_folder".to_owned()),
@@ -48,33 +46,28 @@ pub struct EvalRuntimeSpec {
     pub output_folder: PathBuf,
 }
 
-pub fn load_eval_spec(path: &Path, overrides: &OverrideSet) -> Result<LoadedEvalSpec, CliError> {
-    let source = fs::read_to_string(path).map_err(|source| CliError::ReadFile {
+pub fn load_eval_spec(path: &Path, overrides: &OverrideSet) -> Result<LoadedEvalSpec, EvalError> {
+    let source = fs::read_to_string(path).map_err(|source| EvalError::ReadFile {
         path: path.to_path_buf(),
         source,
     })?;
-    let mut raw: Value = serde_yaml::from_str(&source).map_err(|error| {
-        CliError::UnexpectedStateOwned(format!("invalid eval spec {}: {error}", path.display()))
-    })?;
+    let mut raw: Value = serde_yaml::from_str(&source)
+        .map_err(|error| EvalError::InvalidSpec(format!("{}: {error}", path.display())))?;
     overrides.apply(&mut raw)?;
-    let spec: EvalSpec = serde_yaml::from_value(raw.clone()).map_err(|error| {
-        CliError::UnexpectedStateOwned(format!(
-            "invalid resolved eval spec {}: {error}",
-            path.display()
-        ))
-    })?;
+    let spec: EvalSpec = serde_yaml::from_value(raw.clone())
+        .map_err(|error| EvalError::InvalidSpec(format!("{}: {error}", path.display())))?;
     validate_eval_spec(&spec)?;
     Ok(LoadedEvalSpec { raw, spec })
 }
 
-fn validate_eval_spec(spec: &EvalSpec) -> Result<(), CliError> {
+fn validate_eval_spec(spec: &EvalSpec) -> Result<(), EvalError> {
     if spec.id.trim().is_empty() {
-        return Err(CliError::InvalidArguments("spec id cannot be empty"));
+        return Err(EvalError::InvalidSpec("spec id cannot be empty".to_owned()));
     }
 
     if spec.runtime.output_folder.as_os_str().is_empty() {
-        return Err(CliError::InvalidArguments(
-            "spec runtime.output_folder cannot be empty",
+        return Err(EvalError::InvalidSpec(
+            "spec runtime.output_folder cannot be empty".to_owned(),
         ));
     }
 

@@ -2,10 +2,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
+use pera_evals::{LoadedEvalSpec, OverrideSet};
 use serde::Serialize;
 
-use super::overrides::OverrideSet;
-use super::spec::LoadedEvalSpec;
 use crate::error::CliError;
 
 #[derive(Debug, Clone)]
