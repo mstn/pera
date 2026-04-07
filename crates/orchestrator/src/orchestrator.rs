@@ -42,9 +42,9 @@ struct InitialMessage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AgentLoopStatus {
-    Ready,
-    WaitingOnEnvironment { action_id: ActionId },
+enum LoopExecutionState {
+    ReadyForTurn,
+    WaitingForActionCompletion { action_id: ActionId },
 }
 
 #[derive(Debug, Clone)]
@@ -56,15 +56,15 @@ struct AgentLoopInput<O, A, U> {
     trajectory: Trajectory<O, A, U>,
 }
 
-struct AgentLoop<O, A, U> {
+struct ActiveLoop<O, A, U> {
     participant: BoxedParticipant<O, A, U>,
     inbox: Vec<ParticipantInboxEvent<A, U>>,
     work_item: WorkItem,
-    status: AgentLoopStatus,
+    execution_state: LoopExecutionState,
     step_count: usize,
 }
 
-impl<O, A, U> AgentLoop<O, A, U>
+impl<O, A, U> ActiveLoop<O, A, U>
 where
     O: Clone + Send + Sync + 'static,
     A: Clone + Send + Sync + 'static,
@@ -83,7 +83,7 @@ where
                 from: initial_message.from,
                 content: initial_message.content,
             },
-            status: AgentLoopStatus::Ready,
+            execution_state: LoopExecutionState::ReadyForTurn,
             step_count: 0,
         }
     }
@@ -92,26 +92,46 @@ where
         self.participant.id()
     }
 
-    fn has_mail(&self) -> bool {
-        !self.inbox.is_empty()
+    fn is_ready_for_turn(&self) -> bool {
+        matches!(self.execution_state, LoopExecutionState::ReadyForTurn)
     }
 
-    fn can_continue(&self) -> bool {
-        matches!(self.status, AgentLoopStatus::Ready)
-    }
-
-    fn deliver(&mut self, event: ParticipantInboxEvent<A, U>) {
-        self.inbox.push(event);
-    }
-
-    fn on_mailbox_updated(&mut self) {
-        if self.has_mail() && matches!(self.status, AgentLoopStatus::WaitingOnEnvironment { .. }) {
-            self.status = AgentLoopStatus::Ready;
+    fn awaiting_action_completion(&self) -> Option<ActionId> {
+        match self.execution_state {
+            LoopExecutionState::WaitingForActionCompletion { action_id } => Some(action_id),
+            LoopExecutionState::ReadyForTurn => None,
         }
     }
 
-    fn block_on_action(&mut self, action_id: ActionId) {
-        self.status = AgentLoopStatus::WaitingOnEnvironment { action_id };
+    fn transition_to_ready_for_turn(&mut self) {
+        self.execution_state = LoopExecutionState::ReadyForTurn;
+    }
+
+    fn transition_to_waiting_for_action_completion(&mut self, action_id: ActionId) {
+        self.execution_state = LoopExecutionState::WaitingForActionCompletion { action_id };
+    }
+
+    fn handle_inbox_event(&mut self, event: &ParticipantInboxEvent<A, U>) {
+        let should_resume = matches!(
+            (self.awaiting_action_completion(), event),
+            (
+                Some(awaited_action_id),
+                ParticipantInboxEvent::ActionCompleted { action_id, .. }
+                | ParticipantInboxEvent::ActionFailed { action_id, .. },
+            ) if *action_id == awaited_action_id
+        );
+        if should_resume {
+            self.transition_to_ready_for_turn();
+        }
+    }
+
+    fn deliver(&mut self, event: ParticipantInboxEvent<A, U>) {
+        self.handle_inbox_event(&event);
+        self.inbox.push(event);
+    }
+
+    fn transition_to_blocked_on_action(&mut self, action_id: ActionId) {
+        self.transition_to_waiting_for_action_completion(action_id);
     }
 
     fn step_count(&self) -> usize {
@@ -122,7 +142,7 @@ where
         self.step_count += 1;
     }
 
-    fn into_parts(self) -> (BoxedParticipant<O, A, U>, Vec<ParticipantInboxEvent<A, U>>) {
+    fn release(self) -> (BoxedParticipant<O, A, U>, Vec<ParticipantInboxEvent<A, U>>) {
         (self.participant, self.inbox)
     }
 
@@ -131,7 +151,6 @@ where
         input: AgentLoopInput<O, A, U>,
         output: &mut dyn ParticipantOutput<A, U>,
     ) -> Result<ParticipantDecision<A>, crate::error::ParticipantError> {
-        self.on_mailbox_updated();
         let _ = (
             &self.work_item.from,
             &self.work_item.content,
@@ -152,14 +171,14 @@ where
     }
 }
 
-struct ParticipantState<O, A, U> {
+struct ParticipantRuntimeState<O, A, U> {
     participant: Option<BoxedParticipant<O, A, U>>,
     pending_inbox: Vec<ParticipantInboxEvent<A, U>>,
-    agent_loop: Option<AgentLoop<O, A, U>>,
+    active_loop: Option<ActiveLoop<O, A, U>>,
     finished: bool,
 }
 
-impl<O, A, U> ParticipantState<O, A, U>
+impl<O, A, U> ParticipantRuntimeState<O, A, U>
 where
     O: Clone + Send + Sync + 'static,
     A: Clone + Send + Sync + 'static,
@@ -169,14 +188,14 @@ where
         Self {
             participant: Some(participant),
             pending_inbox: Vec::new(),
-            agent_loop: None,
+            active_loop: None,
             finished: false,
         }
     }
 
     fn id(&self) -> ParticipantId {
-        if let Some(agent_loop) = &self.agent_loop {
-            agent_loop.participant_id()
+        if let Some(active_loop) = &self.active_loop {
+            active_loop.participant_id()
         } else {
             self.participant
                 .as_ref()
@@ -190,8 +209,8 @@ where
     }
 
     fn deliver(&mut self, event: ParticipantInboxEvent<A, U>) {
-        if let Some(agent_loop) = &mut self.agent_loop {
-            agent_loop.deliver(event);
+        if let Some(active_loop) = &mut self.active_loop {
+            active_loop.deliver(event);
         } else {
             self.pending_inbox.push(event);
         }
@@ -201,33 +220,59 @@ where
         if self.finished {
             return false;
         }
-        match &self.agent_loop {
-            Some(agent_loop) => agent_loop.can_continue() || agent_loop.has_mail(),
+        match &self.active_loop {
+            Some(active_loop) => active_loop.is_ready_for_turn(),
             None => self.has_startable_message(),
         }
     }
 
-    fn start_loop(&mut self) -> Option<&mut AgentLoop<O, A, U>> {
+    fn start_next_loop(&mut self) -> Option<&mut ActiveLoop<O, A, U>> {
         let initial_message = startable_message(&self.pending_inbox)?;
         let participant = self
             .participant
             .take()
             .expect("idle participant must be available when starting loop");
         let inbox = std::mem::take(&mut self.pending_inbox);
-        self.agent_loop = Some(AgentLoop::start(participant, inbox, initial_message));
-        self.agent_loop.as_mut()
+        self.active_loop = Some(ActiveLoop::start(participant, inbox, initial_message));
+        self.active_loop.as_mut()
     }
 
-    fn get_or_start_loop(&mut self) -> Option<&mut AgentLoop<O, A, U>> {
-        if self.agent_loop.is_none() {
-            self.start_loop()?;
+    fn active_loop_or_start(&mut self) -> Option<&mut ActiveLoop<O, A, U>> {
+        if self.active_loop.is_none() {
+            self.start_next_loop()?;
         }
-        self.agent_loop.as_mut()
+        self.active_loop.as_mut()
     }
 
-    fn complete_loop(&mut self) {
-        if let Some(agent_loop) = self.agent_loop.take() {
-            let (participant, inbox) = agent_loop.into_parts();
+    fn record_current_loop_step(&mut self) {
+        if let Some(active_loop) = self.active_loop.as_mut() {
+            active_loop.record_step();
+        }
+    }
+
+    fn apply_turn_progress(&mut self) {
+        self.record_current_loop_step();
+    }
+
+    fn transition_current_loop_to_blocked_on_action(&mut self, action_id: ActionId) {
+        self.active_loop
+            .as_mut()
+            .expect("active loop must exist before blocking")
+            .transition_to_blocked_on_action(action_id);
+    }
+
+    fn complete_current_loop(&mut self) {
+        self.transition_to_idle_after_loop_completion();
+    }
+
+    fn apply_loop_completion(&mut self) {
+        self.apply_turn_progress();
+        self.complete_current_loop();
+    }
+
+    fn transition_to_idle_after_loop_completion(&mut self) {
+        if let Some(active_loop) = self.active_loop.take() {
+            let (participant, inbox) = active_loop.release();
             self.pending_inbox.extend(inbox);
             self.participant = Some(participant);
         }
@@ -236,13 +281,13 @@ where
     fn finish(&mut self) {
         self.finished = true;
         self.pending_inbox.clear();
-        self.complete_loop();
+        self.transition_to_idle_after_loop_completion();
     }
 
     fn into_participant(self) -> BoxedParticipant<O, A, U> {
-        match (self.participant, self.agent_loop) {
+        match (self.participant, self.active_loop) {
             (Some(participant), None) => participant,
-            (None, Some(agent_loop)) => agent_loop.into_parts().0,
+            (None, Some(active_loop)) => active_loop.release().0,
             (Some(_), Some(_)) => unreachable!("participant and agent loop cannot coexist"),
             (None, None) => unreachable!("participant state must retain a participant"),
         }
@@ -255,7 +300,7 @@ struct RunState<O, A, U> {
     pending_actions: BTreeSet<ActionId>,
     submitted_actions: BTreeMap<ActionId, (ParticipantId, A)>,
     queued_environment_events: Vec<EnvironmentEvent<A, U>>,
-    participants: Vec<ParticipantState<O, A, U>>,
+    participants: Vec<ParticipantRuntimeState<O, A, U>>,
 }
 
 impl<O, A, U> RunState<O, A, U>
@@ -285,7 +330,7 @@ where
             queued_environment_events: Vec::new(),
             participants: participants
                 .into_iter()
-                .map(ParticipantState::new)
+                .map(ParticipantRuntimeState::new)
                 .collect(),
         };
 
@@ -305,7 +350,7 @@ where
         let participants = self
             .participants
             .into_iter()
-            .map(ParticipantState::into_participant)
+            .map(ParticipantRuntimeState::into_participant)
             .collect();
         (participants, self.trajectory)
     }
@@ -314,7 +359,7 @@ where
         self.participants
             .iter()
             .filter(|participant| participant.finished)
-            .map(ParticipantState::id)
+            .map(ParticipantRuntimeState::id)
             .collect()
     }
 
@@ -327,7 +372,7 @@ where
     fn participant_mut(
         &mut self,
         participant: &ParticipantId,
-    ) -> Option<&mut ParticipantState<O, A, U>> {
+    ) -> Option<&mut ParticipantRuntimeState<O, A, U>> {
         self.participants
             .iter_mut()
             .find(|state| state.id() == *participant)
@@ -343,6 +388,14 @@ where
                 content: content.to_owned(),
             });
         }
+    }
+
+    fn emit_participant_message(&mut self, participant: &ParticipantId, content: &str) {
+        self.trajectory.push(TrajectoryEvent::ParticipantMessage {
+            participant: participant.clone(),
+            content: content.to_owned(),
+        });
+        self.route_participant_message(participant, content);
     }
 
     fn finish_participant(&mut self, participant: &ParticipantId) {
@@ -590,16 +643,16 @@ where
 
             let participant = &mut state.participants[participant_index];
             let participant_id = participant.id();
-            let Some(agent_loop) = participant.get_or_start_loop() else {
+            let Some(active_loop) = participant.active_loop_or_start() else {
                 continue;
             };
-            if agent_loop.step_count() >= request.limits.max_steps_per_agent_loop {
+            if active_loop.step_count() >= request.limits.max_steps_per_agent_loop {
                 break FinishReason::AgentLoopStepLimitExceeded {
                     participant: participant_id,
                 };
             }
 
-            let decision = agent_loop
+            let decision = active_loop
                 .continue_with(
                     AgentLoopInput {
                         run_id,
@@ -819,35 +872,29 @@ where
             ParticipantDecision::Message { content } => {
                 counters.step_count += 1;
                 counters.message_count += 1;
-                if let Some(participant) = state.participant_mut(&participant_id)
-                    && let Some(agent_loop) = participant.agent_loop.as_mut()
-                {
-                    agent_loop.record_step();
+                if let Some(participant) = state.participant_mut(&participant_id) {
+                    participant.apply_turn_progress();
                 }
-                state.trajectory.push(TrajectoryEvent::ParticipantMessage {
-                    participant: participant_id.clone(),
-                    content: content.clone(),
-                });
-                state.route_participant_message(&participant_id, &content);
+                state.emit_participant_message(&participant_id, &content);
                 if counters.message_count > request.limits.max_messages {
                     return Ok(Some(FinishReason::MessageLimitExceeded));
                 }
             }
-            ParticipantDecision::FinalMessage { content } => {
+            ParticipantDecision::CompleteLoop { content } => {
                 counters.step_count += 1;
                 counters.message_count += 1;
-                if let Some(participant) = state.participant_mut(&participant_id)
-                    && let Some(agent_loop) = participant.agent_loop.as_mut()
-                {
-                    agent_loop.record_step();
-                }
-                state.trajectory.push(TrajectoryEvent::ParticipantMessage {
-                    participant: participant_id.clone(),
-                    content: content.clone(),
-                });
-                state.route_participant_message(&participant_id, &content);
                 if let Some(participant) = state.participant_mut(&participant_id) {
-                    participant.complete_loop();
+                    participant.apply_loop_completion();
+                }
+                state.emit_participant_message(&participant_id, &content);
+                state.trajectory.push(TrajectoryEvent::ParticipantLoopCompleted {
+                    participant: participant_id.clone(),
+                });
+                if let Some(reason) = loop_termination_condition_met(
+                    &request.termination_condition,
+                    Some(&participant_id),
+                ) {
+                    return Ok(Some(reason));
                 }
                 if counters.message_count > request.limits.max_messages {
                     return Ok(Some(FinishReason::MessageLimitExceeded));
@@ -856,10 +903,8 @@ where
             ParticipantDecision::Action { action, execution } => {
                 counters.step_count += 1;
                 counters.action_count += 1;
-                if let Some(participant) = state.participant_mut(&participant_id)
-                    && let Some(agent_loop) = participant.agent_loop.as_mut()
-                {
-                    agent_loop.record_step();
+                if let Some(participant) = state.participant_mut(&participant_id) {
+                    participant.apply_turn_progress();
                 }
                 state.trajectory.push(TrajectoryEvent::ActionRequested {
                     participant: participant_id.clone(),
@@ -942,10 +987,7 @@ where
                                     });
                                     if blocking {
                                         participant
-                                            .agent_loop
-                                            .as_mut()
-                                            .expect("agent loop must exist before blocking")
-                                            .block_on_action(action_id);
+                                            .transition_current_loop_to_blocked_on_action(action_id);
                                     }
                                 }
                                 state.pending_actions.insert(action_id);
@@ -976,10 +1018,8 @@ where
             }
             ParticipantDecision::Yield => {
                 counters.step_count += 1;
-                if let Some(participant) = state.participant_mut(&participant_id)
-                    && let Some(agent_loop) = participant.agent_loop.as_mut()
-                {
-                    agent_loop.record_step();
+                if let Some(participant) = state.participant_mut(&participant_id) {
+                    participant.apply_turn_progress();
                 }
                 state.trajectory.push(TrajectoryEvent::ParticipantYielded {
                     participant: participant_id,
@@ -1090,5 +1130,31 @@ fn termination_condition_met(
                 None
             }
         }
+        TerminationCondition::AnyParticipantCompletedLoop
+        | TerminationCondition::AnyOfParticipantsCompletedLoop(_) => None,
+    }
+}
+
+fn loop_termination_condition_met(
+    condition: &TerminationCondition,
+    newly_completed_loop_participant: Option<&ParticipantId>,
+) -> Option<FinishReason> {
+    match condition {
+        TerminationCondition::AnyParticipantCompletedLoop => newly_completed_loop_participant
+            .cloned()
+            .map(|participant| FinishReason::ParticipantCompletedLoop { participant }),
+        TerminationCondition::AnyOfParticipantsCompletedLoop(participants) => {
+            let newly_completed_loop_participant = newly_completed_loop_participant?;
+            if participants.contains(newly_completed_loop_participant) {
+                Some(FinishReason::ParticipantCompletedLoop {
+                    participant: newly_completed_loop_participant.clone(),
+                })
+            } else {
+                None
+            }
+        }
+        TerminationCondition::AllParticipantsFinished
+        | TerminationCondition::AnyParticipantFinished
+        | TerminationCondition::AnyOfParticipantsFinished(_) => None,
     }
 }

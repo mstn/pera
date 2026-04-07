@@ -119,9 +119,9 @@ impl EvalEngine {
                         max_consecutive_failed_actions: Some(3),
                         ..RunLimits::default()
                     },
-                    termination_condition: TerminationCondition::AnyOfParticipantsFinished(vec![
-                        ParticipantId::Agent,
-                    ]),
+                    termination_condition: TerminationCondition::AnyOfParticipantsCompletedLoop(
+                        vec![ParticipantId::Agent],
+                    ),
                     initial_messages: vec![pera_orchestrator::InitialInboxMessage {
                         to: ParticipantId::User,
                         from: ParticipantId::Custom("system".to_owned()),

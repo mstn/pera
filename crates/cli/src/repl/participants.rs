@@ -41,7 +41,7 @@ impl Participant for HumanParticipant {
                     if message == "/exit" {
                         return Ok(ParticipantDecision::Finish);
                     }
-                    return Ok(ParticipantDecision::FinalMessage { content: message });
+                    return Ok(ParticipantDecision::CompleteLoop { content: message });
                 }
                 Some(InboundTransportEvent::Shutdown) | None => {
                     return Ok(ParticipantDecision::Finish);
@@ -97,7 +97,7 @@ mod tests {
             }
             output.message_end(&ParticipantId::Agent).await?;
 
-            Ok(ParticipantDecision::FinalMessage { content: response })
+            Ok(ParticipantDecision::CompleteLoop { content: response })
         }
     }
 
@@ -228,7 +228,7 @@ mod tests {
 
         assert_eq!(
             decision,
-            ParticipantDecision::FinalMessage {
+            ParticipantDecision::CompleteLoop {
                 content: "Echo: hello".to_owned(),
             }
         );
@@ -251,7 +251,7 @@ mod tests {
 
         assert_eq!(
             decision,
-            ParticipantDecision::FinalMessage {
+            ParticipantDecision::CompleteLoop {
                 content: "Echo: from inbox".to_owned(),
             }
         );

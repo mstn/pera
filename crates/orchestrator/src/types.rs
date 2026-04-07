@@ -11,16 +11,26 @@ pub enum ParticipantId {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionExecution {
+    /// Execute the action synchronously in the current orchestrator step.
     Immediate,
+    /// Schedule the action and pause the current loop until the action completes or fails.
     DeferredBlocking,
+    /// Schedule the action and allow the current loop to continue immediately.
     DeferredNonBlocking,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TerminationCondition {
+    /// End the run only when every participant has finished permanently.
     AllParticipantsFinished,
+    /// End the run when any participant finishes permanently.
     AnyParticipantFinished,
+    /// End the run when one of the listed participants finishes permanently.
     AnyOfParticipantsFinished(Vec<ParticipantId>),
+    /// End the run when any participant completes its current loop.
+    AnyParticipantCompletedLoop,
+    /// End the run when one of the listed participants completes its current loop.
+    AnyOfParticipantsCompletedLoop(Vec<ParticipantId>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +97,10 @@ pub struct EvalResult {
 pub enum FinishReason {
     ParticipantsFinished,
     ParticipantFinished {
+        participant: ParticipantId,
+    },
+    /// A participant completed its current loop and the run was configured to stop on loop completion.
+    ParticipantCompletedLoop {
         participant: ParticipantId,
     },
     StepLimitExceeded,
@@ -248,6 +262,9 @@ pub enum TrajectoryEvent<O, A, U> {
     ParticipantYielded {
         participant: ParticipantId,
     },
+    ParticipantLoopCompleted {
+        participant: ParticipantId,
+    },
     ParticipantFinished {
         participant: ParticipantId,
     },
@@ -286,8 +303,10 @@ pub struct ParticipantInput<O, A, U> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParticipantDecision<A> {
+    /// Emit a non-terminal message while keeping the current loop open.
     Message { content: String },
-    FinalMessage { content: String },
+    /// Emit the terminal message for the current loop and return the participant to idle.
+    CompleteLoop { content: String },
     Action {
         action: A,
         execution: ActionExecution,

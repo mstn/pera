@@ -331,6 +331,7 @@ async fn orchestrator_delivers_deferred_completion_via_inbox() {
         immediate_outcomes: VecDeque::new(),
         submitted_events: VecDeque::from([
             Vec::new(),
+            Vec::new(),
             vec![EnvironmentEvent::ActionCompleted {
                 participant: ParticipantId::Agent,
                 action_id: submitted_action_id,
@@ -395,10 +396,10 @@ async fn orchestrator_starts_a_new_agent_loop_for_a_second_user_message() {
     let agent = FakeParticipant {
         id: ParticipantId::Agent,
         decisions: VecDeque::from([
-            Ok(ParticipantDecision::FinalMessage {
+            Ok(ParticipantDecision::CompleteLoop {
                 content: "reply 1".to_owned(),
             }),
-            Ok(ParticipantDecision::FinalMessage {
+            Ok(ParticipantDecision::CompleteLoop {
                 content: "reply 2".to_owned(),
             }),
             Ok(ParticipantDecision::Finish),
@@ -409,10 +410,10 @@ async fn orchestrator_starts_a_new_agent_loop_for_a_second_user_message() {
     let user = FakeParticipant {
         id: ParticipantId::User,
         decisions: VecDeque::from([
-            Ok(ParticipantDecision::FinalMessage {
+            Ok(ParticipantDecision::CompleteLoop {
                 content: "request 1".to_owned(),
             }),
-            Ok(ParticipantDecision::FinalMessage {
+            Ok(ParticipantDecision::CompleteLoop {
                 content: "request 2".to_owned(),
             }),
             Ok(ParticipantDecision::Finish),
@@ -525,6 +526,7 @@ async fn orchestrator_blocks_participant_on_deferred_blocking_action() {
         immediate_outcomes: VecDeque::new(),
         submitted_events: VecDeque::from([
             Vec::new(),
+            Vec::new(),
             vec![EnvironmentEvent::ActionCompleted {
                 participant: ParticipantId::Agent,
                 action_id: submitted_action_id,
@@ -565,10 +567,15 @@ async fn orchestrator_blocks_participant_on_deferred_blocking_action() {
     });
 
     let result = orchestrator.run(request).await.unwrap();
-    let inbox_call_count = seen_inboxes.lock().unwrap().len();
+    let inboxes = seen_inboxes.lock().unwrap();
 
     assert_eq!(result.finish_reason, FinishReason::ParticipantsFinished);
-    assert_eq!(inbox_call_count, 2);
+    assert_eq!(inboxes.len(), 2);
+    assert!(inboxes[1].iter().any(|event| matches!(
+        event,
+        ParticipantInboxEvent::ActionCompleted { action_id, outcome }
+            if *action_id == submitted_action_id && *outcome == TestOutcome("completed")
+    )));
 }
 
 #[tokio::test]
@@ -736,6 +743,72 @@ async fn orchestrator_can_terminate_when_a_specific_participant_finishes() {
             participant: ParticipantId::User,
         }
     );
+}
+
+#[tokio::test]
+async fn orchestrator_can_terminate_when_a_specific_participant_completes_a_loop() {
+    let agent = FakeParticipant {
+        id: ParticipantId::Agent,
+        decisions: VecDeque::from([Ok(ParticipantDecision::CompleteLoop {
+            content: "done".to_owned(),
+        })]),
+        seen_inboxes: Arc::new(Mutex::new(Vec::new())),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
+    };
+    let user = FakeParticipant {
+        id: ParticipantId::User,
+        decisions: VecDeque::from([Ok(ParticipantDecision::Yield)]),
+        seen_inboxes: Arc::new(Mutex::new(Vec::new())),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
+    };
+    let environment = FakeEnvironment {
+        observation: TestObservation("initial"),
+        terminal: None,
+        immediate_outcomes: VecDeque::new(),
+        submitted_events: VecDeque::new(),
+        submitted_ids: VecDeque::new(),
+    };
+    let participants = vec![
+        Box::new(user)
+            as Box<
+                dyn Participant<
+                        Observation = TestObservation,
+                        Action = TestAction,
+                        Outcome = TestOutcome,
+                    >,
+            >,
+        Box::new(agent)
+            as Box<
+                dyn Participant<
+                        Observation = TestObservation,
+                        Action = TestAction,
+                        Outcome = TestOutcome,
+                    >,
+            >,
+    ];
+    let mut orchestrator = Orchestrator::from_participants(participants, environment);
+    let mut request = test_request();
+    request.termination_condition =
+        TerminationCondition::AnyOfParticipantsCompletedLoop(vec![ParticipantId::Agent]);
+    request.initial_messages.push(InitialInboxMessage {
+        to: ParticipantId::Agent,
+        from: ParticipantId::User,
+        content: "go".to_owned(),
+    });
+
+    let result = orchestrator.run(request).await.unwrap();
+
+    assert_eq!(
+        result.finish_reason,
+        FinishReason::ParticipantCompletedLoop {
+            participant: ParticipantId::Agent,
+        }
+    );
+    assert!(result.trajectory.events.iter().any(|event| matches!(
+        event,
+        TrajectoryEvent::ParticipantLoopCompleted { participant }
+            if *participant == ParticipantId::Agent
+    )));
 }
 
 #[tokio::test]

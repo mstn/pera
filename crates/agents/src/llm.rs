@@ -370,7 +370,7 @@ where
             return Ok(decision);
         }
 
-        Ok(ParticipantDecision::FinalMessage { content })
+        Ok(ParticipantDecision::CompleteLoop { content })
     }
 }
 
@@ -455,7 +455,7 @@ fn status_for_action_decision(decision: &ParticipantDecision<WorkspaceAction>) -
             ..
         } => "executing code".to_owned(),
         ParticipantDecision::Message { .. }
-        | ParticipantDecision::FinalMessage { .. }
+        | ParticipantDecision::CompleteLoop { .. }
         | ParticipantDecision::Yield
         | ParticipantDecision::Finish => "updating".to_owned(),
     }

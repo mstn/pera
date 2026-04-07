@@ -70,7 +70,7 @@ where
             return Ok(ParticipantDecision::Yield);
         }
 
-        Ok(ParticipantDecision::FinalMessage {
+        Ok(ParticipantDecision::CompleteLoop {
             content: self.initial_message.clone(),
         })
     }
