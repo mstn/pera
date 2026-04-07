@@ -9,7 +9,7 @@ anyhow = "1.0"
 pera-canonical = { path = "../canonical" }
 pera-core = { path = "../core" }
 pera-orchestrator = { path = "../orchestrator" }
-monty = { git = "https://github.com/pydantic/monty", rev = "60538204fd9cd420d1a93042bb52f7168fb9fca2" }
+monty = { git = "https://github.com/pydantic/monty", rev = "d27e6f4e31eec94491095cca84091825f454f949" }
 rusqlite = { version = "0.37.0", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
