@@ -51,12 +51,52 @@ pub struct PromptDebugMetadata {
     pub task_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptDebugResponseRecord {
+    pub status: PromptDebugResponseStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call: Option<PromptDebugToolCall>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<PromptDebugErrorRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptDebugResponseStatus {
+    Ok,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptDebugToolCall {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    pub name: String,
+    pub arguments: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptDebugErrorRecord {
+    pub user_message: String,
+    pub debug_message: String,
+}
+
 pub trait PromptDebugSink: Send + Sync {
     fn record_prompt(
         &self,
         metadata: &PromptDebugMetadata,
         request: &LlmRequest,
     ) -> Result<(), ParticipantError>;
+
+    fn record_response(
+        &self,
+        _metadata: &PromptDebugMetadata,
+        _response: &PromptDebugResponseRecord,
+    ) -> Result<(), ParticipantError> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -188,25 +228,60 @@ where
             messages: prompt_messages(&context),
             tools: context.tools.clone(),
         };
-        self.debug_sink.record_prompt(
-            &PromptDebugMetadata {
-                run_id: input.run_id,
-                agent_loop_id: input.agent_loop_id,
-                agent_loop_iteration: input.agent_loop_iteration,
-                participant: input.participant.clone(),
-                task_id: input.task.id.clone(),
-            },
-            &request,
-        )?;
+        let debug_metadata = PromptDebugMetadata {
+            run_id: input.run_id,
+            agent_loop_id: input.agent_loop_id,
+            agent_loop_iteration: input.agent_loop_iteration,
+            participant: input.participant.clone(),
+            task_id: input.task.id.clone(),
+        };
+        self.debug_sink
+            .record_prompt(&debug_metadata, &request)?;
 
         output.message_start(&ParticipantId::Agent).await?;
-        let mut stream = self.provider.stream(request).await?;
+        let mut stream = match self.provider.stream(request).await {
+            Ok(stream) => stream,
+            Err(error) => {
+                self.debug_sink.record_response(
+                    &debug_metadata,
+                    &PromptDebugResponseRecord {
+                        status: PromptDebugResponseStatus::Error,
+                        content: None,
+                        tool_call: None,
+                        error: Some(PromptDebugErrorRecord {
+                            user_message: "The model request failed before the agent could act."
+                                .to_owned(),
+                            debug_message: error.to_string(),
+                        }),
+                    },
+                )?;
+                return Err(error);
+            }
+        };
         let mut content = String::new();
         let mut tool_call = None;
         let started_message = true;
         let mut pending_tool_name = None;
         while let Some(chunk) = stream.next().await {
-            match chunk? {
+            match chunk {
+                Err(error) => {
+                    self.debug_sink.record_response(
+                        &debug_metadata,
+                        &PromptDebugResponseRecord {
+                            status: PromptDebugResponseStatus::Error,
+                            content: (!content.is_empty()).then(|| content.clone()),
+                            tool_call: tool_call.as_ref().map(prompt_debug_tool_call),
+                            error: Some(PromptDebugErrorRecord {
+                                user_message:
+                                    "The model response failed while the agent was waiting for it."
+                                        .to_owned(),
+                                debug_message: error.to_string(),
+                            }),
+                        },
+                    )?;
+                    return Err(error);
+                }
+                Ok(chunk) => match chunk {
                 LlmStreamEvent::Text(chunk) => {
                     content.push_str(&chunk);
                     output.message_delta(&ParticipantId::Agent, &chunk).await?;
@@ -246,6 +321,7 @@ where
                         tool_call = Some(call);
                     }
                 }
+                },
             }
         }
         if content.trim().is_empty() && tool_call.is_none() {
@@ -258,6 +334,16 @@ where
         if started_message {
             output.message_end(&ParticipantId::Agent).await?;
         }
+
+        self.debug_sink.record_response(
+            &debug_metadata,
+            &PromptDebugResponseRecord {
+                status: PromptDebugResponseStatus::Ok,
+                content: Some(content.clone()),
+                tool_call: tool_call.as_ref().map(prompt_debug_tool_call),
+                error: None,
+            },
+        )?;
 
         if let Some(tool_call) = tool_call {
             if tool_call.name == "execute_code" {
@@ -285,6 +371,14 @@ where
         }
 
         Ok(ParticipantDecision::FinalMessage { content })
+    }
+}
+
+fn prompt_debug_tool_call(call: &LlmToolCall) -> PromptDebugToolCall {
+    PromptDebugToolCall {
+        call_id: call.call_id.clone(),
+        name: call.name.clone(),
+        arguments: call.arguments.clone(),
     }
 }
 

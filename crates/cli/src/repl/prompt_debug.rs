@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use chrono::Local;
-use pera_agents::{LlmRequest, PromptDebugMetadata, PromptDebugSink};
+use pera_agents::{
+    LlmRequest, PromptDebugMetadata, PromptDebugResponseRecord, PromptDebugSink,
+};
 use pera_core::{RunId, WorkItemId};
 use pera_runtime::FileSystemLayout;
 
@@ -114,6 +116,34 @@ impl PromptDebugSink for FilePromptDebugSink {
             pera_orchestrator::ParticipantError::new(
                 CliError::WriteFile {
                     path: tools_path,
+                    source,
+                }
+                .to_string(),
+            )
+        })?;
+
+        Ok(())
+    }
+
+    fn record_response(
+        &self,
+        metadata: &PromptDebugMetadata,
+        response: &PromptDebugResponseRecord,
+    ) -> Result<(), pera_orchestrator::ParticipantError> {
+        let loop_directory = self
+            .resolve_loop_directory(metadata)
+            .map_err(|error| pera_orchestrator::ParticipantError::new(error.to_string()))?;
+        let iteration_id = format!("{:04}", metadata.agent_loop_iteration);
+        let response_path = loop_directory.join(format!("{iteration_id}.response.json"));
+        let response_json = serde_json::to_vec_pretty(response).map_err(|error| {
+            pera_orchestrator::ParticipantError::new(
+                CliError::UnexpectedStateOwned(error.to_string()).to_string(),
+            )
+        })?;
+        std::fs::write(&response_path, response_json).map_err(|source| {
+            pera_orchestrator::ParticipantError::new(
+                CliError::WriteFile {
+                    path: response_path,
                     source,
                 }
                 .to_string(),
