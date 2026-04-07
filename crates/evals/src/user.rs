@@ -16,11 +16,19 @@ pub struct ScriptedUserParticipant<O, A, U> {
 
 impl<O, A, U> ScriptedUserParticipant<O, A, U> {
     pub fn from_spec(spec: &EvalUserSpec) -> Self {
-        let initial_message = spec
+        let base_message = spec
             .example_messages
             .first()
             .cloned()
             .unwrap_or_else(|| spec.task.clone());
+        let initial_message = if spec.known_info.trim().is_empty() {
+            base_message
+        } else {
+            format!(
+                "{base_message}\n\nKnown information:\n{}",
+                spec.known_info.trim()
+            )
+        };
         Self {
             initial_message,
             _marker: PhantomData,
@@ -73,5 +81,28 @@ where
         Ok(ParticipantDecision::CompleteLoop {
             content: self.initial_message.clone(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ScriptedUserParticipant;
+    use crate::spec::EvalUserSpec;
+
+    #[test]
+    fn scripted_user_initial_message_includes_known_info() {
+        let participant = ScriptedUserParticipant::<(), (), ()>::from_spec(&EvalUserSpec {
+            task: "Plan the trip".to_owned(),
+            reason: "Need bookings today".to_owned(),
+            known_info: "The cost center is DELTA-EU. The planning week starts on 2026-04-06."
+                .to_owned(),
+            unknown_info: "Availability and policy edge cases.".to_owned(),
+            example_messages: vec!["Plan Berlin travel for Alice and Bruno.".to_owned()],
+        });
+
+        assert_eq!(
+            participant.initial_message,
+            "Plan Berlin travel for Alice and Bruno.\n\nKnown information:\nThe cost center is DELTA-EU. The planning week starts on 2026-04-06."
+        );
     }
 }
