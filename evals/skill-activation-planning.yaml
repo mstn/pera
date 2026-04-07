@@ -42,9 +42,6 @@ evaluation:
         - action: load_skill
           arguments:
             skill_name: weather-brief
-        - action: load_skill
-          arguments:
-            skill_name: secret-service
         - action: execute_code
           arguments:
             language: python
