@@ -15,7 +15,7 @@ use pera_orchestrator::Participant;
 use pera_runtime::{AgentWorkspace, WorkspaceAction, WorkspaceObservation, WorkspaceOutcome};
 use serde_yaml::{Mapping, Value};
 
-use self::artifacts::{RunArtifacts, create_run_artifacts, write_run_result};
+use self::artifacts::{RunArtifacts, create_run_artifacts, write_run_failed, write_run_result};
 use crate::error::CliError;
 use crate::repl::prompt_debug::FilePromptDebugSink;
 
@@ -144,7 +144,10 @@ impl EvalModeCommand {
                 WorkspaceEvalAdapter,
             )
             .await
-            .map_err(CliError::from)?;
+            .map_err(|error| {
+                let _ = write_run_failed(&artifacts);
+                CliError::from(error)
+            })?;
         write_run_result(&artifacts, &result)?;
 
         print_summary(mode, &artifacts);

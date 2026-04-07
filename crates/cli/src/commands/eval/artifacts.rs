@@ -13,18 +13,21 @@ pub struct RunArtifacts {
     pub resolved_spec_path: PathBuf,
     pub manifest_path: PathBuf,
     pub result_path: PathBuf,
+    mode: String,
+    spec_path: String,
+    overrides: Vec<ManifestOverride>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct RunManifest<'a> {
     mode: &'a str,
     spec_path: String,
     run_dir: String,
-    overrides: Vec<ManifestOverride>,
+    overrides: &'a [ManifestOverride],
     status: &'a str,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct ManifestOverride {
     path: String,
     value: serde_json::Value,
@@ -62,33 +65,26 @@ pub fn create_run_artifacts(
         source,
     })?;
 
-    let manifest = RunManifest {
-        mode,
-        spec_path: spec_path.display().to_string(),
-        run_dir: run_dir.display().to_string(),
-        overrides: overrides
-            .entries()
-            .map(|(path, value)| ManifestOverride {
-                path: path.join("."),
-                value: serde_json::to_value(value).unwrap_or(serde_json::Value::Null),
-            })
-            .collect(),
-        status: "initialized",
-    };
-    let manifest_bytes = serde_json::to_vec_pretty(&manifest).map_err(|error| {
-        CliError::UnexpectedStateOwned(format!("failed to serialize eval run manifest: {error}"))
-    })?;
-    fs::write(&manifest_path, manifest_bytes).map_err(|source| CliError::WriteFile {
-        path: manifest_path.clone(),
-        source,
-    })?;
+    let manifest_overrides: Vec<ManifestOverride> = overrides
+        .entries()
+        .map(|(path, value)| ManifestOverride {
+            path: path.join("."),
+            value: serde_json::to_value(value).unwrap_or(serde_json::Value::Null),
+        })
+        .collect();
 
-    Ok(RunArtifacts {
+    let artifacts = RunArtifacts {
         run_dir,
         resolved_spec_path,
         manifest_path,
         result_path,
-    })
+        mode: mode.to_owned(),
+        spec_path: spec_path.display().to_string(),
+        overrides: manifest_overrides,
+    };
+    write_run_manifest(&artifacts, "initialized")?;
+
+    Ok(artifacts)
 }
 
 #[derive(Debug, Serialize)]
@@ -129,6 +125,28 @@ pub fn write_run_result(
     })?;
     fs::write(&artifacts.result_path, bytes).map_err(|source| CliError::WriteFile {
         path: artifacts.result_path.clone(),
+        source,
+    })?;
+    write_run_manifest(artifacts, "completed")
+}
+
+pub fn write_run_failed(artifacts: &RunArtifacts) -> Result<(), CliError> {
+    write_run_manifest(artifacts, "failed")
+}
+
+fn write_run_manifest(artifacts: &RunArtifacts, status: &str) -> Result<(), CliError> {
+    let manifest = RunManifest {
+        mode: &artifacts.mode,
+        spec_path: artifacts.spec_path.clone(),
+        run_dir: artifacts.run_dir.display().to_string(),
+        overrides: &artifacts.overrides,
+        status,
+    };
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest).map_err(|error| {
+        CliError::UnexpectedStateOwned(format!("failed to serialize eval run manifest: {error}"))
+    })?;
+    fs::write(&artifacts.manifest_path, manifest_bytes).map_err(|source| CliError::WriteFile {
+        path: artifacts.manifest_path.clone(),
         source,
     })
 }
