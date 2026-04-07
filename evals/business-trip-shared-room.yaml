@@ -1,0 +1,87 @@
+schema_version: 1
+id: business-trip-planning.shared-room-required
+description: Evaluate whether the agent can combine schedule, travel, and policy skills to infer that a shared double room is a valid fallback.
+
+runtime:
+  output_folder: .pera
+  skill_sources:
+    - id: local_examples
+      path: skills/examples
+  catalog:
+    - skill: calendar-ops
+      source: local_examples
+      profile: shared-room-required
+    - skill: travel-desk
+      source: local_examples
+      profile: shared-room-required
+    - skill: travel-policy
+      source: local_examples
+      profile: shared-room-required
+  active_skills: []
+
+scenario:
+  purpose: |
+    Evaluate whether the agent can compose schedule, transport, lodging, and policy data across multiple code turns and infer that sharing a double room is a valid alternative when no single rooms are available.
+  user:
+    task: |
+      Plan a trip for Alice and Bruno to attend the Delta review in Berlin next week. Find a feasible option and explain any tradeoffs.
+    reason: |
+      Travel needs to be booked today and the user wants a policy-compliant recommendation.
+    known_info: |
+      Both travelers must attend the Delta review in Berlin. The trip should follow company travel policy. The cost center is DELTA-EU. The relevant planning week starts on 2026-04-06.
+    unknown_info: |
+      The user does not know which transport and lodging options are available, whether room sharing is needed, or whether approval is required.
+    example_messages:
+      - Plan Berlin travel for Alice and Bruno for the Delta review next week.
+      - Find the best feasible option for both travelers and tell me if anything unusual is required.
+  agent:
+    persona: Helpful operations assistant.
+  history: []
+
+evaluation:
+  criteria:
+    - type: action_sequence
+      actions:
+        - action: load_skill
+          arguments:
+            skill_name: calendar-ops
+        - action: load_skill
+          arguments:
+            skill_name: travel-desk
+        - action: load_skill
+          arguments:
+            skill_name: travel-policy
+        - action: execute_code
+          arguments:
+            language: python
+      allow_extra_actions: true
+    - type: action_count
+      action: execute_code
+      min_count: 2
+
+optimization:
+  targets:
+    - kind: prompt
+      prompt: base_system
+    - kind: prompt
+      prompt: skills_system
+    - kind: prompt
+      skill: calendar-ops
+      field: instructions
+    - kind: prompt
+      skill: calendar-ops
+      field: when_to_use
+    - kind: prompt
+      skill: travel-desk
+      field: instructions
+    - kind: prompt
+      skill: travel-desk
+      field: when_to_use
+    - kind: prompt
+      skill: travel-policy
+      field: instructions
+    - kind: prompt
+      skill: travel-policy
+      field: when_to_use
+  max_epochs: 5
+  early_stop_on_pass: true

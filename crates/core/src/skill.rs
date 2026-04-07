@@ -29,6 +29,19 @@ impl SkillVersion {
     }
 }
 
+impl SkillManifest {
+    pub fn databases_for_profile<'a>(
+        &'a self,
+        profile: &'a SkillProfileManifest,
+    ) -> &'a [SkillDatabaseSpec] {
+        if profile.databases.is_empty() {
+            &self.defaults.databases
+        } else {
+            &profile.databases
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub struct SkillDefaults {
     #[serde(default)]
@@ -76,6 +89,8 @@ pub struct SkillProfileManifest {
     pub runtime: SkillRuntimeManifest,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub databases: Vec<SkillDatabaseSpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

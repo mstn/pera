@@ -118,6 +118,10 @@ pub enum EvalCriterionSpec {
         #[serde(default)]
         allow_extra_actions: bool,
     },
+    ActionCount {
+        action: String,
+        min_count: usize,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -246,6 +250,18 @@ fn validate_eval_spec(spec: &EvalSpec) -> Result<(), EvalError> {
                             "action_sequence action name cannot be empty".to_owned(),
                         ));
                     }
+                }
+            }
+            EvalCriterionSpec::ActionCount { action, min_count } => {
+                if action.trim().is_empty() {
+                    return Err(EvalError::InvalidSpec(
+                        "action_count action name cannot be empty".to_owned(),
+                    ));
+                }
+                if *min_count == 0 {
+                    return Err(EvalError::InvalidSpec(
+                        "action_count min_count must be greater than zero".to_owned(),
+                    ));
                 }
             }
         }

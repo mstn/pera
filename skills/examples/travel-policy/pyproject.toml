@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "miniclaw-skill-example-travel-policy"
+version = "0.1.0"
+description = "Example travel-policy skill package for miniclaw"
+readme = "SKILL.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["travel_policy*", "wit_world*", "wasm*"]

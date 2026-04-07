@@ -1,0 +1,11 @@
+{
+  "profile_name": "shared-room-required",
+  "runtime": {
+    "artifact": "component.wasm",
+    "kind": "wasm-component",
+    "world": "travel-desk-default"
+  },
+  "schema_version": 1,
+  "skill_name": "travel-desk",
+  "skill_version": "0.1.0"
+}

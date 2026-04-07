@@ -202,8 +202,7 @@ impl SkillDatabaseLifecycleCommand {
             })?;
 
         let sqlite_specs = manifest
-            .defaults
-            .databases
+            .databases_for_profile(profile)
             .iter()
             .filter(|database| database.engine == "sqlite")
             .collect::<Vec<_>>();
@@ -493,7 +492,10 @@ fn resolve_seed_name(
     selected_seed: Option<&str>,
 ) -> Result<Option<String>, CliError> {
     match selected_seed {
-        None => Ok(None),
+        None => Ok(database
+            .seeds
+            .as_ref()
+            .and_then(|seeds| seeds.default.clone())),
         Some("") => {
             let default_seed = database
                 .seeds

@@ -227,8 +227,7 @@ where
             })?;
 
         let sqlite_specs = manifest
-            .defaults
-            .databases
+            .databases_for_profile(profile)
             .iter()
             .filter(|database| database.engine == "sqlite")
             .collect::<Vec<_>>();
@@ -270,14 +269,26 @@ fn copy_skill_assets<H: ProjectHost>(
     skill_dir: &Path,
     artifact_dir: &Path,
     manifest: &SkillManifest,
-    _profile_name: &str,
+    profile_name: &str,
     wit_path: &str,
 ) -> Result<(), SkillProvisionError> {
     if let Some(instructions) = &manifest.defaults.instructions {
         copy_path_relative(host, skill_dir, artifact_dir, &instructions.source)?;
     }
     copy_path_relative(host, skill_dir, artifact_dir, wit_path)?;
-    for database in &manifest.defaults.databases {
+    let databases = manifest.databases_for_profile(
+        manifest
+            .profiles
+            .iter()
+            .find(|profile| profile.name == profile_name)
+            .ok_or_else(|| {
+                SkillProvisionError::InvalidManifest(format!(
+                    "profile '{}' not found in manifest",
+                    profile_name
+                ))
+            })?,
+    );
+    for database in databases {
         if let Some(migrations) = &database.migrations {
             copy_path_relative(host, skill_dir, artifact_dir, &migrations.dir)?;
         }

@@ -72,6 +72,26 @@ where
                         eprintln!("[eval] criterion passed: action_sequence");
                     }
                 }
+                EvalCriterionSpec::ActionCount { action, min_count } => {
+                    let actual_count = requested_actions
+                        .iter()
+                        .filter(|requested_action| requested_action.name == *action)
+                        .count();
+                    eprintln!(
+                        "[eval] criterion action_count action={} min_count={} actual_count={}",
+                        action,
+                        min_count,
+                        actual_count
+                    );
+                    if actual_count < *min_count {
+                        failures.push(format!(
+                            "action_count mismatch for '{}': expected at least {}, actual {}",
+                            action, min_count, actual_count
+                        ));
+                    } else {
+                        eprintln!("[eval] criterion passed: action_count");
+                    }
+                }
             }
         }
 

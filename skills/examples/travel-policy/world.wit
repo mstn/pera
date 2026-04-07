@@ -1,0 +1,30 @@
+package miniclaw:travel-policy@0.1.0;
+
+interface sqlite {
+  type json = string;
+  execute: func(sql: string, params-json: option<json>) -> json;
+}
+
+interface travel-policy-types {
+  record trip-policy {
+    cost-center: string,
+    max-budget-without-approval: s32,
+    shared-room-allowed: bool,
+    single-room-preferred: bool,
+    red-eye-allowed: bool,
+    notes: list<string>,
+  }
+}
+
+interface travel-policy-exports {
+  use travel-policy-types.{trip-policy};
+
+  get-trip-policy: func(cost-center: string, traveler-ids: list<string>) -> trip-policy;
+
+  requires-manager-approval: func(total-cost: s32, cost-center: string) -> bool;
+}
+
+world travel-policy-default {
+  import sqlite;
+  export travel-policy-exports;
+}

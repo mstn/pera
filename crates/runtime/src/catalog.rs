@@ -899,7 +899,7 @@ fn load_catalog_skill(
         metadata,
         world,
         capabilities: profile.capabilities.clone(),
-        databases: manifest.defaults.databases.clone(),
+        databases: manifest.databases_for_profile(profile).to_vec(),
     })
 }
 
