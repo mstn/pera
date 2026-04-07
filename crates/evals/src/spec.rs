@@ -115,6 +115,8 @@ pub struct EvalEvaluationSpec {
 pub enum EvalCriterionSpec {
     ActionSequence {
         actions: Vec<EvalExpectedActionSpec>,
+        #[serde(default = "default_true")]
+        ordered: bool,
         #[serde(default)]
         allow_extra_actions: bool,
     },
@@ -154,6 +156,10 @@ pub struct EvalOptimizationTargetSpec {
     pub skill: Option<String>,
     #[serde(default)]
     pub field: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 pub fn load_eval_spec(path: &Path, overrides: &OverrideSet) -> Result<LoadedEvalSpec, EvalError> {

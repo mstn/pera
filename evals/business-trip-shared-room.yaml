@@ -41,6 +41,7 @@ scenario:
 evaluation:
   criteria:
     - type: action_sequence
+      ordered: false
       actions:
         - action: load_skill
           arguments:

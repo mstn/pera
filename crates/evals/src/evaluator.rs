@@ -60,14 +60,21 @@ where
             match criterion {
                 EvalCriterionSpec::ActionSequence {
                     actions,
+                    ordered,
                     allow_extra_actions,
                 } => {
                     eprintln!(
-                        "[eval] criterion action_sequence expected_actions={} allow_extra_actions={}",
+                        "[eval] criterion action_sequence expected_actions={} ordered={} allow_extra_actions={}",
                         actions.len(),
+                        ordered,
                         allow_extra_actions
                     );
-                    if !matches_action_sequence(actions, &requested_actions, *allow_extra_actions) {
+                    if !matches_action_sequence(
+                        actions,
+                        &requested_actions,
+                        *ordered,
+                        *allow_extra_actions,
+                    ) {
                         eprintln!("[eval] criterion failed: action_sequence mismatch");
                         failures.push(format_action_sequence_failure(actions, &requested_actions));
                     } else {
@@ -198,8 +205,13 @@ where
 fn matches_action_sequence(
     expected: &[EvalExpectedActionSpec],
     actual: &[SerializedAction],
+    ordered: bool,
     allow_extra_actions: bool,
 ) -> bool {
+    if !ordered {
+        return matches_action_set(expected, actual, allow_extra_actions);
+    }
+
     if allow_extra_actions {
         let mut cursor = 0usize;
         for expected_action in expected {
@@ -224,6 +236,36 @@ fn matches_action_sequence(
                 .zip(actual.iter())
                 .all(|(expected_action, actual_action)| action_matches(expected_action, actual_action))
     }
+}
+
+fn matches_action_set(
+    expected: &[EvalExpectedActionSpec],
+    actual: &[SerializedAction],
+    allow_extra_actions: bool,
+) -> bool {
+    if !allow_extra_actions && expected.len() != actual.len() {
+        return false;
+    }
+
+    let mut used = vec![false; actual.len()];
+    for expected_action in expected {
+        let mut matched_index = None;
+        for (index, actual_action) in actual.iter().enumerate() {
+            if used[index] {
+                continue;
+            }
+            if action_matches(expected_action, actual_action) {
+                matched_index = Some(index);
+                break;
+            }
+        }
+        let Some(index) = matched_index else {
+            return false;
+        };
+        used[index] = true;
+    }
+
+    allow_extra_actions || used.into_iter().all(|matched| matched)
 }
 
 fn action_matches(expected: &EvalExpectedActionSpec, actual: &SerializedAction) -> bool {
