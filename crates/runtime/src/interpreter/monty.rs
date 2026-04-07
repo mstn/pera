@@ -1,6 +1,10 @@
 use std::collections::BTreeMap;
 
-use monty::{FunctionCall, MontyObject, MontyRun, NoLimitTracker, PrintWriter, RunProgress};
+use chrono::{Datelike, Local, Timelike, Utc};
+use monty::{
+    FunctionCall, MontyDate, MontyDateTime, MontyObject, MontyRun, NoLimitTracker, OsCall,
+    OsFunction, PrintWriter, RunProgress,
+};
 use pera_core::{
     ActionName, CodeArtifact, CodeLanguage, CompiledProgram, ExecutionOutput, ExecutionSnapshot,
     ExternalCall, InputValues, Interpreter, InterpreterError, InterpreterKind, InterpreterStep,
@@ -75,14 +79,99 @@ impl Interpreter for MontyInterpreter {
 }
 
 fn progress_to_step(progress: RunProgress<NoLimitTracker>) -> Result<InterpreterStep, InterpreterError> {
-    match progress {
-        RunProgress::FunctionCall(call) => function_call_to_step(call),
-        RunProgress::Complete(value) => Ok(InterpreterStep::Completed(ExecutionOutput {
-            value: monty_object_to_value(value)?,
-        })),
-        _ => Err(InterpreterError::new(
-            "Monty returned a suspension kind that is not yet supported",
-        )),
+    let mut progress = progress;
+
+    loop {
+        match progress {
+            RunProgress::FunctionCall(call) => return function_call_to_step(call),
+            RunProgress::OsCall(call) => {
+                progress = resume_os_call(call)?;
+            }
+            RunProgress::Complete(value) => {
+                return Ok(InterpreterStep::Completed(ExecutionOutput {
+                    value: monty_object_to_value(value)?,
+                }));
+            }
+            RunProgress::ResolveFutures(_) => {
+                return Err(InterpreterError::new(
+                    "Monty returned unsupported suspension kind: resolve_futures",
+                ));
+            }
+            RunProgress::NameLookup(lookup) => {
+                return Err(InterpreterError::new(format!(
+                    "Monty returned unsupported suspension kind: name_lookup for '{}'",
+                    lookup.name
+                )));
+            }
+        }
+    }
+}
+
+fn resume_os_call(call: OsCall<NoLimitTracker>) -> Result<RunProgress<NoLimitTracker>, InterpreterError> {
+    let result = match call.function {
+        OsFunction::DateToday => {
+            let today = Local::now().date_naive();
+            MontyObject::Date(MontyDate {
+                year: today.year(),
+                month: today.month() as u8,
+                day: today.day() as u8,
+            })
+        }
+        OsFunction::DateTimeNow => monty_datetime_now(&call.args)?,
+        other => {
+            return Err(InterpreterError::new(format!(
+                "Monty OS call '{}' is not yet supported",
+                other
+            )));
+        }
+    };
+
+    call.resume(result, PrintWriter::Disabled)
+        .map_err(to_interpreter_error)
+}
+
+fn monty_datetime_now(args: &[MontyObject]) -> Result<MontyObject, InterpreterError> {
+    let timezone = args.first().cloned().unwrap_or(MontyObject::None);
+
+    match timezone {
+        MontyObject::None => {
+            let now = Local::now().naive_local();
+            Ok(MontyObject::DateTime(MontyDateTime {
+                year: now.year(),
+                month: now.month() as u8,
+                day: now.day() as u8,
+                hour: now.hour() as u8,
+                minute: now.minute() as u8,
+                second: now.second() as u8,
+                microsecond: now.and_utc().timestamp_subsec_micros(),
+                offset_seconds: None,
+                timezone_name: None,
+            }))
+        }
+        MontyObject::TimeZone(tz) => {
+            let offset = chrono::FixedOffset::east_opt(tz.offset_seconds).ok_or_else(|| {
+                InterpreterError::new(format!(
+                    "Monty datetime.now received invalid timezone offset: {}",
+                    tz.offset_seconds
+                ))
+            })?;
+            let now = Utc::now().with_timezone(&offset);
+            Ok(MontyObject::DateTime(MontyDateTime {
+                year: now.year(),
+                month: now.month() as u8,
+                day: now.day() as u8,
+                hour: now.hour() as u8,
+                minute: now.minute() as u8,
+                second: now.second() as u8,
+                microsecond: now.timestamp_subsec_micros(),
+                offset_seconds: Some(tz.offset_seconds),
+                timezone_name: tz.name,
+            }))
+        }
+        other => Err(InterpreterError::new(format!(
+            "Monty datetime.now expected None or TimeZone, received {:?}",
+            other
+        ))),
     }
 }
 
@@ -262,10 +351,58 @@ fn to_interpreter_error(error: impl std::fmt::Display) -> InterpreterError {
 mod tests {
     use std::collections::BTreeMap;
 
-    use monty::MontyObject;
-    use pera_core::Value;
+    use super::*;
+    use pera_core::{CodeArtifactId, ScriptName, Value};
 
-    use super::monty_object_to_value;
+    fn run_python(source: &str) -> Result<InterpreterStep, InterpreterError> {
+        let interpreter = MontyInterpreter::new();
+        let program = interpreter.compile(&CodeArtifact {
+            id: CodeArtifactId::generate(),
+            language: CodeLanguage::Python,
+            script_name: ScriptName::new("test.py"),
+            source: source.to_owned(),
+            inputs: Vec::new(),
+        })?;
+        interpreter.start(&program, &InputValues::new())
+    }
+
+    #[test]
+    fn supports_date_today_os_call() {
+        let step = run_python(
+            r#"
+from datetime import date
+date.today().isoformat()
+"#,
+        )
+        .expect("date.today should execute successfully");
+
+        match step {
+            InterpreterStep::Completed(output) => match output.value {
+                Value::String(value) => assert_eq!(value.len(), 10),
+                other => panic!("unexpected output value: {other:?}"),
+            },
+            other => panic!("unexpected interpreter step: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn supports_datetime_now_os_call() {
+        let step = run_python(
+            r#"
+from datetime import datetime
+datetime.now().isoformat()
+"#,
+        )
+        .expect("datetime.now should execute successfully");
+
+        match step {
+            InterpreterStep::Completed(output) => match output.value {
+                Value::String(value) => assert!(value.contains('T')),
+                other => panic!("unexpected output value: {other:?}"),
+            },
+            other => panic!("unexpected interpreter step: {other:?}"),
+        }
+    }
 
     #[test]
     fn normalizes_tuple_as_list() {
