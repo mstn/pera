@@ -108,7 +108,20 @@ impl EvalModeCommand {
                 &artifacts.run_dir,
             )
             .map_err(CliError::from)?;
-        let mut environment = AgentWorkspace::from_root(&workspace_root)
+        let allowed_catalog_entries = session
+            .preparation
+            .as_ref()
+            .ok_or(CliError::UnexpectedStateOwned(
+                "eval session must be prepared before execution".to_owned(),
+            ))?
+            .skills
+            .iter()
+            .map(|skill| (skill.skill_name.clone(), skill.profile_name.clone()))
+            .collect::<Vec<_>>();
+        let mut environment = AgentWorkspace::from_root_with_catalog_entries(
+            &workspace_root,
+            Some(&allowed_catalog_entries),
+        )
             .await
             .map_err(|error| CliError::UnexpectedStateOwned(error.to_string()))?;
         for skill_name in &session.loaded_spec.spec.runtime.active_skills {

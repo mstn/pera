@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use pera_canonical::CatalogSkill;
+use pera_canonical::{CatalogSkill, SkillCatalog};
 use pera_canonical::render_python_stubs;
 use pera_orchestrator::{
     ActionError, ActionErrorOrigin, ActionRunStatus, Environment, EnvironmentError,
@@ -251,10 +251,20 @@ impl std::fmt::Debug for AgentWorkspace {
 
 impl AgentWorkspace {
     pub async fn from_root(root: impl Into<PathBuf>) -> Result<Self, AgentWorkspaceError> {
+        Self::from_root_with_catalog_entries(root, None).await
+    }
+
+    pub async fn from_root_with_catalog_entries(
+        root: impl Into<PathBuf>,
+        allowed_catalog_entries: Option<&[(String, String)]>,
+    ) -> Result<Self, AgentWorkspaceError> {
         let root = root.into();
-        let skill_runtime = FileSystemSkillRuntimeLoader::new(&root)
+        let mut skill_runtime = FileSystemSkillRuntimeLoader::new(&root)
             .load()
             .map_err(|error| AgentWorkspaceError::new(error.to_string()))?;
+        if let Some(allowed_catalog_entries) = allowed_catalog_entries {
+            skill_runtime = filtered_skill_runtime(&root, &skill_runtime, allowed_catalog_entries)?;
+        }
         let event_hub = EventHub::new();
         let event_log = FileSystemEventLog::new(&root)
             .map_err(|error| AgentWorkspaceError::new(error.to_string()))?;
@@ -795,6 +805,29 @@ fn workspace_status_to_action_run_status(status: AgentWorkspaceActionRunStatus) 
         },
         AgentWorkspaceActionRunStatus::RunResumed => ActionRunStatus::RunResumed,
     }
+}
+
+fn filtered_skill_runtime(
+    root: &Path,
+    runtime: &SkillRuntime,
+    allowed_catalog_entries: &[(String, String)],
+) -> Result<SkillRuntime, AgentWorkspaceError> {
+    let filtered_skills = runtime
+        .catalog()
+        .skills()
+        .filter(|skill| {
+            let profile_name = skill.metadata.profile_name.as_deref().unwrap_or_default();
+            allowed_catalog_entries
+                .iter()
+                .any(|(skill_name, allowed_profile)| {
+                    skill.metadata.skill_name == *skill_name && profile_name == allowed_profile
+                })
+        })
+        .cloned()
+        .collect::<Vec<CatalogSkill>>();
+    let catalog =
+        SkillCatalog::from_skills(filtered_skills).map_err(|error| AgentWorkspaceError::new(error.to_string()))?;
+    SkillRuntime::new(root, catalog).map_err(|error| AgentWorkspaceError::new(error.to_string()))
 }
 
 fn parse_code_language(language: &str) -> Result<CodeLanguage, AgentWorkspaceError> {
