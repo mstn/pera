@@ -122,6 +122,10 @@ pub enum EvalCriterionSpec {
         action: String,
         min_count: usize,
     },
+    FinalMessageRequired,
+    ForbidFinishReason {
+        finish_reason: String,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -261,6 +265,14 @@ fn validate_eval_spec(spec: &EvalSpec) -> Result<(), EvalError> {
                 if *min_count == 0 {
                     return Err(EvalError::InvalidSpec(
                         "action_count min_count must be greater than zero".to_owned(),
+                    ));
+                }
+            }
+            EvalCriterionSpec::FinalMessageRequired => {}
+            EvalCriterionSpec::ForbidFinishReason { finish_reason } => {
+                if finish_reason.trim().is_empty() {
+                    return Err(EvalError::InvalidSpec(
+                        "forbid_finish_reason finish_reason cannot be empty".to_owned(),
                     ));
                 }
             }

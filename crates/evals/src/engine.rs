@@ -6,7 +6,9 @@ use pera_orchestrator::{
 };
 
 use crate::error::EvalError;
-use crate::evaluator::{EvalActionAdapter, SpecEvaluator, trajectory_trace_events};
+use crate::evaluator::{
+    EvalActionAdapter, SpecEvaluator, evaluate_run_criteria, trajectory_trace_events,
+};
 use crate::execution::{EvalPreparation, EvalRunResult, EvalRunWorkspace};
 use crate::overrides::OverrideSet;
 use crate::runner::EvalRunner;
@@ -138,7 +140,7 @@ impl EvalEngine {
             result.trajectory.events.len()
         );
 
-        let evaluation = result.evaluation.unwrap_or_else(|| pera_orchestrator::EvalResult {
+        let mut evaluation = result.evaluation.unwrap_or_else(|| pera_orchestrator::EvalResult {
             passed: false,
             score: Some(0.0),
             summary: Some("missing evaluation result".to_owned()),
@@ -156,6 +158,27 @@ impl EvalEngine {
                 _ => None,
             });
         let trace = trajectory_trace_events(&result.trajectory, &action_adapter);
+        let run_level_failures = evaluate_run_criteria(
+            &session.loaded_spec.spec,
+            &result.finish_reason,
+            final_agent_message.as_deref(),
+        );
+        if !run_level_failures.is_empty() {
+            eprintln!(
+                "[eval] run-level criteria failed count={}",
+                run_level_failures.len()
+            );
+            let mut failure_messages = Vec::new();
+            if let Some(summary) = evaluation.summary.take() {
+                if !summary.trim().is_empty() {
+                    failure_messages.push(summary);
+                }
+            }
+            failure_messages.extend(run_level_failures);
+            evaluation.passed = false;
+            evaluation.score = Some(0.0);
+            evaluation.summary = Some(failure_messages.join("\n"));
+        }
         eprintln!(
             "[eval] evaluation passed={} score={:?} trace_events={}",
             evaluation.passed,

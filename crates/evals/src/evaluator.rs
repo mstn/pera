@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use pera_orchestrator::{EvalResult, Evaluator, EvaluatorError, ParticipantId, Trajectory, TrajectoryEvent};
+use pera_orchestrator::{
+    EvalResult, Evaluator, EvaluatorError, FinishReason, ParticipantId, Trajectory, TrajectoryEvent,
+};
 use serde_yaml::Value;
 
 use crate::execution::{SerializedAction, SerializedOutcome};
@@ -92,6 +94,8 @@ where
                         eprintln!("[eval] criterion passed: action_count");
                     }
                 }
+                EvalCriterionSpec::FinalMessageRequired => {}
+                EvalCriterionSpec::ForbidFinishReason { .. } => {}
             }
         }
 
@@ -105,6 +109,47 @@ where
             },
         })
     }
+}
+
+pub fn evaluate_run_criteria(
+    spec: &EvalSpec,
+    finish_reason: &FinishReason,
+    final_agent_message: Option<&str>,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    for criterion in &spec.evaluation.criteria {
+        match criterion {
+            EvalCriterionSpec::FinalMessageRequired => {
+                eprintln!("[eval] criterion final_message_required");
+                let has_final_message = final_agent_message
+                    .map(str::trim)
+                    .map(|content| !content.is_empty())
+                    .unwrap_or(false);
+                if !has_final_message {
+                    failures.push("final_message_required failed: missing final agent message".to_owned());
+                } else {
+                    eprintln!("[eval] criterion passed: final_message_required");
+                }
+            }
+            EvalCriterionSpec::ForbidFinishReason { finish_reason: forbidden } => {
+                let actual = finish_reason_name(finish_reason);
+                eprintln!(
+                    "[eval] criterion forbid_finish_reason forbidden={} actual={}",
+                    forbidden, actual
+                );
+                if actual == forbidden {
+                    failures.push(format!(
+                        "forbid_finish_reason failed: actual finish reason was '{}'",
+                        actual
+                    ));
+                } else {
+                    eprintln!("[eval] criterion passed: forbid_finish_reason");
+                }
+            }
+            EvalCriterionSpec::ActionSequence { .. } | EvalCriterionSpec::ActionCount { .. } => {}
+        }
+    }
+    failures
 }
 
 pub fn trajectory_trace_events<T, O, A, U>(
@@ -217,4 +262,22 @@ fn format_action_sequence_failure(
             .collect::<Vec<_>>()
             .join(", ")
     )
+}
+
+fn finish_reason_name(finish_reason: &FinishReason) -> &'static str {
+    match finish_reason {
+        FinishReason::ParticipantsFinished => "participants_finished",
+        FinishReason::ParticipantFinished { .. } => "participant_finished",
+        FinishReason::ParticipantCompletedLoop { .. } => "participant_completed_loop",
+        FinishReason::StepLimitExceeded => "step_limit_exceeded",
+        FinishReason::AgentLoopStepLimitExceeded { .. } => "agent_loop_step_limit_exceeded",
+        FinishReason::ActionLimitExceeded => "action_limit_exceeded",
+        FinishReason::FailedActionLimitExceeded { .. } => "failed_action_limit_exceeded",
+        FinishReason::MessageLimitExceeded => "message_limit_exceeded",
+        FinishReason::TimeLimitExceeded => "time_limit_exceeded",
+        FinishReason::ParticipantError { .. } => "participant_error",
+        FinishReason::EnvironmentError(_) => "environment_error",
+        FinishReason::EnvironmentTerminated(_) => "environment_terminated",
+        FinishReason::Deadlocked => "deadlocked",
+    }
 }

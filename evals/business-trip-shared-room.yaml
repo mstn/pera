@@ -58,6 +58,9 @@ evaluation:
     - type: action_count
       action: execute_code
       min_count: 2
+    - type: final_message_required
+    - type: forbid_finish_reason
+      finish_reason: failed_action_limit_exceeded
 
 optimization:
   targets:
