@@ -55,7 +55,7 @@ evaluation:
         - action: execute_code
           arguments:
             language: python
-      allow_extra_actions: true
+      allow_extra_actions: false
     - type: action_count
       action: execute_code
       min_count: 2
