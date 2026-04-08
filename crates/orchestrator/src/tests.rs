@@ -155,6 +155,7 @@ fn test_request() -> RunRequest {
             max_messages: 12,
             max_failed_actions: None,
             max_consecutive_failed_actions: None,
+            max_blocked_action_wait: None,
             max_duration: None,
         },
         termination_condition: TerminationCondition::AllParticipantsFinished,
@@ -972,4 +973,67 @@ async fn orchestrator_persists_action_handoff_message_before_requesting_action()
         .expect("action request should be recorded");
 
     assert!(handoff_index < action_index);
+}
+
+#[tokio::test]
+async fn orchestrator_times_out_when_blocked_action_never_completes() {
+    let submitted_action_id = ActionId::parse_str("00000000-0000-0000-0000-000000000125").unwrap();
+    let agent = FakeParticipant {
+        id: ParticipantId::Agent,
+        decisions: VecDeque::from([Ok(ParticipantDecision::Action {
+            message: None,
+            action: TestAction("blocking"),
+            execution: ActionExecution::DeferredBlocking,
+        })]),
+        seen_inboxes: Arc::new(Mutex::new(Vec::new())),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
+    };
+    let user = FakeParticipant {
+        id: ParticipantId::User,
+        decisions: VecDeque::from([Ok(ParticipantDecision::Finish)]),
+        seen_inboxes: Arc::new(Mutex::new(Vec::new())),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
+    };
+    let environment = FakeEnvironment {
+        observation: TestObservation("initial"),
+        terminal: None,
+        immediate_outcomes: VecDeque::new(),
+        submitted_events: VecDeque::new(),
+        submitted_ids: VecDeque::from([submitted_action_id]),
+    };
+    let participants = vec![
+        Box::new(user)
+            as Box<
+                dyn Participant<
+                        Observation = TestObservation,
+                        Action = TestAction,
+                        Outcome = TestOutcome,
+                    >,
+            >,
+        Box::new(agent)
+            as Box<
+                dyn Participant<
+                        Observation = TestObservation,
+                        Action = TestAction,
+                        Outcome = TestOutcome,
+                    >,
+            >,
+    ];
+    let mut orchestrator = Orchestrator::from_participants(participants, environment);
+    let mut request = test_request();
+    request.limits.max_blocked_action_wait = Some(std::time::Duration::from_millis(20));
+    request.initial_messages.push(InitialInboxMessage {
+        to: ParticipantId::Agent,
+        from: ParticipantId::User,
+        content: "go".to_owned(),
+    });
+    request.initial_messages.push(InitialInboxMessage {
+        to: ParticipantId::User,
+        from: ParticipantId::Custom("system".to_owned()),
+        content: "done".to_owned(),
+    });
+
+    let result = orchestrator.run(request).await.unwrap();
+
+    assert_eq!(result.finish_reason, FinishReason::BlockedActionWaitExceeded);
 }

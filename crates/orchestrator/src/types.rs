@@ -54,6 +54,7 @@ pub struct RunLimits {
     pub max_messages: usize,
     pub max_failed_actions: Option<usize>,
     pub max_consecutive_failed_actions: Option<usize>,
+    pub max_blocked_action_wait: Option<Duration>,
     pub max_duration: Option<Duration>,
 }
 
@@ -66,6 +67,7 @@ impl Default for RunLimits {
             max_messages: 64,
             max_failed_actions: None,
             max_consecutive_failed_actions: None,
+            max_blocked_action_wait: None,
             max_duration: None,
         }
     }
@@ -112,6 +114,7 @@ pub enum FinishReason {
         total_failures: usize,
         consecutive_failures: usize,
     },
+    BlockedActionWaitExceeded,
     MessageLimitExceeded,
     TimeLimitExceeded,
     ParticipantError {

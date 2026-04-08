@@ -315,6 +315,7 @@ fn finish_reason_name(finish_reason: &FinishReason) -> &'static str {
         FinishReason::AgentLoopStepLimitExceeded { .. } => "agent_loop_step_limit_exceeded",
         FinishReason::ActionLimitExceeded => "action_limit_exceeded",
         FinishReason::FailedActionLimitExceeded { .. } => "failed_action_limit_exceeded",
+        FinishReason::BlockedActionWaitExceeded => "blocked_action_wait_exceeded",
         FinishReason::MessageLimitExceeded => "message_limit_exceeded",
         FinishReason::TimeLimitExceeded => "time_limit_exceeded",
         FinishReason::ParticipantError { .. } => "participant_error",

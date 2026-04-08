@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 use std::time::Instant;
 
 use pera_core::{ActionId, RunId, WorkItemId};
@@ -611,6 +612,7 @@ where
             participants,
             &request.initial_messages,
         );
+        let mut blocked_action_wait_started_at: Option<Instant> = None;
 
         let finish_reason = loop {
             if let Some(reason) = self.enforce_run_limits(&request, &started_at, &counters) {
@@ -638,8 +640,17 @@ where
                 if state.pending_actions.is_empty() {
                     break FinishReason::Deadlocked;
                 }
+                let wait_started =
+                    blocked_action_wait_started_at.get_or_insert_with(Instant::now);
+                if let Some(max_blocked_action_wait) = request.limits.max_blocked_action_wait
+                    && wait_started.elapsed() >= max_blocked_action_wait
+                {
+                    break FinishReason::BlockedActionWaitExceeded;
+                }
+                std::thread::sleep(Duration::from_millis(10));
                 continue;
             };
+            blocked_action_wait_started_at = None;
 
             let participant = &mut state.participants[participant_index];
             let participant_id = participant.id();

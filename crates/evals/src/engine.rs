@@ -117,8 +117,11 @@ impl EvalEngine {
                         instructions: session.loaded_spec.spec.scenario.purpose.clone(),
                     },
                     limits: RunLimits {
+                        max_steps: 256,
                         max_failed_actions: Some(5),
                         max_consecutive_failed_actions: Some(3),
+                        max_blocked_action_wait: Some(std::time::Duration::from_secs(5)),
+                        max_duration: Some(std::time::Duration::from_secs(30)),
                         ..RunLimits::default()
                     },
                     termination_condition: TerminationCondition::AnyOfParticipantsCompletedLoop(

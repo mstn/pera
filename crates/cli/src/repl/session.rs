@@ -116,6 +116,7 @@ pub async fn run_repl(agent_config: AgentConfig) -> Result<(), CliError> {
                     max_messages: usize::MAX,
                     max_failed_actions: None,
                     max_consecutive_failed_actions: None,
+                    max_blocked_action_wait: None,
                     max_duration: None,
                 },
                 termination_condition: TerminationCondition::AnyOfParticipantsFinished(
