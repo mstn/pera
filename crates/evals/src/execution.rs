@@ -42,6 +42,7 @@ pub struct EvalRunResult {
     pub evaluation: EvalResult,
     pub final_agent_message: Option<String>,
     pub trace: Vec<EvalTraceEvent>,
+    pub trajectory: Vec<EvalTrajectoryEvent>,
     pub workspace: EvalRunWorkspace,
 }
 
@@ -53,6 +54,103 @@ pub enum EvalTraceEvent {
     ActionRequested { action: SerializedAction },
     ActionCompleted { outcome: SerializedOutcome },
     ActionFailed { message: String },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EvalTrajectoryEvent {
+    pub sequence: usize,
+    #[serde(flatten)]
+    pub payload: EvalTrajectoryPayload,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum EvalTrajectoryPayload {
+    SessionStarted {
+        task_id: String,
+        instructions: String,
+    },
+    ObservationRecorded,
+    ParticipantMessage {
+        participant: String,
+        content: String,
+    },
+    ActionRequested {
+        participant: String,
+        action: SerializedAction,
+        execution: String,
+    },
+    ActionRunStatus {
+        participant: String,
+        action_id: String,
+        run_id: String,
+        status: EvalTrajectoryActionRunStatus,
+    },
+    ActionScheduled {
+        participant: String,
+        action_id: String,
+        action: SerializedAction,
+        execution: String,
+    },
+    ActionCompleted {
+        participant: String,
+        action_id: String,
+        outcome: SerializedOutcome,
+    },
+    ActionFailed {
+        participant: String,
+        action_id: String,
+        user_message: String,
+        detail: String,
+        origin: String,
+    },
+    ParticipantYielded {
+        participant: String,
+    },
+    ParticipantLoopCompleted {
+        participant: String,
+    },
+    ParticipantFinished {
+        participant: String,
+    },
+    SessionFinished {
+        reason: String,
+    },
+    EvaluationCompleted {
+        passed: bool,
+        score: Option<f64>,
+        summary: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum EvalTrajectoryActionRunStatus {
+    RunSubmitted,
+    RunStarted,
+    ActionEnqueued {
+        engine_action_id: String,
+        skill_name: String,
+        action_name: String,
+    },
+    ActionClaimed {
+        engine_action_id: String,
+        skill_name: String,
+        action_name: String,
+        worker_id: String,
+    },
+    ActionCompleted {
+        engine_action_id: String,
+        skill_name: String,
+        action_name: String,
+    },
+    ActionFailed {
+        engine_action_id: String,
+        skill_name: String,
+        action_name: String,
+        message: String,
+    },
+    RunResumed,
 }
 
 #[derive(Debug, Clone, Serialize)]

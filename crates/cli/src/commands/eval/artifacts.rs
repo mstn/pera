@@ -13,6 +13,7 @@ pub struct RunArtifacts {
     pub resolved_spec_path: PathBuf,
     pub manifest_path: PathBuf,
     pub result_path: PathBuf,
+    pub trajectory_path: PathBuf,
     mode: String,
     spec_path: String,
     overrides: Vec<ManifestOverride>,
@@ -56,6 +57,7 @@ pub fn create_run_artifacts(
     let resolved_spec_path = run_dir.join("spec.resolved.yaml");
     let manifest_path = run_dir.join("run.json");
     let result_path = run_dir.join("result.json");
+    let trajectory_path = run_dir.join("trajectory.jsonl");
 
     let resolved_bytes = serde_yaml::to_string(&loaded.raw).map_err(|error| {
         CliError::UnexpectedStateOwned(format!("failed to serialize resolved eval spec: {error}"))
@@ -78,6 +80,7 @@ pub fn create_run_artifacts(
         resolved_spec_path,
         manifest_path,
         result_path,
+        trajectory_path,
         mode: mode.to_owned(),
         spec_path: spec_path.display().to_string(),
         overrides: manifest_overrides,
@@ -127,6 +130,7 @@ pub fn write_run_result(
         path: artifacts.result_path.clone(),
         source,
     })?;
+    write_trajectory(artifacts, result)?;
     write_run_manifest(artifacts, "completed")
 }
 
@@ -147,6 +151,26 @@ fn write_run_manifest(artifacts: &RunArtifacts, status: &str) -> Result<(), CliE
     })?;
     fs::write(&artifacts.manifest_path, manifest_bytes).map_err(|source| CliError::WriteFile {
         path: artifacts.manifest_path.clone(),
+        source,
+    })
+}
+
+fn write_trajectory(
+    artifacts: &RunArtifacts,
+    result: &EvalRunResult,
+) -> Result<(), CliError> {
+    let mut bytes = Vec::new();
+    for event in &result.trajectory {
+        serde_json::to_writer(&mut bytes, event).map_err(|error| {
+            CliError::UnexpectedStateOwned(format!(
+                "failed to serialize eval trajectory event: {error}"
+            ))
+        })?;
+        bytes.push(b'\n');
+    }
+
+    fs::write(&artifacts.trajectory_path, bytes).map_err(|source| CliError::WriteFile {
+        path: artifacts.trajectory_path.clone(),
         source,
     })
 }

@@ -7,7 +7,8 @@ use pera_orchestrator::{
 
 use crate::error::EvalError;
 use crate::evaluator::{
-    EvalActionAdapter, SpecEvaluator, evaluate_run_criteria, trajectory_trace_events,
+    EvalActionAdapter, SpecEvaluator, evaluate_run_criteria, serialize_trajectory_events,
+    trajectory_trace_events,
 };
 use crate::execution::{EvalPreparation, EvalRunResult, EvalRunWorkspace};
 use crate::overrides::OverrideSet;
@@ -195,6 +196,7 @@ impl EvalEngine {
             evaluation,
             final_agent_message,
             trace,
+            trajectory: serialize_trajectory_events(&result.trajectory, &action_adapter),
             workspace: EvalRunWorkspace {
                 root: run_dir.join("project"),
                 run_dir,

@@ -4,7 +4,10 @@ use pera_orchestrator::{
 };
 use serde_yaml::Value;
 
-use crate::execution::{SerializedAction, SerializedOutcome};
+use crate::execution::{
+    EvalTrajectoryActionRunStatus, EvalTrajectoryEvent, EvalTrajectoryPayload, SerializedAction,
+    SerializedOutcome,
+};
 use crate::spec::{EvalCriterionSpec, EvalExpectedActionSpec, EvalSpec};
 
 pub trait EvalActionAdapter<A, U>: Clone + Send + Sync + 'static {
@@ -200,6 +203,191 @@ where
             _ => None,
         })
         .collect()
+}
+
+pub fn serialize_trajectory_events<T, O, A, U>(
+    trajectory: &Trajectory<O, A, U>,
+    action_adapter: &T,
+) -> Vec<EvalTrajectoryEvent>
+where
+    T: EvalActionAdapter<A, U>,
+{
+    trajectory
+        .events
+        .iter()
+        .enumerate()
+        .map(|(sequence, event)| EvalTrajectoryEvent {
+            sequence,
+            payload: match event {
+                TrajectoryEvent::SessionStarted { task } => EvalTrajectoryPayload::SessionStarted {
+                    task_id: task.id.clone(),
+                    instructions: task.instructions.clone(),
+                },
+                TrajectoryEvent::ObservationRecorded { .. } => {
+                    EvalTrajectoryPayload::ObservationRecorded
+                }
+                TrajectoryEvent::ParticipantMessage {
+                    participant,
+                    content,
+                } => EvalTrajectoryPayload::ParticipantMessage {
+                    participant: serialize_participant_id(participant),
+                    content: content.clone(),
+                },
+                TrajectoryEvent::ActionRequested {
+                    participant,
+                    action,
+                    execution,
+                } => EvalTrajectoryPayload::ActionRequested {
+                    participant: serialize_participant_id(participant),
+                    action: action_adapter.serialize_action(action),
+                    execution: serialize_action_execution(*execution),
+                },
+                TrajectoryEvent::ActionRunStatus {
+                    participant,
+                    action_id,
+                    run_id,
+                    status,
+                } => EvalTrajectoryPayload::ActionRunStatus {
+                    participant: serialize_participant_id(participant),
+                    action_id: action_id.to_string(),
+                    run_id: run_id.to_string(),
+                    status: serialize_action_run_status(status),
+                },
+                TrajectoryEvent::ActionScheduled {
+                    participant,
+                    action_id,
+                    action,
+                    execution,
+                } => EvalTrajectoryPayload::ActionScheduled {
+                    participant: serialize_participant_id(participant),
+                    action_id: action_id.to_string(),
+                    action: action_adapter.serialize_action(action),
+                    execution: serialize_action_execution(*execution),
+                },
+                TrajectoryEvent::ActionCompleted {
+                    participant,
+                    action_id,
+                    outcome,
+                } => EvalTrajectoryPayload::ActionCompleted {
+                    participant: serialize_participant_id(participant),
+                    action_id: action_id.to_string(),
+                    outcome: action_adapter.serialize_outcome(outcome),
+                },
+                TrajectoryEvent::ActionFailed {
+                    participant,
+                    action_id,
+                    error,
+                } => EvalTrajectoryPayload::ActionFailed {
+                    participant: serialize_participant_id(participant),
+                    action_id: action_id.to_string(),
+                    user_message: error.user_message.clone(),
+                    detail: error.detail.clone(),
+                    origin: format!("{:?}", error.origin),
+                },
+                TrajectoryEvent::ParticipantYielded { participant } => {
+                    EvalTrajectoryPayload::ParticipantYielded {
+                        participant: serialize_participant_id(participant),
+                    }
+                }
+                TrajectoryEvent::ParticipantLoopCompleted { participant } => {
+                    EvalTrajectoryPayload::ParticipantLoopCompleted {
+                        participant: serialize_participant_id(participant),
+                    }
+                }
+                TrajectoryEvent::ParticipantFinished { participant } => {
+                    EvalTrajectoryPayload::ParticipantFinished {
+                        participant: serialize_participant_id(participant),
+                    }
+                }
+                TrajectoryEvent::SessionFinished { reason } => {
+                    EvalTrajectoryPayload::SessionFinished {
+                        reason: format!("{:?}", reason),
+                    }
+                }
+                TrajectoryEvent::EvaluationCompleted { result } => {
+                    EvalTrajectoryPayload::EvaluationCompleted {
+                        passed: result.passed,
+                        score: result.score,
+                        summary: result.summary.clone(),
+                    }
+                }
+            },
+        })
+        .collect()
+}
+
+fn serialize_participant_id(participant: &ParticipantId) -> String {
+    match participant {
+        ParticipantId::Agent => "agent".to_owned(),
+        ParticipantId::User => "user".to_owned(),
+        ParticipantId::Custom(value) => value.clone(),
+    }
+}
+
+fn serialize_action_execution(execution: pera_orchestrator::ActionExecution) -> String {
+    match execution {
+        pera_orchestrator::ActionExecution::Immediate => "immediate".to_owned(),
+        pera_orchestrator::ActionExecution::DeferredBlocking => "deferred_blocking".to_owned(),
+        pera_orchestrator::ActionExecution::DeferredNonBlocking => {
+            "deferred_non_blocking".to_owned()
+        }
+    }
+}
+
+fn serialize_action_run_status(
+    status: &pera_orchestrator::ActionRunStatus,
+) -> EvalTrajectoryActionRunStatus {
+    match status {
+        pera_orchestrator::ActionRunStatus::RunSubmitted => {
+            EvalTrajectoryActionRunStatus::RunSubmitted
+        }
+        pera_orchestrator::ActionRunStatus::RunStarted => {
+            EvalTrajectoryActionRunStatus::RunStarted
+        }
+        pera_orchestrator::ActionRunStatus::ActionEnqueued {
+            engine_action_id,
+            skill_name,
+            action_name,
+        } => EvalTrajectoryActionRunStatus::ActionEnqueued {
+            engine_action_id: engine_action_id.to_string(),
+            skill_name: skill_name.clone(),
+            action_name: action_name.clone(),
+        },
+        pera_orchestrator::ActionRunStatus::ActionClaimed {
+            engine_action_id,
+            skill_name,
+            action_name,
+            worker_id,
+        } => EvalTrajectoryActionRunStatus::ActionClaimed {
+            engine_action_id: engine_action_id.to_string(),
+            skill_name: skill_name.clone(),
+            action_name: action_name.clone(),
+            worker_id: worker_id.clone(),
+        },
+        pera_orchestrator::ActionRunStatus::ActionCompleted {
+            engine_action_id,
+            skill_name,
+            action_name,
+        } => EvalTrajectoryActionRunStatus::ActionCompleted {
+            engine_action_id: engine_action_id.to_string(),
+            skill_name: skill_name.clone(),
+            action_name: action_name.clone(),
+        },
+        pera_orchestrator::ActionRunStatus::ActionFailed {
+            engine_action_id,
+            skill_name,
+            action_name,
+            message,
+        } => EvalTrajectoryActionRunStatus::ActionFailed {
+            engine_action_id: engine_action_id.to_string(),
+            skill_name: skill_name.clone(),
+            action_name: action_name.clone(),
+            message: message.clone(),
+        },
+        pera_orchestrator::ActionRunStatus::RunResumed => {
+            EvalTrajectoryActionRunStatus::RunResumed
+        }
+    }
 }
 
 fn matches_action_sequence(
