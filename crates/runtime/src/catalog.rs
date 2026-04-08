@@ -635,6 +635,60 @@ impl FileSystemSkillCatalogLoader {
         let skill = load_catalog_skill(skill_name, skill_version, &profile_dir)?;
         SkillCatalog::from_skills(vec![skill]).map_err(|error| StoreError::new(error.to_string()))
     }
+
+    pub fn load_entries(
+        &self,
+        allowed_catalog_entries: &[(String, String)],
+    ) -> Result<SkillCatalog, StoreError> {
+        let skills_dir = self.root.join("catalog").join("skills");
+        if !skills_dir.exists() {
+            return SkillCatalog::from_skills(Vec::new())
+                .map_err(|error| StoreError::new(error.to_string()));
+        }
+
+        let mut skills = Vec::new();
+        for (skill_name, profile_name) in allowed_catalog_entries {
+            let skill_dir = skills_dir.join(skill_name);
+            if !skill_dir.exists() {
+                return Err(StoreError::new(format!(
+                    "catalog skill '{}' not found at {}",
+                    skill_name,
+                    skill_dir.display()
+                )));
+            }
+
+            let mut matches = Vec::new();
+            for version_entry in read_dir_sorted(&skill_dir)? {
+                if !version_entry.file_type().map_err(io_error)?.is_dir() {
+                    continue;
+                }
+                let profile_dir = version_entry.path().join(profile_name);
+                if !profile_dir.exists() || !profile_dir.is_dir() {
+                    continue;
+                }
+                let skill_version = version_entry.file_name().to_string_lossy().into_owned();
+                matches.push(load_catalog_skill(skill_name, &skill_version, &profile_dir)?);
+            }
+
+            match matches.len() {
+                0 => {
+                    return Err(StoreError::new(format!(
+                        "catalog skill '{}'/profile '{}' not found",
+                        skill_name, profile_name
+                    )));
+                }
+                1 => skills.push(matches.remove(0)),
+                _ => {
+                    return Err(StoreError::new(format!(
+                        "multiple installed versions found for catalog skill '{}'/profile '{}'",
+                        skill_name, profile_name
+                    )));
+                }
+            }
+        }
+
+        SkillCatalog::from_skills(skills).map_err(|error| StoreError::new(error.to_string()))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -654,6 +708,14 @@ impl FileSystemSkillRuntimeLoader {
 
     pub fn load_only(&self, skill_ref: &ActionSkillRef) -> Result<SkillRuntime, StoreError> {
         let catalog = FileSystemSkillCatalogLoader::new(&self.root).load_only(skill_ref)?;
+        SkillRuntime::new(&self.root, catalog)
+    }
+
+    pub fn load_entries(
+        &self,
+        allowed_catalog_entries: &[(String, String)],
+    ) -> Result<SkillRuntime, StoreError> {
+        let catalog = FileSystemSkillCatalogLoader::new(&self.root).load_entries(allowed_catalog_entries)?;
         SkillRuntime::new(&self.root, catalog)
     }
 }
