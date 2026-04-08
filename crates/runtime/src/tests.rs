@@ -42,7 +42,7 @@ impl Interpreter for FakeInterpreter {
 
         if let Some(value) = source.strip_prefix("complete:") {
             return Ok(InterpreterStep::Completed(ExecutionOutput {
-                value: Value::Int(value.parse().unwrap()),
+                value: Some(Value::Int(value.parse().unwrap())),
             }));
         }
 
@@ -69,7 +69,7 @@ impl Interpreter for FakeInterpreter {
         return_value: &Value,
     ) -> Result<InterpreterStep, InterpreterError> {
         Ok(InterpreterStep::Completed(ExecutionOutput {
-            value: return_value.clone(),
+            value: Some(return_value.clone()),
         }))
     }
 }
@@ -201,7 +201,7 @@ fn run_executor_completes_without_external_calls() {
     assert_eq!(
         session.status,
         ExecutionStatus::Completed(ExecutionOutput {
-            value: Value::Int(7)
+            value: Some(Value::Int(7))
         })
     );
 }
@@ -247,7 +247,7 @@ fn run_executor_suspends_and_resumes() {
     assert_eq!(
         resumed.session.status,
         ExecutionStatus::Completed(ExecutionOutput {
-            value: Value::Int(11)
+            value: Some(Value::Int(11))
         })
     );
     assert_eq!(
@@ -352,13 +352,13 @@ async fn execution_engine_manages_multiple_runs() {
     assert_eq!(
         engine.run_status(run_a),
         Some(ExecutionStatus::Completed(ExecutionOutput {
-            value: Value::Int(1),
+            value: Some(Value::Int(1)),
         }))
     );
     assert_eq!(
         engine.run_status(run_b),
         Some(ExecutionStatus::Completed(ExecutionOutput {
-            value: Value::Int(2),
+            value: Some(Value::Int(2)),
         }))
     );
 
@@ -526,7 +526,7 @@ async fn execution_engine_recovers_waiting_runs_from_event_log() {
     )));
     assert!(events.contains(&ExecutionEvent::RunCompleted {
         run_id: recovered_run_id,
-        value: Value::Int(41),
+        value: Some(Value::Int(41)),
     }));
 
     let _ = std::fs::remove_dir_all(root);

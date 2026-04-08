@@ -396,7 +396,7 @@ date.today().isoformat()
 
         match step {
             InterpreterStep::Completed(output) => match output.value {
-                Value::String(value) => assert_eq!(value.len(), 10),
+                Some(Value::String(value)) => assert_eq!(value.len(), 10),
                 other => panic!("unexpected output value: {other:?}"),
             },
             other => panic!("unexpected interpreter step: {other:?}"),
@@ -415,10 +415,71 @@ datetime.now().isoformat()
 
         match step {
             InterpreterStep::Completed(output) => match output.value {
-                Value::String(value) => assert!(value.contains('T')),
+                Some(Value::String(value)) => assert!(value.contains('T')),
                 other => panic!("unexpected output value: {other:?}"),
             },
             other => panic!("unexpected interpreter step: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn statement_only_snippet_has_no_display_value() {
+        let step = run_python(
+            r#"
+x = 1
+"#,
+        )
+        .expect("statement-only snippet should execute successfully");
+
+        match step {
+            InterpreterStep::Completed(output) => assert_eq!(output.value, None),
+            other => panic!("unexpected interpreter step: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn expression_snippet_keeps_display_value() {
+        let step = run_python(
+            r#"
+1 + 2
+"#,
+        )
+        .expect("expression snippet should execute successfully");
+
+        match step {
+            InterpreterStep::Completed(output) => {
+                assert_eq!(output.value, Some(Value::Int(3)));
+            }
+            other => panic!("unexpected interpreter step: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unresolved_function_call_suspends_and_resumes() {
+        let step = run_python(
+            r#"
+ext(41)
+"#,
+        )
+        .expect("unresolved call should suspend");
+
+        let suspension = match step {
+            InterpreterStep::Suspended(suspension) => suspension,
+            other => panic!("expected suspension, got {other:?}"),
+        };
+        assert_eq!(suspension.call.action_name.as_str(), "ext");
+        assert_eq!(suspension.call.positional_arguments, vec![Value::Int(41)]);
+
+        let interpreter = MontyInterpreter::new();
+        let resumed = interpreter
+            .resume(&suspension.snapshot, &Value::Int(99))
+            .expect("resuming suspended call should succeed");
+
+        match resumed {
+            InterpreterStep::Completed(output) => {
+                assert_eq!(output.value, Some(Value::Int(99)));
+            }
+            other => panic!("unexpected interpreter step after resume: {other:?}"),
         }
     }
 
