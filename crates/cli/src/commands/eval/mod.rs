@@ -269,13 +269,20 @@ impl EvalActionAdapter<WorkspaceAction, WorkspaceOutcome> for WorkspaceEvalAdapt
             },
             WorkspaceOutcome::CodeExecuted { language, result } => SerializedOutcome {
                 name: "code_executed".to_owned(),
-                payload: Some(mapping([
-                    ("language", Value::String(language.clone())),
-                    (
-                        "result",
-                        serde_yaml::to_value(result).unwrap_or(Value::Null),
-                    ),
-                ])),
+                payload: Some({
+                    let mut payload = Mapping::new();
+                    payload.insert(
+                        Value::String("language".to_owned()),
+                        Value::String(language.clone()),
+                    );
+                    if let Some(result) = result {
+                        payload.insert(
+                            Value::String("result".to_owned()),
+                            serde_yaml::to_value(result).unwrap_or(Value::Null),
+                        );
+                    }
+                    Value::Mapping(payload)
+                }),
             },
         }
     }

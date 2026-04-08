@@ -238,7 +238,7 @@ fn role_for_participant(participant: &ParticipantId) -> String {
 
 fn action_completed_message(outcome: &WorkspaceOutcome) -> Option<PromptMessage> {
     match outcome {
-        WorkspaceOutcome::CodeExecuted { language, result } => Some(PromptMessage {
+        WorkspaceOutcome::CodeExecuted { language, result } => result.as_ref().map(|result| PromptMessage {
             role: "system".to_owned(),
             content: format!(
                 "Code execution completed.\nLanguage: {language}\nResult:\n```python\n{}\n```",

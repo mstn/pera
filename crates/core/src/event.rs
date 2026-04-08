@@ -39,7 +39,7 @@ pub enum ExecutionEvent {
         message: String,
     },
     RunResumed { run_id: RunId },
-    RunCompleted { run_id: RunId, value: Value },
+    RunCompleted { run_id: RunId, value: Option<Value> },
     RunFailed { run_id: RunId, message: String },
 }
 

@@ -88,8 +88,12 @@ fn progress_to_step(progress: RunProgress<NoLimitTracker>) -> Result<Interpreter
                 progress = resume_os_call(call)?;
             }
             RunProgress::Complete(value) => {
+                let value = match value {
+                    MontyObject::None => None,
+                    other => Some(monty_object_to_value(other)?),
+                };
                 return Ok(InterpreterStep::Completed(ExecutionOutput {
-                    value: monty_object_to_value(value)?,
+                    value,
                 }));
             }
             RunProgress::ResolveFutures(_) => {

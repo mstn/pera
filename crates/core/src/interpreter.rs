@@ -39,7 +39,7 @@ pub struct Suspension {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ExecutionOutput {
-    pub value: Value,
+    pub value: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

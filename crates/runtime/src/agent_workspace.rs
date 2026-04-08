@@ -102,7 +102,7 @@ pub enum AgentWorkspaceAction {
 pub enum AgentWorkspaceOutcome {
     CodeExecuted {
         language: String,
-        result: Value,
+        result: Option<Value>,
     },
     SkillLoaded {
         skill_name: String,
