@@ -8,6 +8,7 @@ anyhow = "1.0"
 async-trait = "0.1"
 async-stream = "0.3"
 futures-util = "0.3"
+pera-canonical = { path = "../canonical" }
 pera-core = { path = "../core" }
 pera-orchestrator = { path = "../orchestrator" }
 pera-runtime = { path = "../runtime" }

@@ -1854,6 +1854,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "futures-util",
+ "pera-canonical",
  "pera-core",
  "pera-orchestrator",
  "pera-runtime",

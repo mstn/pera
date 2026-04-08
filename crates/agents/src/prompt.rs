@@ -1,3 +1,4 @@
+use pera_canonical::render_python_value;
 use pera_orchestrator::{ParticipantId, ParticipantInboxEvent, ParticipantInput, TrajectoryEvent};
 use pera_runtime::{WorkspaceAction, WorkspaceObservation, WorkspaceOutcome};
 
@@ -218,6 +219,14 @@ fn trajectory_message(
             role: role_for_participant(participant),
             content: content.clone(),
         }),
+        TrajectoryEvent::ActionRequested {
+            participant: ParticipantId::Agent,
+            action: WorkspaceAction::ExecuteCode { source, .. },
+            ..
+        } => Some(PromptMessage {
+            role: "assistant".to_owned(),
+            content: format!("```python\n{}\n```", source.trim_end()),
+        }),
         _ => None,
     }
 }
@@ -235,8 +244,8 @@ fn action_completed_message(outcome: &WorkspaceOutcome) -> Option<PromptMessage>
         WorkspaceOutcome::CodeExecuted { language, result } => Some(PromptMessage {
             role: "system".to_owned(),
             content: format!(
-                "Code execution completed.\nLanguage: {language}\nResult:\n{}",
-                serde_json::to_string_pretty(result).unwrap_or_else(|_| format!("{result:?}"))
+                "Code execution completed.\nLanguage: {language}\nResult:\n```python\n{}\n```",
+                render_python_value(result)
             ),
         }),
         WorkspaceOutcome::SkillLoaded { skill_name } => Some(PromptMessage {

@@ -16,6 +16,6 @@ pub use ir::{
 };
 pub use python::{
     CanonicalPythonBindings, CanonicalPythonFunction, CanonicalPythonParam, python_function_name,
-    python_module_name, python_type_name, render_python_stubs,
+    python_module_name, python_type_name, render_python_stubs, render_python_value,
 };
 pub use wit::{CanonicalWitError, load_canonical_world_from_wit};

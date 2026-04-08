@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use pera_core::Value;
+
 use crate::ir::{
     CanonicalField, CanonicalFunctionResult, CanonicalInterface, CanonicalPrimitiveType,
     CanonicalTypeDef, CanonicalTypeDefKind, CanonicalTypeRef, CanonicalVariantCase,
@@ -131,6 +133,46 @@ pub fn python_type_name(name: &str) -> String {
     }
 
     output
+}
+
+pub fn render_python_value(value: &Value) -> String {
+    match value {
+        Value::Null => "None".to_owned(),
+        Value::Bool(value) => {
+            if *value {
+                "True".to_owned()
+            } else {
+                "False".to_owned()
+            }
+        }
+        Value::Int(value) => value.to_string(),
+        Value::String(value) => format!("{value:?}"),
+        Value::List(items) => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(render_python_value)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Value::Map(entries) => format!(
+            "{{{}}}",
+            entries
+                .iter()
+                .map(|(key, value)| format!("{key:?}: {}", render_python_value(value)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Value::Record { name, fields } => format!(
+            "{}({})",
+            python_type_name(name),
+            fields
+                .iter()
+                .map(|(key, value)| format!("{}={}", python_function_name(key), render_python_value(value)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
 }
 
 fn render_python_exports(interface: &CanonicalInterface) -> String {
