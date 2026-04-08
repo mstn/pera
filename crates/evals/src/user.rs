@@ -75,7 +75,7 @@ where
         });
 
         if user_already_spoke {
-            return Ok(ParticipantDecision::Yield);
+            return Ok(ParticipantDecision::Finish);
         }
 
         Ok(ParticipantDecision::CompleteLoop {

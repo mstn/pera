@@ -317,6 +317,13 @@ impl AgentWorkspace {
         self.active_skill_names.insert(skill_name.into());
     }
 
+    pub async fn warm_catalog_skills(&self) -> Result<(), AgentWorkspaceError> {
+        self.skill_runtime
+            .warm_components()
+            .await
+            .map_err(|error| AgentWorkspaceError::new(error.to_string()))
+    }
+
     pub fn deactivate_skill(&mut self, skill_name: &str) {
         self.active_skill_names.remove(skill_name);
     }

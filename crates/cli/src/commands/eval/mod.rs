@@ -124,6 +124,10 @@ impl EvalModeCommand {
         )
             .await
             .map_err(|error| CliError::UnexpectedStateOwned(error.to_string()))?;
+        environment
+            .warm_catalog_skills()
+            .await
+            .map_err(|error| CliError::UnexpectedStateOwned(error.to_string()))?;
         for skill_name in &session.loaded_spec.spec.runtime.active_skills {
             environment.activate_skill(skill_name.clone());
         }
