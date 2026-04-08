@@ -223,6 +223,7 @@ fn trajectory_message(
             role: "assistant".to_owned(),
             content: format!("```python\n{}\n```", source.trim_end()),
         }),
+        TrajectoryEvent::ActionCompleted { outcome, .. } => action_completed_message(outcome),
         TrajectoryEvent::ActionFailed { error, .. } => action_failed_message(error),
         _ => None,
     }
@@ -311,6 +312,7 @@ mod tests {
                 max_messages: 10,
                 max_failed_actions: None,
                 max_consecutive_failed_actions: None,
+                max_blocked_action_wait: None,
                 max_duration: Some(Duration::from_secs(10)),
             },
             observation: WorkspaceObservation {
@@ -392,6 +394,7 @@ mod tests {
                 max_messages: 10,
                 max_failed_actions: None,
                 max_consecutive_failed_actions: None,
+                max_blocked_action_wait: None,
                 max_duration: Some(Duration::from_secs(10)),
             },
             observation: WorkspaceObservation {
@@ -459,6 +462,7 @@ mod tests {
                 max_messages: 10,
                 max_failed_actions: None,
                 max_consecutive_failed_actions: None,
+                max_blocked_action_wait: None,
                 max_duration: Some(Duration::from_secs(10)),
             },
             observation: WorkspaceObservation {
@@ -470,7 +474,7 @@ mod tests {
                 action_id: pera_core::ActionId::generate(),
                 outcome: WorkspaceOutcome::CodeExecuted {
                     language: "python".to_owned(),
-                    result: Value::List(vec![
+                    result: Some(Value::List(vec![
                         Value::Record {
                             name: "meeting".to_owned(),
                             fields: std::collections::BTreeMap::from([
@@ -479,7 +483,7 @@ mod tests {
                             ]),
                         },
                         Value::Bool(true),
-                    ]),
+                    ])),
                 },
             }],
             trajectory: Trajectory {
@@ -499,6 +503,120 @@ mod tests {
         assert!(rendered.content.contains("title=\"Delta Review\""));
         assert!(rendered.content.contains("city=\"Berlin\""));
         assert!(rendered.content.contains("True"));
+    }
+
+    #[test]
+    fn prompt_transcript_persists_code_execution_results_as_system_messages() {
+        let builder = ProviderBackedPromptBuilder;
+        let input = ParticipantInput {
+            run_id: RunId::generate(),
+            agent_loop_id: WorkItemId::generate(),
+            agent_loop_iteration: 3,
+            participant: ParticipantId::Agent,
+            work_item: Some(pera_orchestrator::WorkItem {
+                id: WorkItemId::generate(),
+                from: ParticipantId::User,
+                content: "Check something".to_owned(),
+            }),
+            task: TaskSpec {
+                id: "task".to_owned(),
+                instructions: "Do the work".to_owned(),
+            },
+            limits: RunLimits {
+                max_steps: 10,
+                max_steps_per_agent_loop: 10,
+                max_actions: 10,
+                max_messages: 10,
+                max_failed_actions: None,
+                max_consecutive_failed_actions: None,
+                max_blocked_action_wait: None,
+                max_duration: Some(Duration::from_secs(10)),
+            },
+            observation: WorkspaceObservation {
+                available_tools: vec![],
+                available_skills: vec![],
+                active_skills: vec![],
+            },
+            inbox: vec![],
+            trajectory: Trajectory {
+                run_id: RunId::generate(),
+                events: vec![TrajectoryEvent::ActionCompleted {
+                    participant: ParticipantId::Agent,
+                    action_id: pera_core::ActionId::generate(),
+                    outcome: WorkspaceOutcome::CodeExecuted {
+                        language: "python".to_owned(),
+                        result: Some(Value::List(vec![
+                            Value::Int(1),
+                            Value::String("two".to_owned()),
+                        ])),
+                    },
+                }],
+            },
+        };
+
+        let context = builder.build_context(&input);
+        let rendered = context.transcript
+            .iter()
+            .find(|message| message.content.contains("Code execution completed."))
+            .expect("expected persisted code execution result in transcript");
+
+        assert_eq!(rendered.role, "system");
+        assert!(rendered.content.contains("```python"));
+        assert!(rendered.content.contains("[1, \"two\"]"));
+    }
+
+    #[test]
+    fn prompt_transcript_persists_non_code_action_completions() {
+        let builder = ProviderBackedPromptBuilder;
+        let input = ParticipantInput {
+            run_id: RunId::generate(),
+            agent_loop_id: WorkItemId::generate(),
+            agent_loop_iteration: 3,
+            participant: ParticipantId::Agent,
+            work_item: Some(pera_orchestrator::WorkItem {
+                id: WorkItemId::generate(),
+                from: ParticipantId::User,
+                content: "Check something".to_owned(),
+            }),
+            task: TaskSpec {
+                id: "task".to_owned(),
+                instructions: "Do the work".to_owned(),
+            },
+            limits: RunLimits {
+                max_steps: 10,
+                max_steps_per_agent_loop: 10,
+                max_actions: 10,
+                max_messages: 10,
+                max_failed_actions: None,
+                max_consecutive_failed_actions: None,
+                max_blocked_action_wait: None,
+                max_duration: Some(Duration::from_secs(10)),
+            },
+            observation: WorkspaceObservation {
+                available_tools: vec![],
+                available_skills: vec![],
+                active_skills: vec![],
+            },
+            inbox: vec![],
+            trajectory: Trajectory {
+                run_id: RunId::generate(),
+                events: vec![TrajectoryEvent::ActionCompleted {
+                    participant: ParticipantId::Agent,
+                    action_id: pera_core::ActionId::generate(),
+                    outcome: WorkspaceOutcome::SkillLoaded {
+                        skill_name: "travel-policy".to_owned(),
+                    },
+                }],
+            },
+        };
+
+        let context = builder.build_context(&input);
+        let rendered = context.transcript
+            .iter()
+            .find(|message| message.content.contains("Skill loaded: travel-policy"))
+            .expect("expected persisted skill completion in transcript");
+
+        assert_eq!(rendered.role, "system");
     }
 
     #[test]
@@ -525,6 +643,7 @@ mod tests {
                 max_messages: 10,
                 max_failed_actions: None,
                 max_consecutive_failed_actions: None,
+                max_blocked_action_wait: None,
                 max_duration: Some(Duration::from_secs(10)),
             },
             observation: WorkspaceObservation {
