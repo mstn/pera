@@ -228,7 +228,7 @@ where
     }
 
     fn start_next_loop(&mut self) -> Option<&mut ActiveLoop<O, A, U>> {
-        let initial_message = startable_message(&self.pending_inbox)?;
+        let initial_message = take_startable_message(&mut self.pending_inbox)?;
         let participant = self
             .participant
             .take()
@@ -1123,6 +1123,16 @@ fn startable_message<A, U>(inbox: &[ParticipantInboxEvent<A, U>]) -> Option<Init
         }),
         _ => None,
     })
+}
+
+fn take_startable_message<A, U>(inbox: &mut Vec<ParticipantInboxEvent<A, U>>) -> Option<InitialMessage> {
+    let message_index = inbox.iter().position(|event| {
+        matches!(event, ParticipantInboxEvent::Message { .. })
+    })?;
+    match inbox.remove(message_index) {
+        ParticipantInboxEvent::Message { from, content } => Some(InitialMessage { from, content }),
+        _ => unreachable!("message index must point to a startable message"),
+    }
 }
 
 fn termination_condition_met(

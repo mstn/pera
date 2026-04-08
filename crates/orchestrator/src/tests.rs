@@ -395,7 +395,6 @@ async fn orchestrator_delivers_deferred_completion_via_inbox() {
 
 #[tokio::test]
 async fn orchestrator_starts_a_new_agent_loop_for_a_second_user_message() {
-    let seen_inboxes = Arc::new(Mutex::new(Vec::new()));
     let seen_work_items = Arc::new(Mutex::new(Vec::new()));
     let agent = FakeParticipant {
         id: ParticipantId::Agent,
@@ -408,7 +407,7 @@ async fn orchestrator_starts_a_new_agent_loop_for_a_second_user_message() {
             }),
             Ok(ParticipantDecision::Finish),
         ]),
-        seen_inboxes: Arc::clone(&seen_inboxes),
+        seen_inboxes: Arc::new(Mutex::new(Vec::new())),
         seen_work_items: Arc::clone(&seen_work_items),
     };
     let user = FakeParticipant {
@@ -468,23 +467,7 @@ async fn orchestrator_starts_a_new_agent_loop_for_a_second_user_message() {
             participant: ParticipantId::User,
         }
     );
-    let seen_inboxes = seen_inboxes.lock().unwrap();
     let seen_work_items = seen_work_items.lock().unwrap();
-    assert_eq!(seen_inboxes.len(), 2);
-    assert!(seen_inboxes[0].iter().any(|event| matches!(
-        event,
-        ParticipantInboxEvent::Message {
-            from: ParticipantId::User,
-            content,
-        } if content == "request 1"
-    )));
-    assert!(seen_inboxes[1].iter().any(|event| matches!(
-        event,
-        ParticipantInboxEvent::Message {
-            from: ParticipantId::User,
-            content,
-        } if content == "request 2"
-    )));
     assert_eq!(
         seen_work_items.as_slice(),
         &[
@@ -818,7 +801,8 @@ async fn orchestrator_can_terminate_when_a_specific_participant_completes_a_loop
 
 #[tokio::test]
 async fn orchestrator_routes_participant_message_to_other_mailboxes() {
-    let seen_agent = Arc::new(Mutex::new(Vec::new()));
+    let seen_agent_inboxes = Arc::new(Mutex::new(Vec::new()));
+    let seen_agent_work_items = Arc::new(Mutex::new(Vec::new()));
     let seen_user = Arc::new(Mutex::new(Vec::new()));
     let user = FakeParticipant {
         id: ParticipantId::User,
@@ -834,8 +818,8 @@ async fn orchestrator_routes_participant_message_to_other_mailboxes() {
     let agent = FakeParticipant {
         id: ParticipantId::Agent,
         decisions: VecDeque::from([Ok(ParticipantDecision::Finish)]),
-        seen_inboxes: Arc::clone(&seen_agent),
-        seen_work_items: Arc::new(Mutex::new(Vec::new())),
+        seen_inboxes: Arc::clone(&seen_agent_inboxes),
+        seen_work_items: Arc::clone(&seen_agent_work_items),
     };
     let environment = FakeEnvironment {
         observation: TestObservation("initial"),
@@ -871,23 +855,21 @@ async fn orchestrator_routes_participant_message_to_other_mailboxes() {
     });
 
     let result = orchestrator.run(request).await.unwrap();
-    let agent_inboxes = seen_agent.lock().unwrap();
+    let agent_work_items = seen_agent_work_items.lock().unwrap();
 
     assert!(result.trajectory.events.iter().any(|event| matches!(
         event,
         TrajectoryEvent::ParticipantMessage { participant, content }
             if *participant == ParticipantId::User && content == "hi"
     )));
-    assert!(
-        agent_inboxes
-            .iter()
-            .any(|inbox| inbox.iter().any(|event| matches!(
-                event,
-                ParticipantInboxEvent::Message { from, content }
-                    if *from == ParticipantId::User
-                        && content == "hi"
-            )))
-    );
+    assert!(matches!(
+        agent_work_items.as_slice(),
+        [Some(WorkItem {
+            from: ParticipantId::User,
+            content,
+            ..
+        })] if content == "hi"
+    ));
 }
 
 #[tokio::test]
@@ -1036,4 +1018,79 @@ async fn orchestrator_times_out_when_blocked_action_never_completes() {
     let result = orchestrator.run(request).await.unwrap();
 
     assert_eq!(result.finish_reason, FinishReason::BlockedActionWaitExceeded);
+}
+
+#[tokio::test]
+async fn completed_user_loop_does_not_restart_while_agent_is_blocked() {
+    let submitted_action_id = ActionId::parse_str("00000000-0000-0000-0000-000000000126").unwrap();
+    let seen_user_work_items = Arc::new(Mutex::new(Vec::new()));
+    let agent = FakeParticipant {
+        id: ParticipantId::Agent,
+        decisions: VecDeque::from([Ok(ParticipantDecision::Action {
+            message: None,
+            action: TestAction("blocking"),
+            execution: ActionExecution::DeferredBlocking,
+        })]),
+        seen_inboxes: Arc::new(Mutex::new(Vec::new())),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
+    };
+    let user = FakeParticipant {
+        id: ParticipantId::User,
+        decisions: VecDeque::from([
+            Ok(ParticipantDecision::CompleteLoop {
+                content: "start planning".to_owned(),
+            }),
+            Ok(ParticipantDecision::Yield),
+        ]),
+        seen_inboxes: Arc::new(Mutex::new(Vec::new())),
+        seen_work_items: Arc::clone(&seen_user_work_items),
+    };
+    let environment = FakeEnvironment {
+        observation: TestObservation("initial"),
+        terminal: None,
+        immediate_outcomes: VecDeque::new(),
+        submitted_events: VecDeque::new(),
+        submitted_ids: VecDeque::from([submitted_action_id]),
+    };
+    let participants = vec![
+        Box::new(user)
+            as Box<
+                dyn Participant<
+                        Observation = TestObservation,
+                        Action = TestAction,
+                        Outcome = TestOutcome,
+                    >,
+            >,
+        Box::new(agent)
+            as Box<
+                dyn Participant<
+                        Observation = TestObservation,
+                        Action = TestAction,
+                        Outcome = TestOutcome,
+                    >,
+            >,
+    ];
+    let mut orchestrator = Orchestrator::from_participants(participants, environment);
+    let mut request = test_request();
+    request.limits.max_steps_per_agent_loop = 1;
+    request.limits.max_blocked_action_wait = Some(std::time::Duration::from_millis(20));
+    request.initial_messages.push(InitialInboxMessage {
+        to: ParticipantId::User,
+        from: ParticipantId::Custom("system".to_owned()),
+        content: "start".to_owned(),
+    });
+
+    let result = orchestrator.run(request).await.unwrap();
+
+    assert_eq!(result.finish_reason, FinishReason::BlockedActionWaitExceeded);
+    let work_items = seen_user_work_items.lock().unwrap();
+    assert_eq!(work_items.len(), 1);
+    assert!(matches!(
+        work_items.as_slice(),
+        [Some(WorkItem {
+            from: ParticipantId::Custom(from),
+            content,
+            ..
+        })] if from == "system" && content == "start"
+    ));
 }
