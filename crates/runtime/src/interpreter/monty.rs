@@ -269,6 +269,11 @@ fn value_to_monty_object(value: &Value) -> Result<MontyObject, InterpreterError>
             .map(value_to_monty_object)
             .collect::<Result<Vec<_>, _>>()
             .map(MontyObject::List),
+        Value::Tuple(items) => items
+            .iter()
+            .map(value_to_monty_object)
+            .collect::<Result<Vec<_>, _>>()
+            .map(MontyObject::Tuple),
         Value::Map(entries) => entries
             .iter()
             .map(|(key, value)| {
@@ -315,7 +320,7 @@ fn monty_object_to_value(value: MontyObject) -> Result<Value, InterpreterError> 
             .into_iter()
             .map(monty_object_to_value)
             .collect::<Result<Vec<_>, _>>()
-            .map(Value::List),
+            .map(Value::Tuple),
         MontyObject::NamedTuple {
             type_name,
             field_names,
@@ -663,7 +668,7 @@ trip
     }
 
     #[test]
-    fn normalizes_tuple_as_list() {
+    fn normalizes_tuple_as_tuple() {
         let value = monty_object_to_value(MontyObject::Tuple(vec![
             MontyObject::Int(1),
             MontyObject::String("two".to_owned()),
@@ -672,7 +677,7 @@ trip
 
         assert_eq!(
             value,
-            Value::List(vec![Value::Int(1), Value::String("two".to_owned())])
+            Value::Tuple(vec![Value::Int(1), Value::String("two".to_owned())])
         );
     }
 

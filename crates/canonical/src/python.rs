@@ -155,6 +155,16 @@ pub fn render_python_value(value: &Value) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        Value::Tuple(items) => {
+            let rendered = items
+                .iter()
+                .map(render_python_value)
+                .collect::<Vec<_>>();
+            match rendered.as_slice() {
+                [single] => format!("({},)", single),
+                _ => format!("({})", rendered.join(", ")),
+            }
+        }
         Value::Map(entries) => format!(
             "{{{}}}",
             entries
@@ -427,6 +437,10 @@ fn split_doc_lines(docs: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use pera_core::Value;
+
     use crate::load_canonical_world_from_wit;
 
     #[test]
@@ -449,5 +463,25 @@ mod tests {
         assert!(rendered.contains(
             r#"    """Resolve a mission, record the outcome, and release any assigned gadgets."""#
         ));
+    }
+
+    #[test]
+    fn render_python_value_preserves_tuple_syntax() {
+        let rendered = super::render_python_value(&Value::Tuple(vec![
+            Value::List(vec![Value::String("meeting".to_owned())]),
+            Value::List(vec![]),
+            Value::Record {
+                name: "trip-policy".to_owned(),
+                fields: BTreeMap::from([(
+                    "shared_room_allowed".to_owned(),
+                    Value::Bool(true),
+                )]),
+            },
+        ]));
+
+        assert_eq!(
+            rendered,
+            "([\"meeting\"], [], TripPolicy(shared_room_allowed=True))"
+        );
     }
 }

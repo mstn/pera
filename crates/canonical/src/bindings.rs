@@ -568,13 +568,13 @@ fn lower_model_value(
             _ => lower_model_value(registry, skill_name, inner, value),
         },
         CanonicalTypeRef::Tuple(items) => match value {
-            Value::List(values) if values.len() == items.len() => items
+            Value::Tuple(values) if values.len() == items.len() => items
                 .iter()
                 .zip(values.iter())
                 .map(|(ty, value)| lower_model_value(registry, skill_name, ty, value))
                 .collect::<Result<Vec<_>, _>>()
                 .map(CanonicalValue::Tuple),
-            _ => Err(BindingError::new("expected tuple-compatible list")),
+            _ => Err(BindingError::new("expected tuple")),
         },
         CanonicalTypeRef::Result { .. } => Err(BindingError::new(
             "model result values are not supported as direct inputs",
@@ -657,7 +657,7 @@ fn lift_model_result(
                             lift_model_value(registry, skill_name, &param.ty, item)
                         })
                         .collect::<Result<Vec<_>, _>>()
-                        .map(Value::List),
+                        .map(Value::Tuple),
                     _ => Err(BindingError::new("expected tuple result")),
                 }
             }
@@ -727,7 +727,7 @@ fn lift_model_value(
                 .zip(values.iter())
                 .map(|(ty, value)| lift_model_value(registry, skill_name, ty, value))
                 .collect::<Result<Vec<_>, _>>()
-                .map(Value::List),
+                .map(Value::Tuple),
             _ => Err(BindingError::new("expected canonical tuple")),
         },
         CanonicalTypeRef::Result { .. } => Err(BindingError::new(

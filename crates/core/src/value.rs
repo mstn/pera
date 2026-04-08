@@ -7,6 +7,7 @@ pub enum Value {
     Int(i64),
     String(String),
     List(Vec<Value>),
+    Tuple(Vec<Value>),
     Map(BTreeMap<String, Value>),
     Record {
         name: String,
