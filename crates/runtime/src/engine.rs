@@ -336,13 +336,14 @@ where
                     worker_id,
                 })?;
             }
-            ActionExecutionUpdate::Completed(result) => {
+            ActionExecutionUpdate::Completed { result, diagnostics } => {
                 let action = self.store.load_action(result.action_id)?;
                 let session = self.store.load_run(action.request.run_id)?;
                 let transition = self.run_executor.complete_action(
                     session,
                     action.request,
                     result,
+                    diagnostics,
                     pera_core::ActionId::generate,
                 )?;
                 self.apply_transition(transition).await?;
@@ -353,6 +354,7 @@ where
                 skill_name,
                 action_name,
                 message,
+                diagnostics,
             } => {
                 self.publisher.publish(ExecutionEvent::ActionFailed {
                     run_id,
@@ -361,6 +363,12 @@ where
                     action_name,
                     message: message.clone(),
                 })?;
+                let mut action = self.store.load_action(action_id)?;
+                action.status = pera_core::ActionStatus::Failed {
+                    message: message.clone(),
+                };
+                action.diagnostics = diagnostics;
+                self.store.save_action(action)?;
                 let session = self.store.load_run(run_id)?;
                 let transition = self.run_executor.fail_run(session, message);
                 self.apply_transition(transition).await?;
@@ -392,13 +400,23 @@ where
                     action_name,
                     message: message.clone(),
                 })?;
+                let mut action = self.store.load_action(action_id)?;
+                action.status = pera_core::ActionStatus::Failed {
+                    message: message.clone(),
+                };
+                self.store.save_action(action)?;
                 let session = self.store.load_run(run_id)?;
                 let transition = self.run_executor.fail_run(session, message);
                 self.apply_transition(transition).await?;
             }
-            ActionExecutionUpdate::Completed(result) => {
-                let action = self.store.load_action(result.action_id)?;
+            ActionExecutionUpdate::Completed { result, diagnostics } => {
+                let mut action = self.store.load_action(result.action_id)?;
                 let run_id = action.request.run_id;
+                action.status = pera_core::ActionStatus::Failed {
+                    message: message.clone(),
+                };
+                action.diagnostics = diagnostics;
+                self.store.save_action(action.clone())?;
                 self.publisher.publish(ExecutionEvent::ActionFailed {
                     run_id,
                     action_id: result.action_id,
@@ -416,6 +434,7 @@ where
                 skill_name,
                 action_name,
                 message: action_message,
+                diagnostics,
             } => {
                 self.publisher.publish(ExecutionEvent::ActionFailed {
                     run_id,
@@ -424,6 +443,12 @@ where
                     action_name,
                     message: action_message,
                 })?;
+                let mut action = self.store.load_action(action_id)?;
+                action.status = pera_core::ActionStatus::Failed {
+                    message: message.clone(),
+                };
+                action.diagnostics = diagnostics;
+                self.store.save_action(action)?;
                 let session = self.store.load_run(run_id)?;
                 let transition = self.run_executor.fail_run(session, message);
                 self.apply_transition(transition).await?;

@@ -5,7 +5,10 @@ use std::time::Duration;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use pera_core::{ActionId, ActionRequest, ActionResult, CanonicalValue, RunId};
+use pera_core::{
+    ActionId, ActionInvocationDiagnostics, ActionInvocationError, ActionInvocationEvent,
+    ActionRequest, ActionResult, CanonicalValue, RunId,
+};
 use tokio::sync::mpsc;
 use tokio::time;
 use tracing::{debug, error, trace};
@@ -51,13 +54,17 @@ pub enum ActionExecutionUpdate {
         action_name: String,
         worker_id: String,
     },
-    Completed(ActionResult),
+    Completed {
+        result: ActionResult,
+        diagnostics: Option<ActionInvocationDiagnostics>,
+    },
     Failed {
         run_id: RunId,
         action_id: ActionId,
         skill_name: String,
         action_name: String,
         message: String,
+        diagnostics: Option<ActionInvocationDiagnostics>,
     },
 }
 
@@ -137,19 +144,38 @@ where
                 Err(_) => ActionExecutionUpdate::Failed {
                     run_id,
                     action_id,
-                    skill_name,
-                    action_name,
+                    skill_name: skill_name.clone(),
+                    action_name: action_name.clone(),
                     message: format!(
                         "action execution timed out after {}s",
                         self.execution_timeout.as_secs()
                     ),
+                    diagnostics: Some(ActionInvocationDiagnostics {
+                        canonical_action_id: format!("{skill_name}.{action_name}"),
+                        export_name: "<worker-timeout>".to_owned(),
+                        status: "failed".to_owned(),
+                        current_phase: "timed_out_in_worker".to_owned(),
+                        elapsed_ms: self.execution_timeout.as_millis(),
+                        events: vec![ActionInvocationEvent {
+                            source: "runtime timeout".to_owned(),
+                            elapsed_ms: self.execution_timeout.as_millis(),
+                            message: format!(
+                                "action execution exceeded timeout of {}s",
+                                self.execution_timeout.as_secs()
+                            ),
+                        }],
+                        error: Some(ActionInvocationError {
+                            source: "runtime timeout".to_owned(),
+                            message: "worker execution timeout".to_owned(),
+                        }),
+                    }),
                 },
             };
             debug!(
                 worker_id = %self.worker_id,
                 update_kind = match &update {
                     ActionExecutionUpdate::Claimed { .. } => "claimed",
-                    ActionExecutionUpdate::Completed(_) => "completed",
+                    ActionExecutionUpdate::Completed { .. } => "completed",
                     ActionExecutionUpdate::Failed { .. } => "failed",
                 },
                 "worker produced update",
@@ -176,7 +202,7 @@ impl WasmtimeComponentActionExecutor {
         runtime: &SkillRuntime,
         action: &ActionRequest,
         instance: Arc<Mutex<WarmInstance>>,
-    ) -> Result<CanonicalValue, ActionProcessorError> {
+    ) -> Result<(CanonicalValue, ActionInvocationDiagnostics), ActionProcessorError> {
         let started_at = Instant::now();
         let canonical_action_id = format!(
             "{}.{}",
@@ -211,6 +237,18 @@ impl WasmtimeComponentActionExecutor {
             canonical_action = %wasm_invocation.locator.canonical_action_id,
             "action start",
         );
+        {
+            let mut instance = instance
+                .lock()
+                .map_err(|_| ActionProcessorError::new("warm instance mutex is poisoned"))?;
+            instance.store.data_mut().begin_invocation(InvocationContext::new(
+                action.run_id,
+                action.id,
+                wasm_invocation.locator.canonical_action_id.clone(),
+                wasm_invocation.export_name.clone(),
+            ));
+            instance.store.data_mut().set_phase("starting");
+        }
 
         let lock_started_at = Instant::now();
         let mut instance = instance
@@ -222,6 +260,7 @@ impl WasmtimeComponentActionExecutor {
             elapsed_ms = lock_started_at.elapsed().as_millis(),
             "instance lock acquired",
         );
+        instance.store.data_mut().set_phase("instance_lock_acquired");
         let function_export = instance
             .function_exports
             .get(&wasm_invocation.export_name)
@@ -248,6 +287,7 @@ impl WasmtimeComponentActionExecutor {
             elapsed_ms = lookup_started_at.elapsed().as_millis(),
             "wasmtime function resolved",
         );
+        instance.store.data_mut().set_phase("function_resolved");
 
         let mut results = match &action_definition.result {
             pera_canonical::CanonicalFunctionResult::None => Vec::new(),
@@ -256,12 +296,14 @@ impl WasmtimeComponentActionExecutor {
         let is_first_call = instance.invocation_count == 0;
         instance.invocation_count += 1;
         let call_started_at = Instant::now();
-        instance.store.data_mut().begin_invocation(InvocationContext::new(
-            action.run_id,
-            action.id,
-            wasm_invocation.locator.canonical_action_id.clone(),
-            wasm_invocation.export_name.clone(),
-        ));
+        debug!(
+            run_id = %action.run_id,
+            action_id = %action.id,
+            skill = %action.skill.skill_name,
+            export = %wasm_invocation.export_name,
+            "entering wasmtime func.call",
+        );
+        instance.store.data_mut().set_phase("calling_component");
         func.call(
             &mut instance.store,
             &wasm_invocation.arguments,
@@ -270,11 +312,21 @@ impl WasmtimeComponentActionExecutor {
         .map_err(|error| {
             instance.store.data_mut().finish_invocation_failure();
             let invocation = instance.store.data().invocation().clone();
+            error!(
+                run_id = %action.run_id,
+                action_id = %action.id,
+                skill = %action.skill.skill_name,
+                export = %wasm_invocation.export_name,
+                elapsed_ms = call_started_at.elapsed().as_millis(),
+                invocation_status = ?invocation.status,
+                "wasmtime func.call failed",
+            );
             ActionProcessorError::new(format_component_call_error(
                 &invocation,
                 &error,
             ))
         })?;
+        instance.store.data_mut().set_phase("component_call_completed");
         instance.store.data_mut().finish_invocation_success();
         debug!(
             run_id = %action.run_id,
@@ -300,6 +352,7 @@ impl WasmtimeComponentActionExecutor {
             _ => Val::Tuple(results),
         };
         let decode_started_at = Instant::now();
+        instance.store.data_mut().set_phase("decoding_result");
         let canonical_value = runtime
             .catalog()
             .wasmtime_adapter()
@@ -319,6 +372,7 @@ impl WasmtimeComponentActionExecutor {
             elapsed_ms = decode_started_at.elapsed().as_millis(),
             "wasmtime result decoded",
         );
+        instance.store.data_mut().set_phase("decoded_result");
         debug!(
             run_id = %action.run_id,
             action_id = %action.id,
@@ -327,7 +381,33 @@ impl WasmtimeComponentActionExecutor {
             elapsed_ms = started_at.elapsed().as_millis(),
             "action complete",
         );
-        Ok(canonical_value)
+        let invocation = instance.store.data().invocation().clone();
+        Ok((canonical_value, action_invocation_diagnostics(&invocation)))
+    }
+}
+
+fn action_invocation_diagnostics(
+    invocation: &InvocationContext,
+) -> ActionInvocationDiagnostics {
+    ActionInvocationDiagnostics {
+        canonical_action_id: invocation.canonical_action_id.clone(),
+        export_name: invocation.export_name.clone(),
+        status: format!("{:?}", invocation.status).to_lowercase(),
+        current_phase: invocation.current_phase.clone(),
+        elapsed_ms: invocation.started_at.elapsed().as_millis(),
+        events: invocation
+            .events
+            .iter()
+            .map(|event| ActionInvocationEvent {
+                source: format_event_source(&event.source),
+                elapsed_ms: event.elapsed_ms,
+                message: event.message.clone(),
+            })
+            .collect(),
+        error: invocation.error.as_ref().map(|error| ActionInvocationError {
+            source: format_error_source(&error.source),
+            message: error.message.clone(),
+        }),
     }
 }
 
@@ -346,7 +426,14 @@ fn format_component_call_error(
             invocation
                 .events
                 .iter()
-                .map(|event| format!("{}: {}", format_event_source(&event.source), event.message))
+                .map(|event| {
+                    format!(
+                        "[+{}ms] {}: {}",
+                        event.elapsed_ms,
+                        format_event_source(&event.source),
+                        event.message
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join("\n"),
         )
@@ -369,11 +456,12 @@ fn format_component_call_error(
     }
 
     message.push_str(&format!(
-        "\n\nInvocation:\nrun_id={}\naction_id={}\nexport={}\nstatus={:?}\nelapsed_ms={}",
+        "\n\nInvocation:\nrun_id={}\naction_id={}\nexport={}\nstatus={:?}\nphase={}\nelapsed_ms={}",
         invocation.run_id,
         invocation.action_id,
         invocation.export_name,
         invocation.status,
+        invocation.current_phase,
         invocation.started_at.elapsed().as_millis()
     ));
 
@@ -416,6 +504,7 @@ impl ActionExecutor for WasmtimeComponentActionExecutor {
                     skill_name: action.skill.skill_name.clone(),
                     action_name: action.invocation.action_name.as_str().to_owned(),
                     message: error.to_string(),
+                    diagnostics: None,
                 };
             }
         };
@@ -446,9 +535,12 @@ impl ActionExecutor for WasmtimeComponentActionExecutor {
             "action task joined",
         );
         match result {
-            Ok(Ok(value)) => {
+            Ok(Ok((value, diagnostics))) => {
                 debug!(run_id = %run_id, action_id = %action_id, "action executor returning completed");
-                ActionExecutionUpdate::Completed(ActionResult { action_id, value })
+                ActionExecutionUpdate::Completed {
+                    result: ActionResult { action_id, value },
+                    diagnostics: Some(diagnostics),
+                }
             }
             Ok(Err(error)) => {
                 runtime.evict_warm_instance(&action_skill).await;
@@ -459,6 +551,7 @@ impl ActionExecutor for WasmtimeComponentActionExecutor {
                     skill_name: action_skill.skill_name.clone(),
                     action_name: action_name.clone(),
                     message: error.to_string(),
+                    diagnostics: None,
                 }
             }
             Err(error) => {
@@ -469,6 +562,7 @@ impl ActionExecutor for WasmtimeComponentActionExecutor {
                     skill_name: action_skill.skill_name.clone(),
                     action_name,
                     message: error.to_string(),
+                    diagnostics: None,
                 }
             }
         }

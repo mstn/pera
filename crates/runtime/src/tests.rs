@@ -94,16 +94,20 @@ impl ActionExecutor for EchoActionExecutor {
         };
 
         match result {
-            Ok(value) => ActionExecutionUpdate::Completed(ActionResult {
-                action_id: action.id,
-                value,
-            }),
+            Ok(value) => ActionExecutionUpdate::Completed {
+                result: ActionResult {
+                    action_id: action.id,
+                    value,
+                },
+                diagnostics: None,
+            },
             Err(error) => ActionExecutionUpdate::Failed {
                 run_id: action.run_id,
                 action_id: action.id,
                 skill_name: action.skill.skill_name.clone(),
                 action_name: action.invocation.action_name.as_str().to_owned(),
                 message: error.to_string(),
+                diagnostics: None,
             },
         }
     }
@@ -124,6 +128,7 @@ impl ActionExecutor for RejectingActionExecutor {
                 "no action processor is configured for '{}'",
                 action.invocation.action_name.as_str()
             ),
+            diagnostics: None,
         }
     }
 }
@@ -234,6 +239,7 @@ fn run_executor_suspends_and_resumes() {
                 action_id,
                 value: CanonicalValue::S64(11),
             },
+            None,
             || next_action_id("00000000-0000-0000-0000-000000000002"),
         )
         .unwrap();

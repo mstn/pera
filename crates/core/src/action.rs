@@ -32,13 +32,42 @@ pub struct ActionResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ActionInvocationDiagnostics {
+    pub canonical_action_id: String,
+    pub export_name: String,
+    pub status: String,
+    pub current_phase: String,
+    pub elapsed_ms: u128,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<ActionInvocationEvent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<ActionInvocationError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ActionInvocationEvent {
+    pub source: String,
+    pub elapsed_ms: u128,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ActionInvocationError {
+    pub source: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ActionStatus {
     Pending,
     Completed(ActionResult),
+    Failed { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ActionRecord {
     pub request: ActionRequest,
     pub status: ActionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<ActionInvocationDiagnostics>,
 }

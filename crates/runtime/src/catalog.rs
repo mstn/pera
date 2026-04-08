@@ -72,8 +72,19 @@ impl WasmHostState {
     ) {
         self.invocation.events.push(InvocationEvent {
             source,
+            elapsed_ms: self.invocation.started_at.elapsed().as_millis(),
             message: message.into(),
         });
+    }
+
+    pub(crate) fn set_phase(&mut self, phase: impl Into<String>) {
+        self.invocation.current_phase = phase.into();
+        self.record_event(
+            InvocationEventSource::Runtime {
+                operation: "phase".to_owned(),
+            },
+            format!("phase={}", self.invocation.current_phase),
+        );
     }
 
     pub(crate) fn fail(
@@ -90,10 +101,22 @@ impl WasmHostState {
 
     pub(crate) fn finish_invocation_success(&mut self) {
         self.invocation.status = InvocationStatus::Succeeded;
+        self.record_event(
+            InvocationEventSource::Runtime {
+                operation: "finish".to_owned(),
+            },
+            "invocation succeeded",
+        );
     }
 
     pub(crate) fn finish_invocation_failure(&mut self) {
         self.invocation.status = InvocationStatus::Failed;
+        self.record_event(
+            InvocationEventSource::Runtime {
+                operation: "finish".to_owned(),
+            },
+            "invocation failed",
+        );
     }
 }
 
@@ -104,6 +127,7 @@ pub(crate) struct InvocationContext {
     pub(crate) canonical_action_id: String,
     pub(crate) export_name: String,
     pub(crate) started_at: Instant,
+    pub(crate) current_phase: String,
     pub(crate) status: InvocationStatus,
     pub(crate) events: Vec<InvocationEvent>,
     pub(crate) error: Option<InvocationError>,
@@ -122,6 +146,7 @@ impl InvocationContext {
             canonical_action_id: canonical_action_id.into(),
             export_name: export_name.into(),
             started_at: Instant::now(),
+            current_phase: "starting".to_owned(),
             status: InvocationStatus::Running,
             events: Vec::new(),
             error: None,
@@ -148,6 +173,7 @@ pub(crate) enum InvocationStatus {
 #[derive(Debug, Clone)]
 pub(crate) struct InvocationEvent {
     pub(crate) source: InvocationEventSource,
+    pub(crate) elapsed_ms: u128,
     pub(crate) message: String,
 }
 

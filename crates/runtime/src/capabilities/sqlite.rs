@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use pera_canonical::{CanonicalInterface, CatalogSkill};
 use pera_core::{ActionSkillRef, StoreError};
 use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::{Connection, Statement};
-use tracing::trace;
+use tracing::{debug, trace};
 use wasmtime::{Error as WasmtimeError, StoreContextMut};
 use wasmtime::component::Linker;
 
@@ -38,13 +39,46 @@ impl SqliteCapabilityProvider {
         sql: &str,
         params_json: Option<&str>,
     ) -> Result<String, CapabilityProviderError> {
+        let execute_started_at = Instant::now();
+        trace!(
+            db = %self.database_path.display(),
+            sql = ?sql,
+            params_json = ?params_json,
+            "sqlite provider execute start",
+        );
+        let parse_started_at = Instant::now();
         let bound_params = parse_sqlite_params(params_json)?;
+        trace!(
+            db = %self.database_path.display(),
+            elapsed_ms = parse_started_at.elapsed().as_millis(),
+            "sqlite provider params parsed",
+        );
+        let lock_started_at = Instant::now();
         let connection = self
             .connection
             .lock()
             .map_err(|_| CapabilityProviderError::new("sqlite connection mutex is poisoned"))?;
+        trace!(
+            db = %self.database_path.display(),
+            elapsed_ms = lock_started_at.elapsed().as_millis(),
+            "sqlite provider connection lock acquired",
+        );
+        let prepare_started_at = Instant::now();
         let mut statement = connection.prepare(sql)?;
+        trace!(
+            db = %self.database_path.display(),
+            elapsed_ms = prepare_started_at.elapsed().as_millis(),
+            readonly = statement.readonly(),
+            parameter_count = statement.parameter_count(),
+            "sqlite provider statement prepared",
+        );
+        let bind_started_at = Instant::now();
         bind_statement(&mut statement, &bound_params)?;
+        trace!(
+            db = %self.database_path.display(),
+            elapsed_ms = bind_started_at.elapsed().as_millis(),
+            "sqlite provider statement bound",
+        );
 
         if statement.readonly() {
             let column_names = statement
@@ -52,8 +86,14 @@ impl SqliteCapabilityProvider {
                 .into_iter()
                 .map(|name| name.to_owned())
                 .collect::<Vec<_>>();
+            trace!(
+                db = %self.database_path.display(),
+                column_count = column_names.len(),
+                "sqlite provider starting readonly query",
+            );
             let mut rows = statement.raw_query();
             let mut result_rows = Vec::new();
+            let row_iter_started_at = Instant::now();
 
             while let Some(row) = rows.next()? {
                 let mut values = serde_json::Map::new();
@@ -74,10 +114,25 @@ impl SqliteCapabilityProvider {
                 result_rows.push(serde_json::Value::Object(values));
             }
 
+            trace!(
+                db = %self.database_path.display(),
+                row_count = result_rows.len(),
+                elapsed_ms = row_iter_started_at.elapsed().as_millis(),
+                total_elapsed_ms = execute_started_at.elapsed().as_millis(),
+                "sqlite provider readonly query completed",
+            );
             return serde_json::to_string(&result_rows).map_err(Into::into);
         }
 
+        let execute_started_at_sql = Instant::now();
         let rows_affected = statement.raw_execute()?;
+        debug!(
+            db = %self.database_path.display(),
+            rows_affected,
+            elapsed_ms = execute_started_at_sql.elapsed().as_millis(),
+            total_elapsed_ms = execute_started_at.elapsed().as_millis(),
+            "sqlite provider write query completed",
+        );
         serde_json::to_string(&serde_json::json!({
             "rows_affected": rows_affected,
         }))
@@ -180,6 +235,8 @@ impl SqliteCapabilityProvider {
                     move |mut store: StoreContextMut<'_, WasmHostState>,
                           (sql, params_json): (String, Option<String>)|
                           -> Result<(String,), WasmtimeError> {
+                        let invocation = store.data().invocation().clone();
+                        store.data_mut().set_phase("sqlite_import_execute");
                         store.data_mut().record_event(
                             InvocationEventSource::Provider {
                                 name: import_name.clone(),
@@ -194,11 +251,15 @@ impl SqliteCapabilityProvider {
                         );
                         trace!(
                             import = %import_name,
+                            run_id = %invocation.run_id,
+                            action_id = %invocation.action_id,
+                            export = %invocation.export_name,
                             db = %sqlite.database_path().display(),
                             sql = ?sql,
                             params_json = ?params_json,
                             "sqlite import call",
                         );
+                        let import_started_at = Instant::now();
                         let result = sqlite.execute(&sql, params_json.as_deref()).map_err(|error| {
                             store.data_mut().fail(
                                 InvocationErrorSource::Provider {
@@ -209,9 +270,13 @@ impl SqliteCapabilityProvider {
                             );
                             tracing::error!(
                                 import = %import_name,
+                                run_id = %invocation.run_id,
+                                action_id = %invocation.action_id,
+                                export = %invocation.export_name,
                                 db = %sqlite.database_path().display(),
                                 sql = ?sql,
                                 params_json = ?params_json,
+                                elapsed_ms = import_started_at.elapsed().as_millis(),
                                 error = %error,
                                 "sqlite import error",
                             );
@@ -219,10 +284,25 @@ impl SqliteCapabilityProvider {
                         })?;
                         trace!(
                             import = %import_name,
+                            run_id = %invocation.run_id,
+                            action_id = %invocation.action_id,
+                            export = %invocation.export_name,
                             db = %sqlite.database_path().display(),
+                            elapsed_ms = import_started_at.elapsed().as_millis(),
                             result_json = %result,
                             "sqlite import ok",
                         );
+                        store.data_mut().record_event(
+                            InvocationEventSource::Provider {
+                                name: import_name.clone(),
+                                operation: "execute".to_owned(),
+                            },
+                            format!(
+                                "sqlite import completed in {}ms",
+                                import_started_at.elapsed().as_millis()
+                            ),
+                        );
+                        store.data_mut().set_phase("sqlite_import_execute_completed");
                         Ok((result,))
                     },
                 )

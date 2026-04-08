@@ -9,7 +9,10 @@ mod run;
 mod skill;
 mod value;
 
-pub use action::{CanonicalInvocation, ActionRecord, ActionRequest, ActionResult, ActionSkillRef, ActionStatus};
+pub use action::{
+    ActionInvocationDiagnostics, ActionInvocationError, ActionInvocationEvent, ActionRecord,
+    ActionRequest, ActionResult, ActionSkillRef, ActionStatus, CanonicalInvocation,
+};
 pub use code::{CodeArtifact, CodeLanguage, ScriptName};
 pub use event::ExecutionEvent;
 pub use ids::{ActionId, ActionName, CodeArtifactId, InputName, RunId, WorkItemId};

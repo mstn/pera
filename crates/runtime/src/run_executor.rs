@@ -4,9 +4,9 @@ use std::fmt::{Display, Formatter};
 
 use pera_canonical::{ModelInvocation, SkillCatalog};
 use pera_core::{
-    ActionId, ActionRecord, ActionRequest, ActionResult, ActionSkillRef, ActionStatus,
-    CodeArtifactId, ExecutionSession, ExecutionStatus, Interpreter, InterpreterStep, RunId,
-    StartExecutionRequest,
+    ActionId, ActionInvocationDiagnostics, ActionRecord, ActionRequest, ActionResult,
+    ActionSkillRef, ActionStatus, CodeArtifactId, ExecutionSession, ExecutionStatus, Interpreter,
+    InterpreterStep, RunId, StartExecutionRequest,
 };
 
 #[derive(Debug)]
@@ -99,6 +99,7 @@ where
         session: ExecutionSession,
         action_request: ActionRequest,
         result: ActionResult,
+        diagnostics: Option<ActionInvocationDiagnostics>,
         next_action_id: impl FnOnce() -> pera_core::ActionId,
     ) -> Result<RunTransition, RunExecutorError> {
         let snapshot = session
@@ -121,6 +122,7 @@ where
         let completed_action = ActionRecord {
             request: action_request,
             status: ActionStatus::Completed(result.clone()),
+            diagnostics,
         };
 
         let step = self.interpreter.resume(&snapshot, &model_value)?;
@@ -235,6 +237,7 @@ where
                 let action_record = ActionRecord {
                     request: action_request.clone(),
                     status: ActionStatus::Pending,
+                    diagnostics: None,
                 };
 
                 session.snapshot = Some(suspension.snapshot);
