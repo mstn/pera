@@ -78,7 +78,9 @@ impl Interpreter for MontyInterpreter {
     }
 }
 
-fn progress_to_step(progress: RunProgress<NoLimitTracker>) -> Result<InterpreterStep, InterpreterError> {
+fn progress_to_step(
+    progress: RunProgress<NoLimitTracker>,
+) -> Result<InterpreterStep, InterpreterError> {
     let mut progress = progress;
 
     loop {
@@ -92,9 +94,7 @@ fn progress_to_step(progress: RunProgress<NoLimitTracker>) -> Result<Interpreter
                     MontyObject::None => None,
                     other => Some(monty_object_to_value(other)?),
                 };
-                return Ok(InterpreterStep::Completed(ExecutionOutput {
-                    value,
-                }));
+                return Ok(InterpreterStep::Completed(ExecutionOutput { value }));
             }
             RunProgress::ResolveFutures(_) => {
                 return Err(InterpreterError::new(
@@ -111,7 +111,9 @@ fn progress_to_step(progress: RunProgress<NoLimitTracker>) -> Result<Interpreter
     }
 }
 
-fn resume_os_call(call: OsCall<NoLimitTracker>) -> Result<RunProgress<NoLimitTracker>, InterpreterError> {
+fn resume_os_call(
+    call: OsCall<NoLimitTracker>,
+) -> Result<RunProgress<NoLimitTracker>, InterpreterError> {
     let result = match call.function {
         OsFunction::DateToday => {
             let today = Local::now().date_naive();
@@ -179,7 +181,9 @@ fn monty_datetime_now(args: &[MontyObject]) -> Result<MontyObject, InterpreterEr
     }
 }
 
-fn function_call_to_step(call: FunctionCall<NoLimitTracker>) -> Result<InterpreterStep, InterpreterError> {
+fn function_call_to_step(
+    call: FunctionCall<NoLimitTracker>,
+) -> Result<InterpreterStep, InterpreterError> {
     let function_name = call.function_name.clone();
     let positional_arguments = call
         .args
@@ -204,7 +208,9 @@ fn function_call_to_step(call: FunctionCall<NoLimitTracker>) -> Result<Interpret
             Ok((key, monty_object_to_value(value)?))
         })
         .collect::<Result<std::collections::BTreeMap<_, _>, _>>()?;
-    let snapshot = RunProgress::FunctionCall(call).dump().map_err(to_interpreter_error)?;
+    let snapshot = RunProgress::FunctionCall(call)
+        .dump()
+        .map_err(to_interpreter_error)?;
 
     Ok(InterpreterStep::Suspended(Suspension {
         snapshot: ExecutionSnapshot {
@@ -247,14 +253,22 @@ fn value_to_monty_object(value: &Value) -> Result<MontyObject, InterpreterError>
             .map(MontyObject::List),
         Value::Map(entries) => entries
             .iter()
-            .map(|(key, value)| Ok((MontyObject::String(key.clone()), value_to_monty_object(value)?)))
+            .map(|(key, value)| {
+                Ok((
+                    MontyObject::String(key.clone()),
+                    value_to_monty_object(value)?,
+                ))
+            })
             .collect::<Result<Vec<_>, _>>()
             .map(MontyObject::dict),
         Value::Record { name, fields } => {
             let attrs = fields
                 .iter()
                 .map(|(key, value)| {
-                    Ok((MontyObject::String(key.clone()), value_to_monty_object(value)?))
+                    Ok((
+                        MontyObject::String(key.clone()),
+                        value_to_monty_object(value)?,
+                    ))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(MontyObject::Dataclass {
