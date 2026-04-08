@@ -308,6 +308,8 @@ pub enum ParticipantDecision<A> {
     /// Emit the terminal message for the current loop and return the participant to idle.
     CompleteLoop { content: String },
     Action {
+        /// Optional assistant handoff text to persist before the action request.
+        message: Option<String>,
         action: A,
         execution: ActionExecution,
     },

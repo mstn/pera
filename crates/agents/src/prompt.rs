@@ -1,5 +1,7 @@
 use pera_canonical::render_python_value;
-use pera_orchestrator::{ParticipantId, ParticipantInboxEvent, ParticipantInput, TrajectoryEvent};
+use pera_orchestrator::{
+    ActionError, ParticipantId, ParticipantInboxEvent, ParticipantInput, TrajectoryEvent,
+};
 use pera_runtime::{WorkspaceAction, WorkspaceObservation, WorkspaceOutcome};
 
 use crate::llm::LlmToolDefinition;
@@ -193,13 +195,7 @@ fn inbox_message(
             content: content.clone(),
         }),
         ParticipantInboxEvent::ActionCompleted { outcome, .. } => action_completed_message(outcome),
-        ParticipantInboxEvent::ActionFailed { error, .. } => Some(PromptMessage {
-            role: "system".to_owned(),
-            content: format!(
-                "Action failed: {}\nOrigin: {:?}\nDetail:\n{}",
-                error.user_message, error.origin, error.detail
-            ),
-        }),
+        ParticipantInboxEvent::ActionFailed { error, .. } => action_failed_message(error),
         ParticipantInboxEvent::Notification { message } => Some(PromptMessage {
             role: "system".to_owned(),
             content: message.clone(),
@@ -227,6 +223,7 @@ fn trajectory_message(
             role: "assistant".to_owned(),
             content: format!("```python\n{}\n```", source.trim_end()),
         }),
+        TrajectoryEvent::ActionFailed { error, .. } => action_failed_message(error),
         _ => None,
     }
 }
@@ -263,17 +260,28 @@ fn action_completed_message(outcome: &WorkspaceOutcome) -> Option<PromptMessage>
     }
 }
 
+fn action_failed_message(error: &ActionError) -> Option<PromptMessage> {
+    Some(PromptMessage {
+        role: "system".to_owned(),
+        content: format!(
+            "Action failed.\nError: {}\nOrigin: {:?}\nDetail:\n{}",
+            error.user_message, error.origin, error.detail
+        ),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
-    use pera_core::{RunId, WorkItemId};
+    use pera_core::{RunId, Value, WorkItemId};
     use pera_orchestrator::{
         ParticipantId, ParticipantInboxEvent, ParticipantInput, RunLimits, TaskSpec, Trajectory,
         TrajectoryEvent,
     };
     use pera_runtime::{
         AgentWorkspaceTool, WorkspaceActiveSkill, WorkspaceAvailableSkill, WorkspaceObservation,
+        WorkspaceOutcome,
     };
     use serde_json::json;
 
@@ -358,5 +366,195 @@ mod tests {
         assert!(task_message.content.contains("Help me inspect the repo"));
         assert!(task_message.content.contains("<declarations>"));
         assert!(task_message.content.contains("def status() -> str: ..."));
+    }
+
+    #[test]
+    fn prompt_messages_include_assistant_handoff_and_code_block() {
+        let builder = ProviderBackedPromptBuilder;
+        let input = ParticipantInput {
+            run_id: RunId::generate(),
+            agent_loop_id: WorkItemId::generate(),
+            agent_loop_iteration: 2,
+            participant: ParticipantId::Agent,
+            work_item: Some(pera_orchestrator::WorkItem {
+                id: WorkItemId::generate(),
+                from: ParticipantId::User,
+                content: "Check something".to_owned(),
+            }),
+            task: TaskSpec {
+                id: "task".to_owned(),
+                instructions: "Do the work".to_owned(),
+            },
+            limits: RunLimits {
+                max_steps: 10,
+                max_steps_per_agent_loop: 10,
+                max_actions: 10,
+                max_messages: 10,
+                max_failed_actions: None,
+                max_consecutive_failed_actions: None,
+                max_duration: Some(Duration::from_secs(10)),
+            },
+            observation: WorkspaceObservation {
+                available_tools: vec![],
+                available_skills: vec![],
+                active_skills: vec![],
+            },
+            inbox: vec![],
+            trajectory: Trajectory {
+                run_id: RunId::generate(),
+                events: vec![
+                    TrajectoryEvent::ParticipantMessage {
+                        participant: ParticipantId::User,
+                        content: "Check something".to_owned(),
+                    },
+                    TrajectoryEvent::ParticipantMessage {
+                        participant: ParticipantId::Agent,
+                        content: "Running a quick check.".to_owned(),
+                    },
+                    TrajectoryEvent::ActionRequested {
+                        participant: ParticipantId::Agent,
+                        action: pera_runtime::WorkspaceAction::ExecuteCode {
+                            language: "python".to_owned(),
+                            source: "result = 1 + 1\nresult".to_owned(),
+                        },
+                        execution: pera_orchestrator::ActionExecution::DeferredBlocking,
+                    },
+                ],
+            },
+        };
+
+        let context = builder.build_context(&input);
+        let contents = context.transcript
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(contents.iter().any(|content: &&str| *content == "Running a quick check."));
+        assert!(contents.iter().any(|content: &&str| {
+            content.contains("```python\nresult = 1 + 1\nresult\n```")
+        }));
+    }
+
+    #[test]
+    fn prompt_messages_render_code_execution_results_as_python() {
+        let builder = ProviderBackedPromptBuilder;
+        let input = ParticipantInput {
+            run_id: RunId::generate(),
+            agent_loop_id: WorkItemId::generate(),
+            agent_loop_iteration: 2,
+            participant: ParticipantId::Agent,
+            work_item: Some(pera_orchestrator::WorkItem {
+                id: WorkItemId::generate(),
+                from: ParticipantId::User,
+                content: "Check something".to_owned(),
+            }),
+            task: TaskSpec {
+                id: "task".to_owned(),
+                instructions: "Do the work".to_owned(),
+            },
+            limits: RunLimits {
+                max_steps: 10,
+                max_steps_per_agent_loop: 10,
+                max_actions: 10,
+                max_messages: 10,
+                max_failed_actions: None,
+                max_consecutive_failed_actions: None,
+                max_duration: Some(Duration::from_secs(10)),
+            },
+            observation: WorkspaceObservation {
+                available_tools: vec![],
+                available_skills: vec![],
+                active_skills: vec![],
+            },
+            inbox: vec![ParticipantInboxEvent::ActionCompleted {
+                action_id: pera_core::ActionId::generate(),
+                outcome: WorkspaceOutcome::CodeExecuted {
+                    language: "python".to_owned(),
+                    result: Value::List(vec![
+                        Value::Record {
+                            name: "meeting".to_owned(),
+                            fields: std::collections::BTreeMap::from([
+                                ("title".to_owned(), Value::String("Delta Review".to_owned())),
+                                ("city".to_owned(), Value::String("Berlin".to_owned())),
+                            ]),
+                        },
+                        Value::Bool(true),
+                    ]),
+                },
+            }],
+            trajectory: Trajectory {
+                run_id: RunId::generate(),
+                events: vec![],
+            },
+        };
+
+        let context = builder.build_context(&input);
+        let rendered = context.inbox
+            .iter()
+            .find(|message| message.content.contains("Code execution completed."))
+            .expect("expected code execution completion message");
+
+        assert!(rendered.content.contains("```python"));
+        assert!(rendered.content.contains("Meeting("));
+        assert!(rendered.content.contains("title=\"Delta Review\""));
+        assert!(rendered.content.contains("city=\"Berlin\""));
+        assert!(rendered.content.contains("True"));
+    }
+
+    #[test]
+    fn prompt_messages_include_action_failures_as_system_messages() {
+        let builder = ProviderBackedPromptBuilder;
+        let input = ParticipantInput {
+            run_id: RunId::generate(),
+            agent_loop_id: WorkItemId::generate(),
+            agent_loop_iteration: 2,
+            participant: ParticipantId::Agent,
+            work_item: Some(pera_orchestrator::WorkItem {
+                id: WorkItemId::generate(),
+                from: ParticipantId::User,
+                content: "Check something".to_owned(),
+            }),
+            task: TaskSpec {
+                id: "task".to_owned(),
+                instructions: "Do the work".to_owned(),
+            },
+            limits: RunLimits {
+                max_steps: 10,
+                max_steps_per_agent_loop: 10,
+                max_actions: 10,
+                max_messages: 10,
+                max_failed_actions: None,
+                max_consecutive_failed_actions: None,
+                max_duration: Some(Duration::from_secs(10)),
+            },
+            observation: WorkspaceObservation {
+                available_tools: vec![],
+                available_skills: vec![],
+                active_skills: vec![],
+            },
+            inbox: vec![],
+            trajectory: Trajectory {
+                run_id: RunId::generate(),
+                events: vec![TrajectoryEvent::ActionFailed {
+                    participant: ParticipantId::Agent,
+                    action_id: pera_core::ActionId::generate(),
+                    error: pera_orchestrator::ActionError {
+                        user_message: "Variable lookup failed".to_owned(),
+                        detail: "name_lookup for 'meetings'".to_owned(),
+                        origin: pera_orchestrator::ActionErrorOrigin::Interpreter,
+                    },
+                }],
+            },
+        };
+
+        let context = builder.build_context(&input);
+        let rendered = context.transcript
+            .iter()
+            .find(|message| message.role == "system")
+            .expect("expected system failure message in transcript");
+
+        assert!(rendered.content.contains("Action failed."));
+        assert!(rendered.content.contains("Variable lookup failed"));
+        assert!(rendered.content.contains("name_lookup for 'meetings'"));
     }
 }

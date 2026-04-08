@@ -346,12 +346,6 @@ where
         )?;
 
         if let Some(tool_call) = tool_call {
-            if tool_call.name == "execute_code" {
-                let handoff = required_string_argument(&tool_call.arguments, "handoff_user_message")?;
-                output.message_start(&ParticipantId::Agent).await?;
-                output.message_delta(&ParticipantId::Agent, &handoff).await?;
-                output.message_end(&ParticipantId::Agent).await?;
-            }
             let decision = map_tool_call_to_decision(tool_call)?;
             if !matches!(
                 decision,
@@ -389,6 +383,7 @@ fn map_tool_call_to_decision(
         "load_skill" => {
             let skill_name = required_string_argument(&tool_call.arguments, "skill_name")?;
             Ok(ParticipantDecision::Action {
+                message: None,
                 action: WorkspaceAction::LoadSkill { skill_name },
                 execution: pera_orchestrator::ActionExecution::Immediate,
             })
@@ -396,6 +391,7 @@ fn map_tool_call_to_decision(
         "unload_skill" => {
             let skill_name = required_string_argument(&tool_call.arguments, "skill_name")?;
             Ok(ParticipantDecision::Action {
+                message: None,
                 action: WorkspaceAction::UnloadSkill { skill_name },
                 execution: pera_orchestrator::ActionExecution::Immediate,
             })
@@ -403,7 +399,10 @@ fn map_tool_call_to_decision(
         "execute_code" => {
             let language = required_string_argument(&tool_call.arguments, "language")?;
             let source = required_string_argument(&tool_call.arguments, "source")?;
+            let handoff_user_message =
+                required_string_argument(&tool_call.arguments, "handoff_user_message")?;
             Ok(ParticipantDecision::Action {
+                message: Some(handoff_user_message),
                 action: WorkspaceAction::ExecuteCode { language, source },
                 execution: pera_orchestrator::ActionExecution::DeferredBlocking,
             })
@@ -494,6 +493,7 @@ mod tests {
                 action: WorkspaceAction::LoadSkill {
                     skill_name: "secret-service".to_owned(),
                 },
+                message: None,
                 execution: pera_orchestrator::ActionExecution::Immediate,
             }
         );
@@ -514,6 +514,7 @@ mod tests {
                 action: WorkspaceAction::UnloadSkill {
                     skill_name: "secret-service".to_owned(),
                 },
+                message: None,
                 execution: pera_orchestrator::ActionExecution::Immediate,
             }
         );
@@ -535,6 +536,7 @@ mod tests {
         assert_eq!(
             decision,
             ParticipantDecision::Action {
+                message: Some("Running a quick check.".to_owned()),
                 action: WorkspaceAction::ExecuteCode {
                     language: "python".to_owned(),
                     source: "print(1)".to_owned(),

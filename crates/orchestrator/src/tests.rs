@@ -168,6 +168,7 @@ async fn orchestrator_handles_single_participant_immediate_action() {
         id: ParticipantId::Agent,
         decisions: VecDeque::from([
             Ok(ParticipantDecision::Action {
+                message: None,
                 action: TestAction("run"),
                 execution: ActionExecution::Immediate,
             }),
@@ -236,6 +237,7 @@ async fn orchestrator_delivers_immediate_completion_via_inbox() {
         id: ParticipantId::Agent,
         decisions: VecDeque::from([
             Ok(ParticipantDecision::Action {
+                message: None,
                 action: TestAction("run"),
                 execution: ActionExecution::Immediate,
             }),
@@ -310,6 +312,7 @@ async fn orchestrator_delivers_deferred_completion_via_inbox() {
         id: ParticipantId::Agent,
         decisions: VecDeque::from([
             Ok(ParticipantDecision::Action {
+                message: None,
                 action: TestAction("background"),
                 execution: ActionExecution::DeferredNonBlocking,
             }),
@@ -506,6 +509,7 @@ async fn orchestrator_blocks_participant_on_deferred_blocking_action() {
         id: ParticipantId::Agent,
         decisions: VecDeque::from([
             Ok(ParticipantDecision::Action {
+                message: None,
                 action: TestAction("blocking"),
                 execution: ActionExecution::DeferredBlocking,
             }),
@@ -883,4 +887,89 @@ async fn orchestrator_routes_participant_message_to_other_mailboxes() {
                         && content == "hi"
             )))
     );
+}
+
+#[tokio::test]
+async fn orchestrator_persists_action_handoff_message_before_requesting_action() {
+    let agent = FakeParticipant {
+        id: ParticipantId::Agent,
+        decisions: VecDeque::from([
+            Ok(ParticipantDecision::Action {
+                message: Some("Running a quick check.".to_owned()),
+                action: TestAction("run"),
+                execution: ActionExecution::Immediate,
+            }),
+            Ok(ParticipantDecision::Finish),
+        ]),
+        seen_inboxes: Arc::new(Mutex::new(Vec::new())),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
+    };
+    let user = FakeParticipant {
+        id: ParticipantId::User,
+        decisions: VecDeque::from([Ok(ParticipantDecision::Finish)]),
+        seen_inboxes: Arc::new(Mutex::new(Vec::new())),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
+    };
+    let environment = FakeEnvironment {
+        observation: TestObservation("initial"),
+        terminal: None,
+        immediate_outcomes: VecDeque::from([Ok(TestOutcome("done"))]),
+        submitted_events: VecDeque::new(),
+        submitted_ids: VecDeque::new(),
+    };
+    let participants = vec![
+        Box::new(user)
+            as Box<
+                dyn Participant<
+                        Observation = TestObservation,
+                        Action = TestAction,
+                        Outcome = TestOutcome,
+                    >,
+            >,
+        Box::new(agent)
+            as Box<
+                dyn Participant<
+                        Observation = TestObservation,
+                        Action = TestAction,
+                        Outcome = TestOutcome,
+                    >,
+            >,
+    ];
+    let mut orchestrator = Orchestrator::from_participants(participants, environment);
+    let mut request = test_request();
+    request.initial_messages.push(InitialInboxMessage {
+        to: ParticipantId::Agent,
+        from: ParticipantId::User,
+        content: "go".to_owned(),
+    });
+    request.initial_messages.push(InitialInboxMessage {
+        to: ParticipantId::User,
+        from: ParticipantId::Custom("system".to_owned()),
+        content: "done".to_owned(),
+    });
+
+    let result = orchestrator.run(request).await.unwrap();
+
+    let handoff_index = result
+        .trajectory
+        .events
+        .iter()
+        .position(|event| matches!(
+            event,
+            TrajectoryEvent::ParticipantMessage { participant, content }
+                if *participant == ParticipantId::Agent && content == "Running a quick check."
+        ))
+        .expect("handoff message should be persisted");
+    let action_index = result
+        .trajectory
+        .events
+        .iter()
+        .position(|event| matches!(
+            event,
+            TrajectoryEvent::ActionRequested { participant, action, .. }
+                if *participant == ParticipantId::Agent && *action == TestAction("run")
+        ))
+        .expect("action request should be recorded");
+
+    assert!(handoff_index < action_index);
 }
