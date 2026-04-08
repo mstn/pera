@@ -1,11 +1,13 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use std::time::Instant;
 
 use async_trait::async_trait;
 use pera_core::{ActionId, ActionRequest, ActionResult, CanonicalValue, RunId};
 use tokio::sync::mpsc;
+use tokio::time;
 use tracing::{debug, error, trace};
 use wasmtime::component::Val;
 
@@ -70,23 +72,43 @@ pub(crate) struct ActionWorker<A> {
     action_executor: A,
     action_rx: mpsc::UnboundedReceiver<ActionRequest>,
     update_tx: mpsc::UnboundedSender<ActionExecutionUpdate>,
+    execution_timeout: Duration,
 }
 
 impl<A> ActionWorker<A>
 where
     A: ActionExecutor,
 {
+    const DEFAULT_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
+
     pub(crate) fn new(
         worker_id: impl Into<String>,
         action_executor: A,
         action_rx: mpsc::UnboundedReceiver<ActionRequest>,
         update_tx: mpsc::UnboundedSender<ActionExecutionUpdate>,
     ) -> Self {
+        Self::new_with_timeout(
+            worker_id,
+            action_executor,
+            action_rx,
+            update_tx,
+            Self::DEFAULT_EXECUTION_TIMEOUT,
+        )
+    }
+
+    pub(crate) fn new_with_timeout(
+        worker_id: impl Into<String>,
+        action_executor: A,
+        action_rx: mpsc::UnboundedReceiver<ActionRequest>,
+        update_tx: mpsc::UnboundedSender<ActionExecutionUpdate>,
+        execution_timeout: Duration,
+    ) -> Self {
         Self {
             worker_id: worker_id.into(),
             action_executor,
             action_rx,
             update_tx,
+            execution_timeout,
         }
     }
 
@@ -106,7 +128,23 @@ where
                 worker_id = %self.worker_id,
                 "worker executing action",
             );
-            let update = self.action_executor.execute(action).await;
+            let run_id = action.run_id;
+            let action_id = action.id;
+            let skill_name = action.skill.skill_name.clone();
+            let action_name = action.invocation.action_name.as_str().to_owned();
+            let update = match time::timeout(self.execution_timeout, self.action_executor.execute(action)).await {
+                Ok(update) => update,
+                Err(_) => ActionExecutionUpdate::Failed {
+                    run_id,
+                    action_id,
+                    skill_name,
+                    action_name,
+                    message: format!(
+                        "action execution timed out after {}s",
+                        self.execution_timeout.as_secs()
+                    ),
+                },
+            };
             debug!(
                 worker_id = %self.worker_id,
                 update_kind = match &update {
@@ -434,5 +472,84 @@ impl ActionExecutor for WasmtimeComponentActionExecutor {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::time::Duration;
+
+    use super::{ActionExecutionUpdate, ActionExecutor, ActionWorker};
+    use async_trait::async_trait;
+    use pera_core::{ActionName, ActionRequest, ActionSkillRef, CanonicalInvocation, RunId};
+    use tokio::sync::mpsc;
+
+    #[derive(Clone, Copy)]
+    struct SlowActionExecutor;
+
+    #[async_trait]
+    impl ActionExecutor for SlowActionExecutor {
+        async fn execute(&self, _action: ActionRequest) -> ActionExecutionUpdate {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            unreachable!("worker timeout should fire before executor completes");
+        }
+    }
+
+    #[tokio::test]
+    async fn action_worker_fails_claimed_actions_that_time_out() {
+        let (action_tx, action_rx) = mpsc::unbounded_channel();
+        let (update_tx, mut update_rx) = mpsc::unbounded_channel();
+        let worker = ActionWorker::new_with_timeout(
+            "action-worker-1",
+            SlowActionExecutor,
+            action_rx,
+            update_tx,
+            Duration::from_millis(5),
+        );
+        let worker_task = tokio::spawn(worker.run());
+
+        let request = ActionRequest {
+            id: pera_core::ActionId::generate(),
+            run_id: RunId::generate(),
+            skill: ActionSkillRef {
+                skill_name: "calendar-ops".to_owned(),
+                skill_version: None,
+                profile_name: Some("shared-room-required".to_owned()),
+            },
+            invocation: CanonicalInvocation {
+                action_name: ActionName::new("list-required-meetings"),
+                arguments: BTreeMap::new(),
+            },
+        };
+        action_tx.send(request.clone()).unwrap();
+        drop(action_tx);
+
+        let claimed = update_rx.recv().await.expect("claimed update");
+        assert!(matches!(
+            claimed,
+            ActionExecutionUpdate::Claimed {
+                action_id,
+                ref skill_name,
+                ..
+            } if action_id == request.id && skill_name == "calendar-ops"
+        ));
+
+        let failed = update_rx.recv().await.expect("failed update");
+        assert!(matches!(
+            failed,
+            ActionExecutionUpdate::Failed {
+                action_id,
+                ref skill_name,
+                ref action_name,
+                ref message,
+                ..
+            } if action_id == request.id
+                && skill_name == "calendar-ops"
+                && action_name == "list-required-meetings"
+                && message.contains("timed out")
+        ));
+
+        worker_task.await.unwrap();
     }
 }
