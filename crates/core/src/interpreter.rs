@@ -40,6 +40,7 @@ pub struct Suspension {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ExecutionOutput {
     pub value: Option<Value>,
+    pub repl_state: Option<ExecutionSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -80,6 +81,7 @@ pub trait Interpreter {
         &self,
         program: &CompiledProgram,
         inputs: &InputValues,
+        repl_state: Option<&ExecutionSnapshot>,
     ) -> Result<InterpreterStep, InterpreterError>;
 
     fn resume(

@@ -2,14 +2,20 @@ use std::collections::BTreeMap;
 
 use chrono::{Datelike, Local, Timelike, Utc};
 use monty::{
-    FunctionCall, MontyDate, MontyDateTime, MontyObject, MontyRun, NoLimitTracker, OsCall,
-    OsFunction, PrintWriter, RunProgress,
+    MontyDate, MontyDateTime, MontyObject, MontyRepl, NoLimitTracker, OsFunction, PrintWriter,
+    ReplFunctionCall, ReplOsCall, ReplProgress,
 };
 use pera_core::{
     ActionName, CodeArtifact, CodeLanguage, CompiledProgram, ExecutionOutput, ExecutionSnapshot,
     ExternalCall, InputValues, Interpreter, InterpreterError, InterpreterKind, InterpreterStep,
     Suspension, Value,
 };
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct MontySnippetProgram {
+    script_name: String,
+    source: String,
+}
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MontyInterpreter;
@@ -30,17 +36,11 @@ impl Interpreter for MontyInterpreter {
             return Err(InterpreterError::new("Monty only supports Python code"));
         }
 
-        let runner = MontyRun::new(
-            code.source.clone(),
-            code.script_name.as_str(),
-            code.inputs
-                .iter()
-                .map(|input| input.as_str().to_owned())
-                .collect(),
-        )
-        .map_err(to_interpreter_error)?;
-
-        let bytes = runner.dump().map_err(to_interpreter_error)?;
+        let program = MontySnippetProgram {
+            script_name: code.script_name.as_str().to_owned(),
+            source: code.source.clone(),
+        };
+        let bytes = serde_json::to_vec(&program).map_err(to_interpreter_error)?;
 
         Ok(CompiledProgram {
             kind: InterpreterKind::Monty,
@@ -53,13 +53,25 @@ impl Interpreter for MontyInterpreter {
         &self,
         program: &CompiledProgram,
         inputs: &InputValues,
+        repl_state: Option<&ExecutionSnapshot>,
     ) -> Result<InterpreterStep, InterpreterError> {
-        let runner = MontyRun::load(&program.bytes).map_err(to_interpreter_error)?;
+        let snippet: MontySnippetProgram =
+            serde_json::from_slice(&program.bytes).map_err(to_interpreter_error)?;
+        let repl = match repl_state {
+            Some(snapshot) => MontyRepl::load(&snapshot.bytes).map_err(to_interpreter_error)?,
+            None => MontyRepl::new(&snippet.script_name, NoLimitTracker),
+        };
         let ordered_inputs = input_values_to_monty_objects(&program.input_order, inputs)?;
-        let progress = runner
-            .start(ordered_inputs, NoLimitTracker, PrintWriter::Disabled)
-            .map_err(to_interpreter_error)?;
-        progress_to_step(progress)
+        let named_inputs = program
+            .input_order
+            .iter()
+            .zip(ordered_inputs)
+            .map(|(name, value)| (name.as_str().to_owned(), value))
+            .collect();
+        let progress = repl
+            .feed_start(&snippet.source, named_inputs, PrintWriter::Disabled)
+            .map_err(|error| to_interpreter_error(error.error))?;
+        repl_progress_to_step(progress)
     }
 
     fn resume(
@@ -68,40 +80,46 @@ impl Interpreter for MontyInterpreter {
         return_value: &Value,
     ) -> Result<InterpreterStep, InterpreterError> {
         let progress =
-            RunProgress::<NoLimitTracker>::load(&snapshot.bytes).map_err(to_interpreter_error)?;
+            ReplProgress::<NoLimitTracker>::load(&snapshot.bytes).map_err(to_interpreter_error)?;
         let progress = progress
             .into_function_call()
             .ok_or_else(|| InterpreterError::new("snapshot is not a function call suspension"))?
             .resume(value_to_monty_object(return_value)?, PrintWriter::Disabled)
-            .map_err(to_interpreter_error)?;
-        progress_to_step(progress)
+            .map_err(|error| to_interpreter_error(error.error))?;
+        repl_progress_to_step(progress)
     }
 }
 
-fn progress_to_step(
-    progress: RunProgress<NoLimitTracker>,
+fn repl_progress_to_step(
+    progress: ReplProgress<NoLimitTracker>,
 ) -> Result<InterpreterStep, InterpreterError> {
     let mut progress = progress;
 
     loop {
         match progress {
-            RunProgress::FunctionCall(call) => return function_call_to_step(call),
-            RunProgress::OsCall(call) => {
+            ReplProgress::FunctionCall(call) => return function_call_to_step(call),
+            ReplProgress::OsCall(call) => {
                 progress = resume_os_call(call)?;
             }
-            RunProgress::Complete(value) => {
+            ReplProgress::Complete { repl, value } => {
                 let value = match value {
                     MontyObject::None => None,
                     other => Some(monty_object_to_value(other)?),
                 };
-                return Ok(InterpreterStep::Completed(ExecutionOutput { value }));
+                return Ok(InterpreterStep::Completed(ExecutionOutput {
+                    value,
+                    repl_state: Some(ExecutionSnapshot {
+                        kind: InterpreterKind::Monty,
+                        bytes: repl.dump().map_err(to_interpreter_error)?,
+                    }),
+                }));
             }
-            RunProgress::ResolveFutures(_) => {
+            ReplProgress::ResolveFutures(_) => {
                 return Err(InterpreterError::new(
                     "Monty returned unsupported suspension kind: resolve_futures",
                 ));
             }
-            RunProgress::NameLookup(lookup) => {
+            ReplProgress::NameLookup(lookup) => {
                 return Err(InterpreterError::new(format!(
                     "Monty returned unsupported suspension kind: name_lookup for '{}'",
                     lookup.name
@@ -112,8 +130,8 @@ fn progress_to_step(
 }
 
 fn resume_os_call(
-    call: OsCall<NoLimitTracker>,
-) -> Result<RunProgress<NoLimitTracker>, InterpreterError> {
+    call: ReplOsCall<NoLimitTracker>,
+) -> Result<ReplProgress<NoLimitTracker>, InterpreterError> {
     let result = match call.function {
         OsFunction::DateToday => {
             let today = Local::now().date_naive();
@@ -133,7 +151,7 @@ fn resume_os_call(
     };
 
     call.resume(result, PrintWriter::Disabled)
-        .map_err(to_interpreter_error)
+        .map_err(|error| to_interpreter_error(error.error))
 }
 
 fn monty_datetime_now(args: &[MontyObject]) -> Result<MontyObject, InterpreterError> {
@@ -182,7 +200,7 @@ fn monty_datetime_now(args: &[MontyObject]) -> Result<MontyObject, InterpreterEr
 }
 
 fn function_call_to_step(
-    call: FunctionCall<NoLimitTracker>,
+    call: ReplFunctionCall<NoLimitTracker>,
 ) -> Result<InterpreterStep, InterpreterError> {
     let function_name = call.function_name.clone();
     let positional_arguments = call
@@ -208,7 +226,7 @@ fn function_call_to_step(
             Ok((key, monty_object_to_value(value)?))
         })
         .collect::<Result<std::collections::BTreeMap<_, _>, _>>()?;
-    let snapshot = RunProgress::FunctionCall(call)
+    let snapshot = ReplProgress::FunctionCall(call)
         .dump()
         .map_err(to_interpreter_error)?;
 
@@ -381,7 +399,36 @@ mod tests {
             source: source.to_owned(),
             inputs: Vec::new(),
         })?;
-        interpreter.start(&program, &InputValues::new())
+        interpreter.start(&program, &InputValues::new(), None)
+    }
+
+    fn run_python_with_repl_state(
+        source: &str,
+        repl_state: &ExecutionSnapshot,
+    ) -> Result<InterpreterStep, InterpreterError> {
+        let interpreter = MontyInterpreter::new();
+        let program = interpreter.compile(&CodeArtifact {
+            id: CodeArtifactId::generate(),
+            language: CodeLanguage::Python,
+            script_name: ScriptName::new("test.py"),
+            source: source.to_owned(),
+            inputs: Vec::new(),
+        })?;
+        interpreter.start(&program, &InputValues::new(), Some(repl_state))
+    }
+
+    fn completed_output(step: InterpreterStep) -> ExecutionOutput {
+        match step {
+            InterpreterStep::Completed(output) => output,
+            other => panic!("expected completed step, got {other:?}"),
+        }
+    }
+
+    fn persisted_repl_state(output: &ExecutionOutput) -> ExecutionSnapshot {
+        output
+            .repl_state
+            .clone()
+            .expect("completed snippet should persist repl state")
     }
 
     #[test]
@@ -432,7 +479,10 @@ x = 1
         .expect("statement-only snippet should execute successfully");
 
         match step {
-            InterpreterStep::Completed(output) => assert_eq!(output.value, None),
+            InterpreterStep::Completed(output) => {
+                assert_eq!(output.value, None);
+                assert!(output.repl_state.is_some());
+            }
             other => panic!("unexpected interpreter step: {other:?}"),
         }
     }
@@ -449,6 +499,7 @@ x = 1
         match step {
             InterpreterStep::Completed(output) => {
                 assert_eq!(output.value, Some(Value::Int(3)));
+                assert!(output.repl_state.is_some());
             }
             other => panic!("unexpected interpreter step: {other:?}"),
         }
@@ -478,9 +529,137 @@ ext(41)
         match resumed {
             InterpreterStep::Completed(output) => {
                 assert_eq!(output.value, Some(Value::Int(99)));
+                assert!(output.repl_state.is_some());
             }
             other => panic!("unexpected interpreter step after resume: {other:?}"),
         }
+    }
+
+    #[test]
+    fn persists_variables_across_turns() {
+        let first = completed_output(
+            run_python(
+            r#"
+meetings = [1, 2, 3]
+"#,
+        )
+        .expect("first snippet should succeed"),
+        );
+
+        let second = completed_output(
+            run_python_with_repl_state(
+            r#"
+meetings[0]
+"#,
+            &persisted_repl_state(&first),
+        )
+        .expect("second snippet should reuse prior variables"),
+        );
+
+        assert_eq!(second.value, Some(Value::Int(1)));
+        assert!(second.repl_state.is_some());
+    }
+
+    #[test]
+    fn persists_function_definitions_across_turns() {
+        let first = completed_output(
+            run_python(
+            r#"
+def add_one(value):
+    return value + 1
+"#,
+        )
+        .expect("function definition snippet should succeed"),
+        );
+
+        let second = completed_output(
+            run_python_with_repl_state(
+            r#"
+add_one(41)
+"#,
+            &persisted_repl_state(&first),
+        )
+        .expect("second snippet should reuse prior function definitions"),
+        );
+
+        assert_eq!(second.value, Some(Value::Int(42)));
+        assert!(second.repl_state.is_some());
+    }
+
+    #[test]
+    fn later_snippets_see_mutations_from_earlier_snippets() {
+        let first = completed_output(
+            run_python(
+                r#"
+counter = 1
+"#,
+            )
+            .expect("first snippet should succeed"),
+        );
+
+        let second = completed_output(
+            run_python_with_repl_state(
+                r#"
+counter += 4
+"#,
+                &persisted_repl_state(&first),
+            )
+            .expect("second snippet should mutate existing state"),
+        );
+        assert_eq!(second.value, None);
+
+        let third = completed_output(
+            run_python_with_repl_state(
+                r#"
+counter
+"#,
+                &persisted_repl_state(&second),
+            )
+            .expect("third snippet should see the mutated value"),
+        );
+        assert_eq!(third.value, Some(Value::Int(5)));
+    }
+
+    #[test]
+    fn independent_repl_states_do_not_leak_between_sequences() {
+        let state_a = completed_output(
+            run_python(
+                r#"
+trip = "berlin"
+"#,
+            )
+            .expect("first sequence should succeed"),
+        );
+        let state_b = completed_output(
+            run_python(
+                r#"
+trip = "rome"
+"#,
+            )
+            .expect("second sequence should succeed"),
+        );
+
+        let read_a = completed_output(
+            run_python_with_repl_state(
+                r#"
+trip
+"#,
+                &persisted_repl_state(&state_a),
+            )
+            .expect("first repl state should retain its own value"),
+        );
+        let read_b = completed_output(
+            run_python_with_repl_state(
+                r#"
+trip
+"#,
+                &persisted_repl_state(&state_b),
+            )
+            .expect("second repl state should retain its own value"),
+        );
+
+        assert_eq!(read_a.value, Some(Value::String("berlin".to_owned())));
+        assert_eq!(read_b.value, Some(Value::String("rome".to_owned())));
     }
 
     #[test]

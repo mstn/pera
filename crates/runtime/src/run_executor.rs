@@ -88,9 +88,12 @@ where
             id: run_id,
             status: ExecutionStatus::Running,
             snapshot: None,
+            repl_state: request.repl_state.clone(),
         };
 
-        let step = self.interpreter.start(&program, &request.inputs)?;
+        let step = self
+            .interpreter
+            .start(&program, &request.inputs, request.repl_state.as_ref())?;
         self.apply_step(session, step, next_action_id, RunTransitionTrigger::Started)
     }
 
@@ -252,6 +255,7 @@ where
             }
             InterpreterStep::Completed(output) => {
                 session.snapshot = None;
+                session.repl_state = output.repl_state.clone();
                 session.status = ExecutionStatus::Completed(output);
 
                 Ok(RunTransition {

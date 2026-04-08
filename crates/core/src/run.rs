@@ -10,6 +10,7 @@ use crate::{
 pub struct StartExecutionRequest {
     pub code: CodeArtifact,
     pub inputs: InputValues,
+    pub repl_state: Option<ExecutionSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -25,6 +26,7 @@ pub struct ExecutionSession {
     pub id: RunId,
     pub status: ExecutionStatus,
     pub snapshot: Option<ExecutionSnapshot>,
+    pub repl_state: Option<ExecutionSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

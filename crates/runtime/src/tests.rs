@@ -36,6 +36,7 @@ impl Interpreter for FakeInterpreter {
         &self,
         program: &CompiledProgram,
         _inputs: &InputValues,
+        _repl_state: Option<&ExecutionSnapshot>,
     ) -> Result<InterpreterStep, InterpreterError> {
         let source = std::str::from_utf8(&program.bytes)
             .map_err(|error| InterpreterError::new(error.to_string()))?;
@@ -43,6 +44,7 @@ impl Interpreter for FakeInterpreter {
         if let Some(value) = source.strip_prefix("complete:") {
             return Ok(InterpreterStep::Completed(ExecutionOutput {
                 value: Some(Value::Int(value.parse().unwrap())),
+                repl_state: None,
             }));
         }
 
@@ -70,6 +72,7 @@ impl Interpreter for FakeInterpreter {
     ) -> Result<InterpreterStep, InterpreterError> {
         Ok(InterpreterStep::Completed(ExecutionOutput {
             value: Some(return_value.clone()),
+            repl_state: None,
         }))
     }
 }
@@ -155,6 +158,7 @@ fn request(source: &str) -> StartExecutionRequest {
             inputs: Vec::new(),
         },
         inputs: InputValues::new(),
+        repl_state: None,
     }
 }
 
@@ -201,7 +205,8 @@ fn run_executor_completes_without_external_calls() {
     assert_eq!(
         session.status,
         ExecutionStatus::Completed(ExecutionOutput {
-            value: Some(Value::Int(7))
+            value: Some(Value::Int(7)),
+            repl_state: None,
         })
     );
 }
@@ -247,7 +252,8 @@ fn run_executor_suspends_and_resumes() {
     assert_eq!(
         resumed.session.status,
         ExecutionStatus::Completed(ExecutionOutput {
-            value: Some(Value::Int(11))
+            value: Some(Value::Int(11)),
+            repl_state: None,
         })
     );
     assert_eq!(
@@ -353,12 +359,14 @@ async fn execution_engine_manages_multiple_runs() {
         engine.run_status(run_a),
         Some(ExecutionStatus::Completed(ExecutionOutput {
             value: Some(Value::Int(1)),
+            repl_state: None,
         }))
     );
     assert_eq!(
         engine.run_status(run_b),
         Some(ExecutionStatus::Completed(ExecutionOutput {
             value: Some(Value::Int(2)),
+            repl_state: None,
         }))
     );
 

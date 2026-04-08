@@ -108,6 +108,7 @@ impl RunCommand {
                         inputs: Vec::new(),
                     },
                     inputs: InputValues::new(),
+                    repl_state: None,
                 }))
             }
             (None, Some(run_id)) => {

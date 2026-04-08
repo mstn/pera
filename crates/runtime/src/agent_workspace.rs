@@ -15,7 +15,8 @@ use pera_orchestrator::{
 };
 use pera_core::{
     ActionId, CodeArtifact, CodeArtifactId, CodeLanguage, ExecutionEvent, InputValues,
-    RunId, ScriptName, SkillManifest, StartExecutionRequest, Value,
+    RunId, ScriptName, SkillManifest, StartExecutionRequest, Value, ExecutionSnapshot,
+    ExecutionStatus,
 };
 use tracing::{debug, info, warn};
 
@@ -211,6 +212,8 @@ pub trait AgentWorkspaceExecutionEngineHandle: Send + Sync {
         &self,
         request: StartExecutionRequest,
     ) -> Result<RunId, AgentWorkspaceError>;
+
+    fn run_status(&self, run_id: RunId) -> Option<ExecutionStatus>;
 }
 
 #[async_trait]
@@ -229,6 +232,10 @@ where
             .await
             .map_err(|error| AgentWorkspaceError::new(error.to_string()))
     }
+
+    fn run_status(&self, run_id: RunId) -> Option<ExecutionStatus> {
+        ExecutionEngine::run_status(self, run_id)
+    }
 }
 
 pub struct AgentWorkspace {
@@ -239,6 +246,7 @@ pub struct AgentWorkspace {
     execution_engine: Arc<dyn AgentWorkspaceExecutionEngineHandle>,
     execution_events: EventSubscription,
     active_skill_names: BTreeSet<String>,
+    repl_states_by_actor: BTreeMap<String, ExecutionSnapshot>,
 }
 
 impl std::fmt::Debug for AgentWorkspace {
@@ -310,6 +318,7 @@ impl AgentWorkspace {
             execution_engine,
             execution_events,
             active_skill_names: BTreeSet::new(),
+            repl_states_by_actor: BTreeMap::new(),
         })
     }
 
@@ -467,6 +476,7 @@ impl AgentWorkspace {
                 inputs: Vec::new(),
             },
             inputs: InputValues::new(),
+            repl_state: self.repl_states_by_actor.get(&actor).cloned(),
         };
         let action_id = ActionId::generate();
         let run_id = self
@@ -583,6 +593,14 @@ impl AgentWorkspace {
                 status: AgentWorkspaceActionRunStatus::RunResumed,
             }),
             ExecutionEvent::RunCompleted { value, .. } => {
+                let repl_state = match self.execution_engine.run_status(run_id) {
+                    Some(ExecutionStatus::Completed(output)) => output.repl_state,
+                    _ => None,
+                };
+                if let Some(repl_state) = repl_state {
+                    self.repl_states_by_actor
+                        .insert(pending.actor.clone(), repl_state);
+                }
                 self.execution_runs_by_id.remove(&run_id);
                 self.pending_execution_runs.remove(&action_id);
                 Ok(AgentWorkspaceEvent::ActionCompleted {
@@ -639,6 +657,7 @@ impl Environment for AgentWorkspace {
         self.queued_events.clear();
         self.pending_execution_runs.clear();
         self.execution_runs_by_id.clear();
+        self.repl_states_by_actor.clear();
         self.describe_workspace()
             .await
             .map_err(|error| EnvironmentError::new(error.to_string()))
