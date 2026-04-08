@@ -105,3 +105,36 @@ class CalendarOpsExports(exports.CalendarOpsExports):
                 )
             )
         return result
+
+    def search_travelers(self, names):
+        requested_names = [str(name).strip() for name in (names or []) if str(name).strip()]
+        if not requested_names:
+            return []
+
+        rows = _query(
+            """
+            SELECT traveler_id, display_name
+            FROM travelers
+            ORDER BY display_name ASC, traveler_id ASC
+            """
+        )
+
+        matches: list[calendar_ops_types.TravelerRef] = []
+        seen_ids: set[str] = set()
+        for requested_name in requested_names:
+            needle = requested_name.casefold()
+            for row in rows:
+                traveler_id = str(row.get("traveler_id", ""))
+                display_name = str(row.get("display_name", ""))
+                if traveler_id in seen_ids:
+                    continue
+                if needle not in {traveler_id.casefold(), display_name.casefold()}:
+                    continue
+                seen_ids.add(traveler_id)
+                matches.append(
+                    calendar_ops_types.TravelerRef(
+                        traveler_id=traveler_id,
+                        display_name=display_name,
+                    )
+                )
+        return matches

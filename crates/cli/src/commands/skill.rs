@@ -5,7 +5,9 @@ use crate::error::CliError;
 use clap::{Args, Subcommand};
 use pera_core::{SkillDatabaseSpec, SkillManifest, SkillProfileManifest};
 use pera_runtime::{FileSystemSkillRuntimeLoader, SqliteCapabilityProvider};
-use pera_skills::{FileSystemProjectHost, SkillProvisioner, UvxComponentizer};
+use pera_skills::{
+    FileSystemProjectHost, SkillProvisioner, UvxComponentizer, load_manifest, select_profile,
+};
 
 #[derive(Debug, Args)]
 pub struct SkillCommand {
@@ -19,6 +21,7 @@ impl SkillCommand {
             SkillSubcommand::Compile(command) => command.execute(),
             SkillSubcommand::Db(command) => command.execute(),
             SkillSubcommand::Precompile(command) => command.execute().await,
+            SkillSubcommand::RebuildCatalog(command) => command.execute().await,
             SkillSubcommand::Upload(command) => command.execute().await,
         }
     }
@@ -29,6 +32,7 @@ enum SkillSubcommand {
     Compile(CompileSkillCommand),
     Db(SkillDbCommand),
     Precompile(PrecompileSkillCommand),
+    RebuildCatalog(RebuildCatalogCommand),
     Upload(UploadSkillCommand),
 }
 
@@ -54,6 +58,20 @@ struct UploadSkillCommand {
 struct PrecompileSkillCommand {
     #[arg(long)]
     root: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct RebuildCatalogCommand {
+    #[arg(long)]
+    root: PathBuf,
+    #[arg(long)]
+    source_dir: PathBuf,
+    #[arg(long)]
+    skill: Option<String>,
+    #[arg(long)]
+    profile: Option<String>,
+    #[arg(long, default_value = "uvx")]
+    uvx: String,
 }
 
 #[derive(Debug, Args)]
@@ -153,6 +171,90 @@ impl PrecompileSkillCommand {
             "Precompiled installed skills into {}",
             root.join("cache").join("wasmtime").display()
         );
+        Ok(())
+    }
+}
+
+impl RebuildCatalogCommand {
+    async fn execute(&self) -> Result<(), CliError> {
+        let root = self
+            .root
+            .canonicalize()
+            .map_err(|source| CliError::ReadFile {
+                path: self.root.clone(),
+                source,
+            })?;
+        let source_dir = self
+            .source_dir
+            .canonicalize()
+            .map_err(|source| CliError::ReadFile {
+                path: self.source_dir.clone(),
+                source,
+            })?;
+
+        let provisioner =
+            SkillProvisioner::new(FileSystemProjectHost, UvxComponentizer::new(&self.uvx));
+        provisioner
+            .ensure_project_layout(&root)
+            .map_err(CliError::from)?;
+
+        let skill_dirs = discover_skill_dirs(&source_dir, self.skill.as_deref())?;
+        if skill_dirs.is_empty() {
+            return Err(CliError::UnexpectedStateOwned(format!(
+                "no skill sources found in {}",
+                source_dir.display()
+            )));
+        }
+
+        let mut rebuilt_profiles = 0usize;
+        for skill_dir in skill_dirs {
+            let (manifest_path, manifest) =
+                load_manifest(&FileSystemProjectHost, &skill_dir).map_err(CliError::from)?;
+
+            let profiles = if let Some(profile_name) = self.profile.as_deref() {
+                vec![select_profile(&manifest, Some(profile_name)).map_err(CliError::from)?]
+            } else {
+                manifest.profiles.iter().collect::<Vec<_>>()
+            };
+
+            for profile in profiles {
+                let artifact_dir = profile
+                    .runtime
+                    .wasm
+                    .as_ref()
+                    .ok_or_else(|| {
+                        CliError::UnexpectedStateOwned(format!(
+                            "profile '{}' in {} is not a wasm-component profile",
+                            profile.name,
+                            manifest_path.display()
+                        ))
+                    })?
+                    .artifacts
+                    .dir
+                    .clone();
+                let artifact_dir = skill_dir.join(artifact_dir);
+                if artifact_dir.exists() {
+                    fs::remove_dir_all(&artifact_dir).map_err(|source| CliError::WriteFile {
+                        path: artifact_dir.clone(),
+                        source,
+                    })?;
+                }
+
+                let installed = provisioner
+                    .ensure_catalog_skill(&skill_dir, Some(profile.name.as_str()), &root)
+                    .await
+                    .map_err(CliError::from)?;
+                println!(
+                    "Rebuilt catalog skill '{}' profile '{}' into {}",
+                    installed.compiled.skill_name,
+                    installed.compiled.profile_name,
+                    installed.catalog_dir.display()
+                );
+                rebuilt_profiles += 1;
+            }
+        }
+
+        println!("Rebuilt {rebuilt_profiles} catalog profile(s).");
         Ok(())
     }
 }
@@ -267,6 +369,52 @@ fn resolve_manifest_path(skill_dir: &Path) -> Result<PathBuf, CliError> {
         .ok_or_else(|| {
             CliError::UnexpectedStateOwned(format!("no manifest found in {}", skill_dir.display()))
         })
+}
+
+fn discover_skill_dirs(source_dir: &Path, selected_skill: Option<&str>) -> Result<Vec<PathBuf>, CliError> {
+    let mut skill_dirs = Vec::new();
+
+    if let Some(skill_name) = selected_skill {
+        let skill_dir = source_dir.join(skill_name);
+        if !skill_dir.exists() {
+            return Err(CliError::UnexpectedStateOwned(format!(
+                "skill source '{}' not found in {}",
+                skill_name,
+                source_dir.display()
+            )));
+        }
+        resolve_manifest_path(&skill_dir)?;
+        skill_dirs.push(skill_dir);
+        return Ok(skill_dirs);
+    }
+
+    let mut entries = fs::read_dir(source_dir)
+        .map_err(|source| CliError::ReadFile {
+            path: source_dir.to_path_buf(),
+            source,
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| CliError::ReadFile {
+            path: source_dir.to_path_buf(),
+            source,
+        })?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|source| CliError::ReadFile {
+            path: path.clone(),
+            source,
+        })?;
+        if !file_type.is_dir() {
+            continue;
+        }
+        if resolve_manifest_path(&path).is_ok() {
+            skill_dirs.push(path);
+        }
+    }
+
+    Ok(skill_dirs)
 }
 
 fn initialize_sqlite_database(

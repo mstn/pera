@@ -5,6 +5,10 @@ INSERT INTO meeting_attendees (project_code, week_of, title, traveler_id) VALUES
   ('DELTA', '2026-04-06', 'Delta Review', 'alice'),
   ('DELTA', '2026-04-06', 'Delta Review', 'bruno');
 
+INSERT INTO travelers (traveler_id, display_name) VALUES
+  ('alice', 'Alice'),
+  ('bruno', 'Bruno');
+
 INSERT INTO traveler_constraints (traveler_id, week_of, origin_city) VALUES
   ('alice', '2026-04-06', 'Rome'),
   ('bruno', '2026-04-06', 'Milan');

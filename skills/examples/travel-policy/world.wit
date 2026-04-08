@@ -6,12 +6,19 @@ interface sqlite {
 }
 
 interface travel-policy-types {
+  /// Travel policy rules that apply to a proposed business trip.
   record trip-policy {
+    /// Cost center whose policy rules are being applied.
     cost-center: string,
+    /// Maximum cost allowed before approval is required.
     max-budget-without-approval: s32,
+    /// Whether a shared room is allowed when travelers are paired.
     shared-room-allowed: bool,
+    /// Whether single rooms should be preferred when available.
     single-room-preferred: bool,
+    /// Whether red-eye transport is allowed.
     red-eye-allowed: bool,
+    /// Additional free-form policy notes.
     notes: list<string>,
   }
 }
@@ -19,8 +26,13 @@ interface travel-policy-types {
 interface travel-policy-exports {
   use travel-policy-types.{trip-policy};
 
+  /// Return the travel policy for a cost center and the referenced travelers.
+  ///
+  /// `traveler-ids` should be canonical traveler identifiers when policy rules
+  /// vary by traveler or traveler group.
   get-trip-policy: func(cost-center: string, traveler-ids: list<string>) -> trip-policy;
 
+  /// Return whether a total trip cost exceeds the no-approval threshold.
   requires-manager-approval: func(total-cost: s32, cost-center: string) -> bool;
 }
 

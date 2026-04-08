@@ -6,26 +6,45 @@ interface sqlite {
 }
 
 interface travel-desk-types {
+  /// A transport option that can be booked for a traveler on a given day.
   record transport-option {
+    /// Stable booking option identifier.
     option-id: string,
+    /// Canonical traveler identifier associated with this option.
     traveler-id: string,
+    /// Transport mode such as flight or train.
     mode: string,
+    /// Origin city for the option.
     origin: string,
+    /// Destination city for the option.
     destination: string,
+    /// Local departure timestamp in ISO 8601 format.
     depart-at: string,
+    /// Local arrival timestamp in ISO 8601 format.
     arrive-at: string,
+    /// Total price for this option.
     price: s32,
+    /// Remaining inventory for this option.
     seats-available: s32,
   }
 
+  /// A lodging option for a requested stay window.
   record lodging-option {
+    /// Human-readable property name.
     hotel-name: string,
+    /// City where the property is located.
     city: string,
+    /// Check-in date in ISO 8601 local-date format.
     check-in: string,
+    /// Check-out date in ISO 8601 local-date format.
     check-out: string,
+    /// Room type label such as single or double.
     room-type: string,
+    /// Maximum occupancy for the room type.
     capacity: s32,
+    /// Remaining room inventory for this room type.
     remaining-rooms: s32,
+    /// Total lodging price for the requested stay.
     price-total: s32,
   }
 }
@@ -33,8 +52,13 @@ interface travel-desk-types {
 interface travel-desk-exports {
   use travel-desk-types.{transport-option, lodging-option};
 
+  /// Search transport options between two cities for a specific travel day.
+  ///
+  /// Use canonical origin information from prior planning data rather than
+  /// inferring cities from traveler display names.
   search-transport: func(origin: string, destination: string, day: string) -> list<transport-option>;
 
+  /// Search lodging inventory for a requested stay window in a city.
   search-lodging: func(city: string, check-in: string, check-out: string) -> list<lodging-option>;
 }
 

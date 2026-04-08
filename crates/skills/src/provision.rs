@@ -175,15 +175,16 @@ where
         installed: &InstalledSkill,
     ) -> Result<(), SkillProvisionError> {
         let root = self.host.canonicalize(project_root)?;
+        let skill_ref = ActionSkillRef {
+            skill_name: installed.compiled.skill_name.clone(),
+            skill_version: Some(SkillVersion::new(installed.compiled.skill_version.clone())),
+            profile_name: Some(installed.compiled.profile_name.clone()),
+        };
         let skill_runtime = FileSystemSkillRuntimeLoader::new(&root)
-            .load()
+            .load_only(&skill_ref)
             .map_err(|error| SkillProvisionError::Runtime(error.to_string()))?;
         skill_runtime
-            .precompile_skill(&ActionSkillRef {
-                skill_name: installed.compiled.skill_name.clone(),
-                skill_version: Some(SkillVersion::new(installed.compiled.skill_version.clone())),
-                profile_name: Some(installed.compiled.profile_name.clone()),
-            })
+            .precompile_skill(&skill_ref)
             .await
             .map_err(|error| SkillProvisionError::Runtime(error.to_string()))
     }

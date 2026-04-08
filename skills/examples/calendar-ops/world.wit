@@ -6,30 +6,71 @@ interface sqlite {
 }
 
 interface calendar-ops-types {
+  /// A required project meeting within the requested planning window.
   record meeting {
+    /// Human-readable meeting title.
     title: string,
+    /// City where the meeting takes place.
     city: string,
+    /// Local meeting start timestamp in ISO 8601 format.
     start-at: string,
+    /// Local meeting end timestamp in ISO 8601 format.
     end-at: string,
+    /// Canonical attendee identifiers returned by the scheduling system.
+    ///
+    /// These identifiers are suitable for follow-up API calls. Do not assume
+    /// they match display names shown to the user.
     required-attendees: list<string>,
   }
 
+  /// Known travel-related constraints for a traveler in the requested week.
   record traveler-constraint {
+    /// Canonical traveler identifier from the scheduling system.
     traveler-id: string,
+    /// Origin city to use when searching travel options.
     origin-city: string,
+    /// Time ranges during which the traveler is unavailable to depart or arrive.
     blocked-intervals: list<string>,
+  }
+
+  /// A traveler reference that links a human-readable name to a canonical ID.
+  record traveler-ref {
+    /// Canonical traveler identifier from the scheduling system.
+    traveler-id: string,
+    /// Human-readable traveler name suitable for display back to the user.
+    display-name: string,
   }
 }
 
 interface calendar-ops-exports {
-  use calendar-ops-types.{meeting, traveler-constraint};
+  use calendar-ops-types.{meeting, traveler-constraint, traveler-ref};
 
+  /// Return meetings that define the required travel window for a project.
+  ///
+  /// Use `required-attendees` from the returned meetings as canonical traveler
+  /// identifiers for follow-up scheduling queries when available.
   list-required-meetings: func(project-code: string, week-of: string) -> list<meeting>;
 
+  /// Return traveler constraints for the provided traveler identifiers.
+  ///
+  /// `traveler-ids` must contain canonical traveler IDs understood by the
+  /// scheduling system, not inferred display names. When you only know human
+  /// names, obtain canonical IDs from another trusted system response first.
   list-traveler-constraints: func(
     traveler-ids: list<string>,
     week-of: string,
   ) -> list<traveler-constraint>;
+
+  /// Search for canonical traveler identifiers from human-readable names or IDs.
+  ///
+  /// The point of this function is to bridge user-facing names to the canonical
+  /// traveler IDs required by planning APIs. Use it when the user gives names
+  /// such as "Alice" but follow-up calls require system identifiers.
+  ///
+  /// Matching is case-insensitive against both display names and known traveler
+  /// IDs. The returned `traveler-id` values are the identifiers to use in
+  /// follow-up scheduling queries.
+  search-travelers: func(names: list<string>) -> list<traveler-ref>;
 }
 
 world calendar-ops-default {

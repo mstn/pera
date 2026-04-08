@@ -22,6 +22,11 @@ CREATE TABLE IF NOT EXISTS traveler_constraints (
   origin_city TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS travelers (
+  traveler_id TEXT NOT NULL PRIMARY KEY,
+  display_name TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS blocked_intervals (
   traveler_id TEXT NOT NULL,
   week_of TEXT NOT NULL,

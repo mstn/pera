@@ -592,6 +592,49 @@ impl FileSystemSkillCatalogLoader {
 
         SkillCatalog::from_skills(skills).map_err(|error| StoreError::new(error.to_string()))
     }
+
+    pub fn load_only(&self, skill_ref: &ActionSkillRef) -> Result<SkillCatalog, StoreError> {
+        let skills_dir = self.root.join("catalog").join("skills");
+        if !skills_dir.exists() {
+            return SkillCatalog::from_skills(Vec::new())
+                .map_err(|error| StoreError::new(error.to_string()));
+        }
+
+        let skill_name = &skill_ref.skill_name;
+        let skill_version = skill_ref
+            .skill_version
+            .as_ref()
+            .map(|version| version.as_str())
+            .ok_or_else(|| {
+                StoreError::new(format!(
+                    "filtered skill catalog load requires version for '{}'",
+                    skill_ref.skill_name
+                ))
+            })?;
+        let profile_name = skill_ref.profile_name.as_deref().ok_or_else(|| {
+            StoreError::new(format!(
+                "filtered skill catalog load requires profile for '{}'",
+                skill_ref.skill_name
+            ))
+        })?;
+
+        let profile_dir = skills_dir
+            .join(skill_name)
+            .join(skill_version)
+            .join(profile_name);
+        if !profile_dir.exists() {
+            return Err(StoreError::new(format!(
+                "catalog skill '{}'/version '{}'/profile '{}' not found at {}",
+                skill_name,
+                skill_version,
+                profile_name,
+                profile_dir.display()
+            )));
+        }
+
+        let skill = load_catalog_skill(skill_name, skill_version, &profile_dir)?;
+        SkillCatalog::from_skills(vec![skill]).map_err(|error| StoreError::new(error.to_string()))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -606,6 +649,11 @@ impl FileSystemSkillRuntimeLoader {
 
     pub fn load(&self) -> Result<SkillRuntime, StoreError> {
         let catalog = FileSystemSkillCatalogLoader::new(&self.root).load()?;
+        SkillRuntime::new(&self.root, catalog)
+    }
+
+    pub fn load_only(&self, skill_ref: &ActionSkillRef) -> Result<SkillRuntime, StoreError> {
+        let catalog = FileSystemSkillCatalogLoader::new(&self.root).load_only(skill_ref)?;
         SkillRuntime::new(&self.root, catalog)
     }
 }
