@@ -59,6 +59,13 @@ evaluation:
     - type: action_count
       action: execute_code
       min_count: 2
+    - type: llm_judge
+      rubric: |
+        Determine whether the agent actually solved the user's task.
+
+        Pass only if the evidence shows that the agent reached a supported recommendation and correctly recognized that a shared double room is an acceptable fallback when no single rooms are available and policy allows sharing.
+
+        Fail if the agent stops at partial progress, only proposes next steps, or misses the shared-room fallback.
     - type: final_message_required
     - type: forbid_finish_reason
       finish_reason: failed_action_limit_exceeded

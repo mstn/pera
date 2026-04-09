@@ -9,12 +9,14 @@ mod user;
 
 pub use engine::{EvalEngine, EvalMode, EvalRequest, EvalSession};
 pub use execution::{
-    EvalPreparation, EvalProjectLayout, EvalRunResult, EvalRunWorkspace, EvalTraceEvent,
+    EvalJudgeResult, EvalPreparation, EvalProjectLayout, EvalRunResult, EvalRunWorkspace, EvalTraceEvent,
     EvalTrajectoryActionRunStatus, EvalTrajectoryEvent, EvalTrajectoryPayload,
     PreparedCatalogSkill, SerializedAction, SerializedOutcome,
 };
 pub use evaluator::{
-    EvalActionAdapter, SpecEvaluator, serialize_trajectory_events, trajectory_trace_events,
+    EvalActionAdapter, EvalJudge, EvalJudgeRequest, EvalJudgeResultPayload, SpecEvaluator,
+    build_llm_judge_requests, parse_judge_verdict, serialize_trajectory_events,
+    trajectory_trace_events,
 };
 pub use error::EvalError;
 pub use overrides::OverrideSet;

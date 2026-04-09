@@ -2,13 +2,17 @@ use async_trait::async_trait;
 use pera_orchestrator::{
     EvalResult, Evaluator, EvaluatorError, FinishReason, ParticipantId, Trajectory, TrajectoryEvent,
 };
+use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
 use crate::execution::{
-    EvalTrajectoryActionRunStatus, EvalTrajectoryEvent, EvalTrajectoryPayload, SerializedAction,
-    SerializedOutcome,
+    EvalJudgeResult, EvalTraceEvent, EvalTrajectoryActionRunStatus, EvalTrajectoryEvent,
+    EvalTrajectoryPayload, SerializedAction, SerializedOutcome,
 };
 use crate::spec::{EvalCriterionSpec, EvalExpectedActionSpec, EvalSpec};
+
+const JUDGE_SYSTEM_PROMPT: &str = include_str!("prompts/judge_system.md");
+const JUDGE_USER_PROMPT: &str = include_str!("prompts/judge_user.md");
 
 pub trait EvalActionAdapter<A, U>: Clone + Send + Sync + 'static {
     fn serialize_action(&self, action: &A) -> SerializedAction;
@@ -23,7 +27,10 @@ pub struct SpecEvaluator<T> {
 
 impl<T> SpecEvaluator<T> {
     pub fn new(spec: EvalSpec, action_adapter: T) -> Self {
-        Self { spec, action_adapter }
+        Self {
+            spec,
+            action_adapter,
+        }
     }
 }
 
@@ -91,9 +98,7 @@ where
                         .count();
                     eprintln!(
                         "[eval] criterion action_count action={} min_count={} actual_count={}",
-                        action,
-                        min_count,
-                        actual_count
+                        action, min_count, actual_count
                     );
                     if actual_count < *min_count {
                         failures.push(format!(
@@ -104,6 +109,7 @@ where
                         eprintln!("[eval] criterion passed: action_count");
                     }
                 }
+                EvalCriterionSpec::LlmJudge { .. } => {}
                 EvalCriterionSpec::FinalMessageRequired => {}
                 EvalCriterionSpec::ForbidFinishReason { .. } => {}
             }
@@ -136,12 +142,16 @@ pub fn evaluate_run_criteria(
                     .map(|content| !content.is_empty())
                     .unwrap_or(false);
                 if !has_final_message {
-                    failures.push("final_message_required failed: missing final agent message".to_owned());
+                    failures.push(
+                        "final_message_required failed: missing final agent message".to_owned(),
+                    );
                 } else {
                     eprintln!("[eval] criterion passed: final_message_required");
                 }
             }
-            EvalCriterionSpec::ForbidFinishReason { finish_reason: forbidden } => {
+            EvalCriterionSpec::ForbidFinishReason {
+                finish_reason: forbidden,
+            } => {
                 let actual = finish_reason_name(finish_reason);
                 eprintln!(
                     "[eval] criterion forbid_finish_reason forbidden={} actual={}",
@@ -156,10 +166,133 @@ pub fn evaluate_run_criteria(
                     eprintln!("[eval] criterion passed: forbid_finish_reason");
                 }
             }
-            EvalCriterionSpec::ActionSequence { .. } | EvalCriterionSpec::ActionCount { .. } => {}
+            EvalCriterionSpec::ActionSequence { .. }
+            | EvalCriterionSpec::ActionCount { .. }
+            | EvalCriterionSpec::LlmJudge { .. } => {}
         }
     }
     failures
+}
+
+#[derive(Debug, Serialize)]
+struct JudgePromptPayload<'a> {
+    purpose: &'a str,
+    user_task: &'a str,
+    known_info: &'a str,
+    finish_reason: String,
+    final_agent_message: Option<&'a str>,
+    trace: &'a [EvalTraceEvent],
+    trajectory: &'a [EvalTrajectoryEvent],
+}
+
+#[derive(Debug, Deserialize)]
+struct JudgeVerdict {
+    passed: bool,
+    #[serde(default)]
+    score: Option<f64>,
+    reason: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct EvalJudgeRequest {
+    pub criterion_index: usize,
+    pub model: Option<String>,
+    pub rubric: String,
+    pub system_prompt: String,
+    pub user_message: String,
+}
+
+#[async_trait]
+pub trait EvalJudge: Send + Sync {
+    async fn evaluate(&self, requests: Vec<EvalJudgeRequest>) -> Vec<EvalJudgeResult>;
+}
+
+pub fn build_llm_judge_requests(
+    spec: &EvalSpec,
+    finish_reason: &FinishReason,
+    final_agent_message: Option<&str>,
+    trace: &[EvalTraceEvent],
+    trajectory: &[EvalTrajectoryEvent],
+) -> Vec<EvalJudgeRequest> {
+    let mut requests = Vec::new();
+    for (index, criterion) in spec.evaluation.criteria.iter().enumerate() {
+        let EvalCriterionSpec::LlmJudge { rubric, model } = criterion else {
+            continue;
+        };
+        requests.push(EvalJudgeRequest {
+            criterion_index: index,
+            model: model.clone(),
+            rubric: rubric.clone(),
+            system_prompt: judge_system_prompt(),
+            user_message: build_judge_user_message(
+                spec,
+                finish_reason,
+                final_agent_message,
+                trace,
+                trajectory,
+                rubric,
+            ),
+        });
+    }
+    requests
+}
+
+fn judge_system_prompt() -> String {
+    JUDGE_SYSTEM_PROMPT.to_owned()
+}
+
+fn build_judge_user_message(
+    spec: &EvalSpec,
+    finish_reason: &FinishReason,
+    final_agent_message: Option<&str>,
+    trace: &[EvalTraceEvent],
+    trajectory: &[EvalTrajectoryEvent],
+    rubric: &str,
+) -> String {
+    let payload = JudgePromptPayload {
+        purpose: &spec.scenario.purpose,
+        user_task: &spec.scenario.user.task,
+        known_info: &spec.scenario.user.known_info,
+        finish_reason: format!("{finish_reason:?}"),
+        final_agent_message,
+        trace,
+        trajectory,
+    };
+    let payload = serde_json::to_string_pretty(&payload)
+        .unwrap_or_else(|_| "{\"error\":\"failed to serialize judge payload\"}".to_owned());
+    JUDGE_USER_PROMPT
+        .replace("{{rubric}}", rubric)
+        .replace("{{payload_json}}", &payload)
+}
+
+pub fn parse_judge_verdict(content: &str) -> Result<EvalJudgeResultPayload, serde_json::Error> {
+    let verdict: JudgeVerdict = serde_json::from_str(content).or_else(|_| {
+        let trimmed = content.trim();
+        let start = trimmed.find('{').unwrap_or(0);
+        let end = trimmed
+            .rfind('}')
+            .map(|idx| idx + 1)
+            .unwrap_or(trimmed.len());
+        serde_json::from_str(&trimmed[start..end])
+    })?;
+    Ok(verdict.into())
+}
+
+#[derive(Debug, Clone)]
+pub struct EvalJudgeResultPayload {
+    pub passed: bool,
+    pub score: Option<f64>,
+    pub reason: String,
+}
+
+impl From<JudgeVerdict> for EvalJudgeResultPayload {
+    fn from(value: JudgeVerdict) -> Self {
+        Self {
+            passed: value.passed,
+            score: value.score,
+            reason: value.reason,
+        }
+    }
 }
 
 pub fn trajectory_trace_events<T, O, A, U>(
@@ -341,9 +474,7 @@ fn serialize_action_run_status(
         pera_orchestrator::ActionRunStatus::RunSubmitted => {
             EvalTrajectoryActionRunStatus::RunSubmitted
         }
-        pera_orchestrator::ActionRunStatus::RunStarted => {
-            EvalTrajectoryActionRunStatus::RunStarted
-        }
+        pera_orchestrator::ActionRunStatus::RunStarted => EvalTrajectoryActionRunStatus::RunStarted,
         pera_orchestrator::ActionRunStatus::ActionEnqueued {
             engine_action_id,
             skill_name,
@@ -384,9 +515,7 @@ fn serialize_action_run_status(
             action_name: action_name.clone(),
             message: message.clone(),
         },
-        pera_orchestrator::ActionRunStatus::RunResumed => {
-            EvalTrajectoryActionRunStatus::RunResumed
-        }
+        pera_orchestrator::ActionRunStatus::RunResumed => EvalTrajectoryActionRunStatus::RunResumed,
     }
 }
 
@@ -422,7 +551,9 @@ fn matches_action_sequence(
             && expected
                 .iter()
                 .zip(actual.iter())
-                .all(|(expected_action, actual_action)| action_matches(expected_action, actual_action))
+                .all(|(expected_action, actual_action)| {
+                    action_matches(expected_action, actual_action)
+                })
     }
 }
 
@@ -457,7 +588,8 @@ fn matches_action_set(
 }
 
 fn action_matches(expected: &EvalExpectedActionSpec, actual: &SerializedAction) -> bool {
-    expected.action == actual.name && arguments_match(expected.arguments.as_ref(), actual.arguments.as_ref())
+    expected.action == actual.name
+        && arguments_match(expected.arguments.as_ref(), actual.arguments.as_ref())
 }
 
 fn arguments_match(expected: Option<&Value>, actual: Option<&Value>) -> bool {
@@ -471,7 +603,10 @@ fn arguments_match(expected: Option<&Value>, actual: Option<&Value>) -> bool {
         return false;
     };
     expected_map.iter().all(|(key, expected_value)| {
-        actual_map.get(key).map(|actual_value| actual_value == expected_value).unwrap_or(false)
+        actual_map
+            .get(key)
+            .map(|actual_value| actual_value == expected_value)
+            .unwrap_or(false)
     })
 }
 

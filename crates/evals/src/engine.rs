@@ -7,8 +7,8 @@ use pera_orchestrator::{
 
 use crate::error::EvalError;
 use crate::evaluator::{
-    EvalActionAdapter, SpecEvaluator, evaluate_run_criteria, serialize_trajectory_events,
-    trajectory_trace_events,
+    EvalActionAdapter, EvalJudge, SpecEvaluator, build_llm_judge_requests, evaluate_run_criteria,
+    serialize_trajectory_events, trajectory_trace_events,
 };
 use crate::execution::{EvalPreparation, EvalRunResult, EvalRunWorkspace};
 use crate::overrides::OverrideSet;
@@ -94,6 +94,7 @@ impl EvalEngine {
         environment: E,
         participants: Vec<Box<dyn Participant<Observation = O, Action = A, Outcome = U>>>,
         action_adapter: T,
+        judge: Option<&dyn EvalJudge>,
     ) -> Result<EvalRunResult, EvalError>
     where
         E: Environment<Observation = O, Action = A, Outcome = U>,
@@ -162,11 +163,36 @@ impl EvalEngine {
                 _ => None,
             });
         let trace = trajectory_trace_events(&result.trajectory, &action_adapter);
+        let serialized_trajectory = serialize_trajectory_events(&result.trajectory, &action_adapter);
         let run_level_failures = evaluate_run_criteria(
             &session.loaded_spec.spec,
             &result.finish_reason,
             final_agent_message.as_deref(),
         );
+        let judge_requests = build_llm_judge_requests(
+            &session.loaded_spec.spec,
+            &result.finish_reason,
+            final_agent_message.as_deref(),
+            &trace,
+            &serialized_trajectory,
+        );
+        let judge_results = if let Some(judge) = judge {
+            judge.evaluate(judge_requests).await
+        } else {
+            judge_requests
+                .into_iter()
+                .map(|request| crate::execution::EvalJudgeResult {
+                    criterion_index: request.criterion_index,
+                    model: request.model,
+                    passed: false,
+                    score: Some(0.0),
+                    summary: "llm_judge could not run because no judge executor was configured"
+                        .to_owned(),
+                    rubric: request.rubric,
+                    response: String::new(),
+                })
+                .collect()
+        };
         if !run_level_failures.is_empty() {
             eprintln!(
                 "[eval] run-level criteria failed count={}",
@@ -183,6 +209,23 @@ impl EvalEngine {
             evaluation.score = Some(0.0);
             evaluation.summary = Some(failure_messages.join("\n"));
         }
+        let judge_failures = judge_results
+            .iter()
+            .filter(|result| !result.passed)
+            .map(|result| format!("llm_judge failed: {}", result.summary))
+            .collect::<Vec<_>>();
+        if !judge_failures.is_empty() {
+            let mut failure_messages = Vec::new();
+            if let Some(summary) = evaluation.summary.take() {
+                if !summary.trim().is_empty() {
+                    failure_messages.push(summary);
+                }
+            }
+            failure_messages.extend(judge_failures);
+            evaluation.passed = false;
+            evaluation.score = Some(0.0);
+            evaluation.summary = Some(failure_messages.join("\n"));
+        }
         eprintln!(
             "[eval] evaluation passed={} score={:?} trace_events={}",
             evaluation.passed,
@@ -195,8 +238,9 @@ impl EvalEngine {
             finish_reason: result.finish_reason,
             evaluation,
             final_agent_message,
+            judge_results,
             trace,
-            trajectory: serialize_trajectory_events(&result.trajectory, &action_adapter),
+            trajectory: serialized_trajectory,
             workspace: EvalRunWorkspace {
                 root: run_dir.join("project"),
                 run_dir,

@@ -124,6 +124,11 @@ pub enum EvalCriterionSpec {
         action: String,
         min_count: usize,
     },
+    LlmJudge {
+        rubric: String,
+        #[serde(default)]
+        model: Option<String>,
+    },
     FinalMessageRequired,
     ForbidFinishReason {
         finish_reason: String,
@@ -272,6 +277,20 @@ fn validate_eval_spec(spec: &EvalSpec) -> Result<(), EvalError> {
                     return Err(EvalError::InvalidSpec(
                         "action_count min_count must be greater than zero".to_owned(),
                     ));
+                }
+            }
+            EvalCriterionSpec::LlmJudge { rubric, model } => {
+                if rubric.trim().is_empty() {
+                    return Err(EvalError::InvalidSpec(
+                        "llm_judge rubric cannot be empty".to_owned(),
+                    ));
+                }
+                if let Some(model) = model {
+                    if model.trim().is_empty() {
+                        return Err(EvalError::InvalidSpec(
+                            "llm_judge model cannot be empty".to_owned(),
+                        ));
+                    }
                 }
             }
             EvalCriterionSpec::FinalMessageRequired => {}

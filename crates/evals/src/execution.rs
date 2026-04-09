@@ -41,9 +41,23 @@ pub struct EvalRunResult {
     pub finish_reason: FinishReason,
     pub evaluation: EvalResult,
     pub final_agent_message: Option<String>,
+    pub judge_results: Vec<EvalJudgeResult>,
     pub trace: Vec<EvalTraceEvent>,
     pub trajectory: Vec<EvalTrajectoryEvent>,
     pub workspace: EvalRunWorkspace,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EvalJudgeResult {
+    pub criterion_index: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub passed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+    pub summary: String,
+    pub rubric: String,
+    pub response: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

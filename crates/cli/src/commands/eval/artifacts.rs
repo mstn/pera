@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use pera_evals::{EvalRunResult, LoadedEvalSpec, OverrideSet};
+use pera_evals::{EvalJudgeResult, EvalRunResult, LoadedEvalSpec, OverrideSet};
 use serde::Serialize;
 
 use crate::error::CliError;
@@ -96,6 +96,7 @@ struct PersistedRunResult<'a> {
     finish_reason: String,
     evaluation: PersistedEvalResult<'a>,
     final_agent_message: &'a Option<String>,
+    judge_results: &'a [EvalJudgeResult],
     trace: &'a [pera_evals::EvalTraceEvent],
     workspace_root: String,
 }
@@ -120,6 +121,7 @@ pub fn write_run_result(
             summary: &result.evaluation.summary,
         },
         final_agent_message: &result.final_agent_message,
+        judge_results: &result.judge_results,
         trace: &result.trace,
         workspace_root: result.workspace.root.display().to_string(),
     };

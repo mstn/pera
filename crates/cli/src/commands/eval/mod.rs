@@ -2,14 +2,16 @@ mod artifacts;
 
 use std::{env, path::PathBuf, sync::Arc};
 
+use async_trait::async_trait;
 use clap::{Args, Subcommand};
 use pera_agents::{
-    LlmAgentParticipant, OpenAiConfig as OpenAiProviderConfig, OpenAiProvider,
-    ProviderBackedPromptBuilder,
+    LlmAgentParticipant, LlmProvider, LlmRequest, OpenAiConfig as OpenAiProviderConfig,
+    OpenAiProvider, PromptMessage, ProviderBackedPromptBuilder,
 };
 use pera_evals::{
-    EvalActionAdapter, EvalEngine, EvalMode as EngineEvalMode, EvalRequest, EvalRunner, EvalSpec,
-    OverrideSet, ScriptedUserParticipant, SerializedAction, SerializedOutcome,
+    EvalActionAdapter, EvalEngine, EvalJudge, EvalJudgeRequest, EvalJudgeResultPayload,
+    EvalMode as EngineEvalMode, EvalRequest, EvalRunner, EvalSpec, OverrideSet,
+    ScriptedUserParticipant, SerializedAction, SerializedOutcome, parse_judge_verdict,
 };
 use pera_orchestrator::Participant;
 use pera_runtime::{AgentWorkspace, WorkspaceAction, WorkspaceObservation, WorkspaceOutcome};
@@ -18,6 +20,93 @@ use serde_yaml::{Mapping, Value};
 use self::artifacts::{RunArtifacts, create_run_artifacts, write_run_failed, write_run_result};
 use crate::error::CliError;
 use crate::repl::prompt_debug::FilePromptDebugSink;
+
+struct OpenAiEvalJudge {
+    api_key: String,
+    default_model: String,
+}
+
+#[async_trait]
+impl EvalJudge for OpenAiEvalJudge {
+    async fn evaluate(
+        &self,
+        requests: Vec<EvalJudgeRequest>,
+    ) -> Vec<pera_evals::EvalJudgeResult> {
+        let mut results = Vec::new();
+        for request in requests {
+            let model_name = request
+                .model
+                .clone()
+                .unwrap_or_else(|| self.default_model.clone());
+            let provider = match OpenAiProvider::new(OpenAiProviderConfig {
+                api_key: self.api_key.clone(),
+                model: model_name.clone(),
+            }) {
+                Ok(provider) => provider,
+                Err(error) => {
+                    results.push(pera_evals::EvalJudgeResult {
+                        criterion_index: request.criterion_index,
+                        model: Some(model_name),
+                        passed: false,
+                        score: Some(0.0),
+                        summary: format!("llm_judge setup failed: {error}"),
+                        rubric: request.rubric,
+                        response: String::new(),
+                    });
+                    continue;
+                }
+            };
+            let llm_request = LlmRequest {
+                system_prompt: request.system_prompt.clone(),
+                messages: vec![PromptMessage {
+                    role: "user".to_owned(),
+                    content: request.user_message.clone(),
+                    metadata: None,
+                }],
+                tools: vec![],
+            };
+            match provider.complete(llm_request).await {
+                Ok(response) => {
+                    let content = response.content.trim().to_owned();
+                    match parse_judge_verdict(&content) {
+                        Ok(EvalJudgeResultPayload {
+                            passed,
+                            score,
+                            reason,
+                        }) => results.push(pera_evals::EvalJudgeResult {
+                            criterion_index: request.criterion_index,
+                            model: Some(model_name),
+                            passed,
+                            score,
+                            summary: reason,
+                            rubric: request.rubric,
+                            response: content,
+                        }),
+                        Err(error) => results.push(pera_evals::EvalJudgeResult {
+                            criterion_index: request.criterion_index,
+                            model: Some(model_name),
+                            passed: false,
+                            score: Some(0.0),
+                            summary: format!("llm_judge returned invalid JSON: {error}"),
+                            rubric: request.rubric,
+                            response: content,
+                        }),
+                    }
+                }
+                Err(error) => results.push(pera_evals::EvalJudgeResult {
+                    criterion_index: request.criterion_index,
+                    model: Some(model_name),
+                    passed: false,
+                    score: Some(0.0),
+                    summary: format!("llm_judge request failed: {error}"),
+                    rubric: request.rubric,
+                    response: String::new(),
+                }),
+            }
+        }
+        results
+    }
+}
 
 #[derive(Debug, Args)]
 pub struct EvalCommand {
@@ -132,16 +221,21 @@ impl EvalModeCommand {
             environment.activate_skill(skill_name.clone());
         }
         let openai_model = required_env_var("OPENAI_MODEL")?;
+        let openai_api_key = required_env_var("OPENAI_API_KEY")?;
+        let judge = OpenAiEvalJudge {
+            api_key: openai_api_key.clone(),
+            default_model: openai_model.clone(),
+        };
         let agent = LlmAgentParticipant::with_debug_sink(
             OpenAiProvider::new(OpenAiProviderConfig {
-                api_key: required_env_var("OPENAI_API_KEY")?,
+                api_key: openai_api_key.clone(),
                 model: openai_model.clone(),
             })
             .map_err(|error| CliError::UnexpectedStateOwned(error.to_string()))?,
             ProviderBackedPromptBuilder,
             Arc::new(FilePromptDebugSink::new(
                 workspace_root.clone(),
-                Some(openai_model),
+                Some(openai_model.clone()),
             )),
         );
         let user = ScriptedUserParticipant::<
@@ -159,6 +253,7 @@ impl EvalModeCommand {
                 environment,
                 participants,
                 WorkspaceEvalAdapter,
+                Some(&judge),
             )
             .await
             .map_err(|error| {
