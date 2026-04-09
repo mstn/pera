@@ -59,15 +59,22 @@ impl OpenAiClient {
             .post(RESPONSES_API_URL)
             .json(&ResponsesRequest {
                 model: self.model.clone(),
-                input: messages.iter().cloned().map(ApiMessage::from).collect(),
+                input: messages.iter().cloned().map(ApiInputItem::from).collect(),
                 stream: true,
                 tools,
             })
             .send()
             .await
-            .context("failed to send request to OpenAI")?
-            .error_for_status()
-            .context("OpenAI returned an error status")?;
+            .context("failed to send request to OpenAI")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|error| format!("<failed to read response body: {error}>"));
+            bail!("OpenAI returned HTTP {status}: {}", summarize_error_body(&body));
+        }
 
         let stream = try_stream! {
             let mut response_stream = response.bytes_stream();
@@ -99,39 +106,83 @@ impl OpenAiClient {
     }
 }
 
+fn summarize_error_body(body: &str) -> String {
+    let body = body.trim();
+    if body.is_empty() {
+        return "<empty response body>".to_owned();
+    }
+
+    const MAX_LEN: usize = 2000;
+    if body.len() <= MAX_LEN {
+        body.to_owned()
+    } else {
+        format!("{}...", &body[..MAX_LEN])
+    }
+}
+
 #[derive(Debug, Clone)]
-pub struct Message {
-    pub role: MessageRole,
-    pub content: String,
+pub enum Message {
+    Text {
+        role: MessageRole,
+        content: String,
+    },
+    FunctionCall {
+        call_id: String,
+        name: String,
+        arguments: Value,
+    },
+    FunctionCallOutput {
+        call_id: String,
+        output: String,
+    },
 }
 
 #[allow(dead_code)]
 impl Message {
     pub fn user(content: impl Into<String>) -> Self {
-        Self {
+        Self::Text {
             role: MessageRole::User,
             content: content.into(),
         }
     }
 
     pub fn system(content: impl Into<String>) -> Self {
-        Self {
+        Self::Text {
             role: MessageRole::System,
             content: content.into(),
         }
     }
 
     pub fn developer(content: impl Into<String>) -> Self {
-        Self {
+        Self::Text {
             role: MessageRole::Developer,
             content: content.into(),
         }
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self {
+        Self::Text {
             role: MessageRole::Assistant,
             content: content.into(),
+        }
+    }
+
+    pub fn function_call(
+        call_id: impl Into<String>,
+        name: impl Into<String>,
+        arguments: Value,
+    ) -> Self {
+        Self::FunctionCall {
+            call_id: call_id.into(),
+            name: name.into(),
+            arguments,
+        }
+    }
+
+    pub fn function_call_output(call_id: impl Into<String>, output: impl Into<String>) -> Self {
+        Self::FunctionCallOutput {
+            call_id: call_id.into(),
+            output: output.into(),
         }
     }
 }
@@ -166,27 +217,58 @@ impl MessageRole {
 #[derive(Serialize)]
 struct ResponsesRequest<'a, T> {
     model: String,
-    input: Vec<ApiMessage>,
+    input: Vec<ApiInputItem>,
     stream: bool,
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
     tools: &'a [T],
 }
 
 #[derive(Serialize)]
-struct ApiMessage {
-    role: &'static str,
-    content: Vec<ApiContentPart>,
+#[serde(tag = "type")]
+enum ApiInputItem {
+    #[serde(rename = "message")]
+    Message {
+        role: &'static str,
+        content: Vec<ApiContentPart>,
+    },
+    #[serde(rename = "function_call")]
+    FunctionCall {
+        call_id: String,
+        name: String,
+        arguments: String,
+    },
+    #[serde(rename = "function_call_output")]
+    FunctionCallOutput {
+        call_id: String,
+        output: String,
+    },
 }
 
-impl From<Message> for ApiMessage {
+impl From<Message> for ApiInputItem {
     fn from(message: Message) -> Self {
-        let content_type = message.role.content_type();
-        Self {
-            role: message.role.as_str(),
-            content: vec![ApiContentPart {
-                content_type,
-                text: message.content,
-            }],
+        match message {
+            Message::Text { role, content } => {
+                let content_type = role.content_type();
+                Self::Message {
+                    role: role.as_str(),
+                    content: vec![ApiContentPart {
+                        content_type,
+                        text: content,
+                    }],
+                }
+            }
+            Message::FunctionCall {
+                call_id,
+                name,
+                arguments,
+            } => Self::FunctionCall {
+                call_id,
+                name,
+                arguments: arguments.to_string(),
+            },
+            Message::FunctionCallOutput { call_id, output } => {
+                Self::FunctionCallOutput { call_id, output }
+            }
         }
     }
 }

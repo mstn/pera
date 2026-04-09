@@ -1,8 +1,10 @@
-use pera_canonical::render_python_value;
 use pera_orchestrator::{
     ActionError, ParticipantId, ParticipantInboxEvent, ParticipantInput, TrajectoryEvent,
 };
+use pera_canonical::render_python_value;
 use pera_runtime::{WorkspaceAction, WorkspaceObservation, WorkspaceOutcome};
+use serde_json::json;
+use std::collections::{BTreeSet, VecDeque};
 
 use crate::llm::LlmToolDefinition;
 
@@ -10,10 +12,67 @@ const BASE_SYSTEM_PROMPT: &str = include_str!("prompts/base_system.md");
 const SKILLS_SYSTEM_PROMPT: &str = include_str!("prompts/skills_system.md");
 const CODE_GENERATION_SYSTEM_PROMPT: &str = include_str!("prompts/code_generation_system.md");
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PromptMessage {
     pub role: String,
     pub content: String,
+    pub metadata: Option<PromptMessageMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PromptMessageMetadata {
+    ToolCall {
+        call_id: String,
+        name: String,
+        arguments: serde_json::Value,
+    },
+    ToolResult {
+        call_id: String,
+        name: String,
+        output: serde_json::Value,
+    },
+}
+
+impl PromptMessage {
+    fn text(role: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: content.into(),
+            metadata: None,
+        }
+    }
+
+    fn tool_call(
+        call_id: impl Into<String>,
+        name: impl Into<String>,
+        arguments: serde_json::Value,
+    ) -> Self {
+        Self {
+            role: "assistant".to_owned(),
+            content: String::new(),
+            metadata: Some(PromptMessageMetadata::ToolCall {
+                call_id: call_id.into(),
+                name: name.into(),
+                arguments,
+            }),
+        }
+    }
+
+    fn tool_result(
+        call_id: impl Into<String>,
+        name: impl Into<String>,
+        output: serde_json::Value,
+    ) -> Self {
+        Self {
+            role: "tool".to_owned(),
+            content: String::new(),
+            metadata: Some(PromptMessageMetadata::ToolResult {
+                call_id: call_id.into(),
+                name: name.into(),
+                output,
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -59,17 +118,8 @@ impl CodePromptBuilder for ProviderBackedPromptBuilder {
         &self,
         input: &ParticipantInput<WorkspaceObservation, WorkspaceAction, WorkspaceOutcome>,
     ) -> PromptContext {
-        let inbox = input
-            .inbox
-            .iter()
-            .filter_map(inbox_message)
-            .collect::<Vec<_>>();
-        let transcript = input
-            .trajectory
-            .events
-            .iter()
-            .filter_map(trajectory_message)
-            .collect::<Vec<_>>();
+        let (transcript, mut history_state) = build_transcript(&input.trajectory.events);
+        let inbox = build_inbox(&input.inbox, &mut history_state);
 
         PromptContext {
             task_id: input.task.id.clone(),
@@ -179,53 +229,7 @@ impl CodePromptBuilder for ProviderBackedPromptBuilder {
             content.push_str("```\n</declarations>\n");
         }
 
-        Some(PromptMessage {
-            role: "user".to_owned(),
-            content,
-        })
-    }
-}
-
-fn inbox_message(
-    event: &ParticipantInboxEvent<WorkspaceAction, WorkspaceOutcome>,
-) -> Option<PromptMessage> {
-    match event {
-        ParticipantInboxEvent::Message { from, content } => Some(PromptMessage {
-            role: role_for_participant(from),
-            content: content.clone(),
-        }),
-        ParticipantInboxEvent::ActionCompleted { outcome, .. } => action_completed_message(outcome),
-        ParticipantInboxEvent::ActionFailed { error, .. } => action_failed_message(error),
-        ParticipantInboxEvent::Notification { message } => Some(PromptMessage {
-            role: "system".to_owned(),
-            content: message.clone(),
-        }),
-        ParticipantInboxEvent::ActionScheduled { .. } => None,
-    }
-}
-
-fn trajectory_message(
-    event: &TrajectoryEvent<WorkspaceObservation, WorkspaceAction, WorkspaceOutcome>,
-) -> Option<PromptMessage> {
-    match event {
-        TrajectoryEvent::ParticipantMessage {
-            participant,
-            content,
-        } => Some(PromptMessage {
-            role: role_for_participant(participant),
-            content: content.clone(),
-        }),
-        TrajectoryEvent::ActionRequested {
-            participant: ParticipantId::Agent,
-            action: WorkspaceAction::ExecuteCode { source, .. },
-            ..
-        } => Some(PromptMessage {
-            role: "assistant".to_owned(),
-            content: format!("```python\n{}\n```", source.trim_end()),
-        }),
-        TrajectoryEvent::ActionCompleted { outcome, .. } => action_completed_message(outcome),
-        TrajectoryEvent::ActionFailed { error, .. } => action_failed_message(error),
-        _ => None,
+        Some(PromptMessage::text("user", content))
     }
 }
 
@@ -237,37 +241,205 @@ fn role_for_participant(participant: &ParticipantId) -> String {
     }
 }
 
-fn action_completed_message(outcome: &WorkspaceOutcome) -> Option<PromptMessage> {
-    match outcome {
-        WorkspaceOutcome::CodeExecuted { language, result } => result.as_ref().map(|result| PromptMessage {
-            role: "system".to_owned(),
-            content: format!(
-                "Code execution completed.\nLanguage: {language}\nResult:\n```python\n{}\n```",
-                render_python_value(result)
-            ),
-        }),
-        WorkspaceOutcome::SkillLoaded { skill_name } => Some(PromptMessage {
-            role: "system".to_owned(),
-            content: format!(
-                "Skill loaded: {skill_name}. This skill is now active and ready to use. Do not call load_skill for {skill_name} again unless it is later unloaded."
-            ),
-        }),
-        WorkspaceOutcome::SkillUnloaded { skill_name } => Some(PromptMessage {
-            role: "system".to_owned(),
-            content: format!(
-                "Skill unloaded: {skill_name}. This skill is no longer active and must be loaded again before use."
-            ),
-        }),
+#[derive(Default)]
+struct PromptHistoryState {
+    next_tool_call_id: usize,
+    pending_unassigned: VecDeque<String>,
+    action_ids: std::collections::BTreeMap<pera_core::ActionId, String>,
+    seen_action_ids: BTreeSet<pera_core::ActionId>,
+}
+
+impl PromptHistoryState {
+    fn allocate_call_id(&mut self) -> String {
+        let call_id = format!("history-call-{}", self.next_tool_call_id);
+        self.next_tool_call_id += 1;
+        self.pending_unassigned.push_back(call_id.clone());
+        call_id
+    }
+
+    fn bind_action_id(&mut self, action_id: &pera_core::ActionId) -> Option<String> {
+        let call_id = self.pending_unassigned.pop_front()?;
+        self.action_ids.insert(*action_id, call_id.clone());
+        self.seen_action_ids.insert(*action_id);
+        Some(call_id)
+    }
+
+    fn resolve_action_id(&mut self, action_id: &pera_core::ActionId) -> Option<String> {
+        self.action_ids
+            .get(action_id)
+            .cloned()
+            .or_else(|| self.pending_unassigned.pop_front())
+    }
+
+    fn resolve_or_allocate_action_id(&mut self, action_id: &pera_core::ActionId) -> String {
+        self.resolve_action_id(action_id)
+            .unwrap_or_else(|| {
+                let call_id = format!("history-call-{}", self.next_tool_call_id);
+                self.next_tool_call_id += 1;
+                call_id
+            })
+    }
+
+    fn mark_seen_action_id(&mut self, action_id: &pera_core::ActionId) {
+        self.seen_action_ids.insert(*action_id);
+    }
+
+    fn has_seen_action_id(&self, action_id: &pera_core::ActionId) -> bool {
+        self.seen_action_ids.contains(action_id)
     }
 }
 
-fn action_failed_message(error: &ActionError) -> Option<PromptMessage> {
-    Some(PromptMessage {
-        role: "system".to_owned(),
-        content: format!(
-            "Action failed.\nError: {}\nOrigin: {:?}\nDetail:\n{}",
-            error.user_message, error.origin, error.detail
+fn build_transcript(
+    events: &[TrajectoryEvent<WorkspaceObservation, WorkspaceAction, WorkspaceOutcome>],
+) -> (Vec<PromptMessage>, PromptHistoryState) {
+    let mut state = PromptHistoryState::default();
+    let mut messages = Vec::new();
+
+    for event in events {
+        match event {
+            TrajectoryEvent::ParticipantMessage {
+                participant,
+                content,
+            } => messages.push(PromptMessage::text(role_for_participant(participant), content.clone())),
+            TrajectoryEvent::ActionRequested {
+                participant: ParticipantId::Agent,
+                action,
+                ..
+            } => {
+                let call_id = state.allocate_call_id();
+                let (name, arguments) = serialize_workspace_action(action);
+                messages.push(PromptMessage::tool_call(call_id, name, arguments));
+            }
+            TrajectoryEvent::ActionScheduled {
+                participant: ParticipantId::Agent,
+                action_id,
+                ..
+            } => {
+                let _ = state.bind_action_id(action_id);
+            }
+            TrajectoryEvent::ActionCompleted {
+                action_id,
+                outcome,
+                ..
+            } => {
+                state.mark_seen_action_id(action_id);
+                let call_id = state.resolve_or_allocate_action_id(action_id);
+                let (name, output) = serialize_workspace_outcome(outcome);
+                messages.push(PromptMessage::tool_result(call_id, name, output));
+            }
+            TrajectoryEvent::ActionFailed {
+                action_id,
+                error,
+                ..
+            } => {
+                state.mark_seen_action_id(action_id);
+                let call_id = state.resolve_or_allocate_action_id(action_id);
+                messages.push(PromptMessage::tool_result(
+                    call_id,
+                    "action_error",
+                    serialize_action_error(error),
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    (messages, state)
+}
+
+fn build_inbox(
+    events: &[ParticipantInboxEvent<WorkspaceAction, WorkspaceOutcome>],
+    state: &mut PromptHistoryState,
+) -> Vec<PromptMessage> {
+    let mut messages = Vec::new();
+    for event in events {
+        match event {
+            ParticipantInboxEvent::Message { from, content } => {
+                messages.push(PromptMessage::text(role_for_participant(from), content.clone()))
+            }
+            ParticipantInboxEvent::ActionScheduled { action_id, action } => {
+                if state.has_seen_action_id(action_id) {
+                    continue;
+                }
+                let call_id = state.allocate_call_id();
+                state.action_ids.insert(*action_id, call_id.clone());
+                state.mark_seen_action_id(action_id);
+                let (name, arguments) = serialize_workspace_action(action);
+                messages.push(PromptMessage::tool_call(call_id, name, arguments));
+            }
+            ParticipantInboxEvent::ActionCompleted { action_id, outcome } => {
+                if state.has_seen_action_id(action_id) {
+                    continue;
+                }
+                state.mark_seen_action_id(action_id);
+                let call_id = state.resolve_or_allocate_action_id(action_id);
+                let (name, output) = serialize_workspace_outcome(outcome);
+                messages.push(PromptMessage::tool_result(call_id, name, output));
+            }
+            ParticipantInboxEvent::ActionFailed { action_id, error } => {
+                if state.has_seen_action_id(action_id) {
+                    continue;
+                }
+                state.mark_seen_action_id(action_id);
+                let call_id = state.resolve_or_allocate_action_id(action_id);
+                messages.push(PromptMessage::tool_result(
+                    call_id,
+                    "action_error",
+                    serialize_action_error(error),
+                ));
+            }
+            ParticipantInboxEvent::Notification { message } => {
+                messages.push(PromptMessage::text("system", message.clone()))
+            }
+        }
+    }
+    messages
+}
+
+fn serialize_workspace_action(action: &WorkspaceAction) -> (String, serde_json::Value) {
+    match action {
+        WorkspaceAction::LoadSkill { skill_name } => (
+            "load_skill".to_owned(),
+            json!({ "skill_name": skill_name }),
         ),
+        WorkspaceAction::UnloadSkill { skill_name } => (
+            "unload_skill".to_owned(),
+            json!({ "skill_name": skill_name }),
+        ),
+        WorkspaceAction::ExecuteCode { language, source } => (
+            "execute_code".to_owned(),
+            json!({ "language": language, "source": source }),
+        ),
+    }
+}
+
+fn serialize_workspace_outcome(outcome: &WorkspaceOutcome) -> (String, serde_json::Value) {
+    match outcome {
+        WorkspaceOutcome::CodeExecuted { language, result } => (
+            "code_executed".to_owned(),
+            match result {
+                Some(result) => {
+                    json!({ "language": language, "result": render_python_value(result) })
+                }
+                None => json!({ "language": language }),
+            },
+        ),
+        WorkspaceOutcome::SkillLoaded { skill_name } => (
+            "skill_loaded".to_owned(),
+            json!({ "skill_name": skill_name }),
+        ),
+        WorkspaceOutcome::SkillUnloaded { skill_name } => (
+            "skill_unloaded".to_owned(),
+            json!({ "skill_name": skill_name }),
+        ),
+    }
+}
+
+fn serialize_action_error(error: &ActionError) -> serde_json::Value {
+    json!({
+        "user_message": error.user_message,
+        "detail": error.detail,
+        "origin": format!("{:?}", error.origin),
     })
 }
 
@@ -281,12 +453,12 @@ mod tests {
         TrajectoryEvent,
     };
     use pera_runtime::{
-        AgentWorkspaceTool, WorkspaceActiveSkill, WorkspaceAvailableSkill, WorkspaceObservation,
-        WorkspaceOutcome,
+        AgentWorkspaceTool, WorkspaceAction, WorkspaceActiveSkill, WorkspaceAvailableSkill,
+        WorkspaceObservation, WorkspaceOutcome,
     };
     use serde_json::json;
 
-    use super::{CodePromptBuilder, ProviderBackedPromptBuilder};
+    use super::{CodePromptBuilder, PromptMessageMetadata, ProviderBackedPromptBuilder};
 
     #[test]
     fn prompt_builder_includes_available_and_active_skills() {
@@ -427,15 +599,13 @@ mod tests {
         };
 
         let context = builder.build_context(&input);
-        let contents = context.transcript
-            .iter()
-            .map(|message| message.content.as_str())
-            .collect::<Vec<_>>();
-
-        assert!(contents.iter().any(|content: &&str| *content == "Running a quick check."));
-        assert!(contents.iter().any(|content: &&str| {
-            content.contains("```python\nresult = 1 + 1\nresult\n```")
-        }));
+        assert!(context.transcript.iter().any(|message| message.content == "Running a quick check."));
+        assert!(context.transcript.iter().any(|message| matches!(
+            &message.metadata,
+            Some(PromptMessageMetadata::ToolCall { name, arguments, .. })
+                if name == "execute_code"
+                    && arguments.get("source").and_then(|value| value.as_str()) == Some("result = 1 + 1\nresult")
+        )));
     }
 
     #[test]
@@ -495,14 +665,29 @@ mod tests {
         let context = builder.build_context(&input);
         let rendered = context.inbox
             .iter()
-            .find(|message| message.content.contains("Code execution completed."))
-            .expect("expected code execution completion message");
+            .find(|message| matches!(
+                &message.metadata,
+                Some(PromptMessageMetadata::ToolResult { name, output, .. })
+                    if name == "code_executed"
+                        && output.get("result").is_some()
+            ))
+            .expect("expected code execution tool result");
 
-        assert!(rendered.content.contains("```python"));
-        assert!(rendered.content.contains("Meeting("));
-        assert!(rendered.content.contains("title=\"Delta Review\""));
-        assert!(rendered.content.contains("city=\"Berlin\""));
-        assert!(rendered.content.contains("True"));
+        match &rendered.metadata {
+            Some(PromptMessageMetadata::ToolResult { name, output, .. }) => {
+                assert_eq!(name, "code_executed");
+                assert_eq!(output.get("language").and_then(|value| value.as_str()), Some("python"));
+                let result = output
+                    .get("result")
+                    .and_then(|value| value.as_str())
+                    .expect("missing string result");
+                assert!(result.contains("Meeting("));
+                assert!(result.contains("Delta Review"));
+                assert!(result.contains("Berlin"));
+                assert!(result.contains("True"));
+            }
+            _ => panic!("expected tool result metadata"),
+        }
     }
 
     #[test]
@@ -557,12 +742,20 @@ mod tests {
         let context = builder.build_context(&input);
         let rendered = context.transcript
             .iter()
-            .find(|message| message.content.contains("Code execution completed."))
+            .find(|message| matches!(
+                &message.metadata,
+                Some(PromptMessageMetadata::ToolResult { name, .. }) if name == "code_executed"
+            ))
             .expect("expected persisted code execution result in transcript");
 
-        assert_eq!(rendered.role, "system");
-        assert!(rendered.content.contains("```python"));
-        assert!(rendered.content.contains("[1, \"two\"]"));
+        assert_eq!(rendered.role, "tool");
+        match &rendered.metadata {
+            Some(PromptMessageMetadata::ToolResult { output, .. }) => {
+                assert!(output.to_string().contains("\"language\":\"python\""));
+                assert!(output.to_string().contains("[1, \\\"two\\\"]"));
+            }
+            _ => panic!("expected tool result metadata"),
+        }
     }
 
     #[test]
@@ -613,10 +806,13 @@ mod tests {
         let context = builder.build_context(&input);
         let rendered = context.transcript
             .iter()
-            .find(|message| message.content.contains("Skill loaded: travel-policy"))
+            .find(|message| matches!(
+                &message.metadata,
+                Some(PromptMessageMetadata::ToolResult { name, .. }) if name == "skill_loaded"
+            ))
             .expect("expected persisted skill completion in transcript");
 
-        assert_eq!(rendered.role, "system");
+        assert_eq!(rendered.role, "tool");
     }
 
     #[test]
@@ -669,11 +865,98 @@ mod tests {
         let context = builder.build_context(&input);
         let rendered = context.transcript
             .iter()
-            .find(|message| message.role == "system")
-            .expect("expected system failure message in transcript");
+            .find(|message| matches!(
+                &message.metadata,
+                Some(PromptMessageMetadata::ToolResult { name, .. }) if name == "action_error"
+            ))
+            .expect("expected action error tool result in transcript");
 
-        assert!(rendered.content.contains("Action failed."));
-        assert!(rendered.content.contains("Variable lookup failed"));
-        assert!(rendered.content.contains("name_lookup for 'meetings'"));
+        match &rendered.metadata {
+            Some(PromptMessageMetadata::ToolResult { output, .. }) => {
+                assert!(output.to_string().contains("Variable lookup failed"));
+                assert!(output.to_string().contains("name_lookup for 'meetings'"));
+            }
+            _ => panic!("expected tool result metadata"),
+        }
+    }
+
+    #[test]
+    fn transcript_suppresses_duplicate_inbox_action_completion() {
+        let builder = ProviderBackedPromptBuilder;
+        let action_id = pera_core::ActionId::generate();
+        let input = ParticipantInput {
+            run_id: RunId::generate(),
+            agent_loop_id: WorkItemId::generate(),
+            agent_loop_iteration: 2,
+            participant: ParticipantId::Agent,
+            work_item: Some(pera_orchestrator::WorkItem {
+                id: WorkItemId::generate(),
+                from: ParticipantId::User,
+                content: "Check something".to_owned(),
+            }),
+            task: TaskSpec {
+                id: "task".to_owned(),
+                instructions: "Do the work".to_owned(),
+            },
+            limits: RunLimits {
+                max_steps: 10,
+                max_steps_per_agent_loop: 10,
+                max_actions: 10,
+                max_messages: 10,
+                max_failed_actions: None,
+                max_consecutive_failed_actions: None,
+                max_blocked_action_wait: None,
+                max_duration: Some(Duration::from_secs(10)),
+            },
+            observation: WorkspaceObservation {
+                available_tools: vec![],
+                available_skills: vec![],
+                active_skills: vec![],
+            },
+            inbox: vec![ParticipantInboxEvent::ActionCompleted {
+                action_id,
+                outcome: WorkspaceOutcome::SkillLoaded {
+                    skill_name: "calendar-ops".to_owned(),
+                },
+            }],
+            trajectory: Trajectory {
+                run_id: RunId::generate(),
+                events: vec![
+                    TrajectoryEvent::ActionRequested {
+                        participant: ParticipantId::Agent,
+                        action: WorkspaceAction::LoadSkill {
+                            skill_name: "calendar-ops".to_owned(),
+                        },
+                        execution: pera_orchestrator::ActionExecution::Immediate,
+                    },
+                    TrajectoryEvent::ActionScheduled {
+                        participant: ParticipantId::Agent,
+                        action_id,
+                        action: WorkspaceAction::LoadSkill {
+                            skill_name: "calendar-ops".to_owned(),
+                        },
+                        execution: pera_orchestrator::ActionExecution::Immediate,
+                    },
+                    TrajectoryEvent::ActionCompleted {
+                        participant: ParticipantId::Agent,
+                        action_id,
+                        outcome: WorkspaceOutcome::SkillLoaded {
+                            skill_name: "calendar-ops".to_owned(),
+                        },
+                    },
+                ],
+            },
+        };
+
+        let context = builder.build_context(&input);
+
+        assert!(context.transcript.iter().any(|message| matches!(
+            &message.metadata,
+            Some(PromptMessageMetadata::ToolResult { name, .. }) if name == "skill_loaded"
+        )));
+        assert!(!context.inbox.iter().any(|message| matches!(
+            &message.metadata,
+            Some(PromptMessageMetadata::ToolResult { name, .. }) if name == "skill_loaded"
+        )));
     }
 }

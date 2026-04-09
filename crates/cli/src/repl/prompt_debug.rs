@@ -1,14 +1,15 @@
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 use chrono::Local;
 use pera_agents::{
     LlmRequest, PromptDebugMetadata, PromptDebugResponseRecord, PromptDebugSink,
+    PromptMessageMetadata,
 };
 use pera_core::{RunId, WorkItemId};
 use pera_runtime::FileSystemLayout;
+use serde::Serialize;
 
 use crate::error::CliError;
 
@@ -90,17 +91,21 @@ impl PromptDebugSink for FilePromptDebugSink {
             .resolve_loop_directory(metadata)
             .map_err(|error| pera_orchestrator::ParticipantError::new(error.to_string()))?;
         let iteration_id = format!("{:04}", metadata.agent_loop_iteration);
-        let prompt_path = loop_directory.join(format!("{iteration_id}.prompt.md"));
+        let request_yaml_path = loop_directory.join(format!("{iteration_id}.request.yaml"));
         let tools_path = loop_directory.join(format!("{iteration_id}.tools.json"));
 
         std::fs::write(
-            &prompt_path,
-            render_prompt_markdown(self.model.as_deref(), metadata, request),
+            &request_yaml_path,
+            render_request_yaml(self.model.as_deref(), request).map_err(|error| {
+                pera_orchestrator::ParticipantError::new(
+                    CliError::UnexpectedStateOwned(error.to_string()).to_string(),
+                )
+            })?,
         )
         .map_err(|source| {
             pera_orchestrator::ParticipantError::new(
                 CliError::WriteFile {
-                    path: prompt_path,
+                    path: request_yaml_path,
                     source,
                 }
                 .to_string(),
@@ -134,13 +139,13 @@ impl PromptDebugSink for FilePromptDebugSink {
             .resolve_loop_directory(metadata)
             .map_err(|error| pera_orchestrator::ParticipantError::new(error.to_string()))?;
         let iteration_id = format!("{:04}", metadata.agent_loop_iteration);
-        let response_path = loop_directory.join(format!("{iteration_id}.response.json"));
-        let response_json = serde_json::to_vec_pretty(response).map_err(|error| {
+        let response_path = loop_directory.join(format!("{iteration_id}.response.yaml"));
+        let response_yaml = serde_yaml::to_string(response).map_err(|error| {
             pera_orchestrator::ParticipantError::new(
                 CliError::UnexpectedStateOwned(error.to_string()).to_string(),
             )
         })?;
-        std::fs::write(&response_path, response_json).map_err(|source| {
+        std::fs::write(&response_path, response_yaml).map_err(|source| {
             pera_orchestrator::ParticipantError::new(
                 CliError::WriteFile {
                     path: response_path,
@@ -154,49 +159,132 @@ impl PromptDebugSink for FilePromptDebugSink {
     }
 }
 
-fn render_prompt_markdown(
-    model: Option<&str>,
-    metadata: &PromptDebugMetadata,
-    request: &LlmRequest,
-) -> String {
-    let mut output = String::new();
-    let _ = writeln!(&mut output, "---");
-    let _ = writeln!(&mut output, "generated_at: {}", Local::now().to_rfc3339());
-    let _ = writeln!(&mut output, "run_id: {}", metadata.run_id);
-    let _ = writeln!(&mut output, "agent_loop_id: {}", metadata.agent_loop_id);
-    let _ = writeln!(
-        &mut output,
-        "agent_loop_iteration: {}",
-        metadata.agent_loop_iteration
-    );
-    let _ = writeln!(&mut output, "participant: {:?}", metadata.participant);
-    let _ = writeln!(&mut output, "task_id: {}", metadata.task_id);
-    if let Some(model) = model {
-        let _ = writeln!(&mut output, "model: {model}");
-    }
-    let _ = writeln!(&mut output, "---");
-    let _ = writeln!(&mut output);
+#[derive(Serialize)]
+struct RequestYaml<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<&'a str>,
+    stream: bool,
+    input: Vec<RequestYamlInputItem>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<RequestYamlTool<'a>>,
+}
 
-    let _ = writeln!(&mut output, "<system>");
-    let _ = writeln!(&mut output, "{}", request.system_prompt);
-    let _ = writeln!(&mut output, "</system>");
-    let _ = writeln!(&mut output);
+#[derive(Serialize)]
+#[serde(tag = "type")]
+enum RequestYamlInputItem {
+    #[serde(rename = "message")]
+    Message {
+        role: &'static str,
+        content: Vec<RequestYamlContentPart>,
+    },
+    #[serde(rename = "function_call")]
+    FunctionCall {
+        call_id: String,
+        name: String,
+        arguments: serde_yaml::Value,
+    },
+    #[serde(rename = "function_call_output")]
+    FunctionCallOutput {
+        call_id: String,
+        output: serde_yaml::Value,
+    },
+}
+
+#[derive(Serialize)]
+struct RequestYamlContentPart {
+    #[serde(rename = "type")]
+    content_type: &'static str,
+    text: String,
+}
+
+#[derive(Serialize)]
+struct RequestYamlTool<'a> {
+    #[serde(rename = "type")]
+    tool_type: &'static str,
+    name: &'a str,
+    description: &'a str,
+    parameters: serde_yaml::Value,
+}
+
+fn render_request_yaml(
+    model: Option<&str>,
+    request: &LlmRequest,
+) -> Result<String, serde_yaml::Error> {
+    let mut input = Vec::with_capacity(request.messages.len() + 1);
+    input.push(RequestYamlInputItem::Message {
+        role: "system",
+        content: vec![RequestYamlContentPart {
+            content_type: "input_text",
+            text: request.system_prompt.clone(),
+        }],
+    });
 
     for message in &request.messages {
-        let tag = match message.role.as_str() {
-            "system" => "system",
-            "assistant" => "assistant",
-            "developer" => "developer",
-            "user" => "user",
-            _ => "message",
-        };
-        let _ = writeln!(&mut output, "<{tag}>");
-        let _ = writeln!(&mut output, "{}", message.content);
-        let _ = writeln!(&mut output, "</{tag}>");
-        let _ = writeln!(&mut output);
+        match &message.metadata {
+            Some(PromptMessageMetadata::ToolCall {
+                call_id,
+                name,
+                arguments,
+            }) => input.push(RequestYamlInputItem::FunctionCall {
+                call_id: call_id.clone(),
+                name: name.clone(),
+                arguments: json_to_yaml(arguments.clone()),
+            }),
+            Some(PromptMessageMetadata::ToolResult {
+                call_id,
+                output,
+                ..
+            }) => input.push(RequestYamlInputItem::FunctionCallOutput {
+                call_id: call_id.clone(),
+                output: json_to_yaml(output.clone()),
+            }),
+            None => input.push(RequestYamlInputItem::Message {
+                role: role_to_provider_role(&message.role),
+                content: vec![RequestYamlContentPart {
+                    content_type: content_type_for_role(&message.role),
+                    text: message.content.clone(),
+                }],
+            }),
+        }
     }
 
-    output
+    let tools = request
+        .tools
+        .iter()
+        .map(|tool| RequestYamlTool {
+            tool_type: "function",
+            name: &tool.name,
+            description: &tool.description,
+            parameters: json_to_yaml(tool.input_schema.clone()),
+        })
+        .collect::<Vec<_>>();
+
+    serde_yaml::to_string(&RequestYaml {
+        model,
+        stream: true,
+        input,
+        tools,
+    })
+}
+
+fn json_to_yaml(value: serde_json::Value) -> serde_yaml::Value {
+    serde_yaml::to_value(value).unwrap_or(serde_yaml::Value::Null)
+}
+
+fn role_to_provider_role(role: &str) -> &'static str {
+    match role {
+        "system" => "system",
+        "developer" => "developer",
+        "assistant" => "assistant",
+        _ => "user",
+    }
+}
+
+fn content_type_for_role(role: &str) -> &'static str {
+    match role {
+        "assistant" => "output_text",
+        _ => "input_text",
+    }
 }
 
 fn timestamp_prefix() -> String {

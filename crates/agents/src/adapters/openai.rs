@@ -5,7 +5,7 @@ use serde::Serialize;
 use crate::llm::{
     LlmProvider, LlmRequest, LlmStream, LlmStreamEvent, LlmToolCall, LlmToolDefinition,
 };
-use crate::prompt::PromptMessage;
+use crate::prompt::{PromptMessage, PromptMessageMetadata};
 use crate::providers::openai::{
     Message, OpenAiClient, OpenAiConfig, OpenAiResponseEvent,
 };
@@ -76,11 +76,23 @@ fn tool_from_definition(tool: &LlmToolDefinition) -> OpenAiFunctionTool {
 }
 
 fn message_from_prompt(message: PromptMessage) -> Message {
-    match message.role.as_str() {
-        "system" => Message::system(message.content),
-        "developer" => Message::developer(message.content),
-        "assistant" => Message::assistant(message.content),
-        _ => Message::user(message.content),
+    match message.metadata {
+        Some(PromptMessageMetadata::ToolCall {
+            call_id,
+            name,
+            arguments,
+        }) => Message::function_call(call_id, name, arguments),
+        Some(PromptMessageMetadata::ToolResult {
+            call_id,
+            output,
+            ..
+        }) => Message::function_call_output(call_id, output.to_string()),
+        None => match message.role.as_str() {
+            "system" => Message::system(message.content),
+            "developer" => Message::developer(message.content),
+            "assistant" => Message::assistant(message.content),
+            _ => Message::user(message.content),
+        },
     }
 }
 

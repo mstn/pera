@@ -10,5 +10,8 @@ pub use llm::{
     PromptDebugResponseRecord, PromptDebugResponseStatus, PromptDebugSink,
     PromptDebugToolCall, UnconfiguredLlmProvider,
 };
-pub use prompt::{CodePromptBuilder, PromptContext, PromptMessage, ProviderBackedPromptBuilder};
+pub use prompt::{
+    CodePromptBuilder, PromptContext, PromptMessage, PromptMessageMetadata,
+    ProviderBackedPromptBuilder,
+};
 pub use providers::openai::OpenAiConfig;
