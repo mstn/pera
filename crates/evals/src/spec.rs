@@ -152,7 +152,7 @@ pub struct EvalOptimizationSpec {
     pub early_stop_on_pass: Option<bool>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct EvalOptimizationTargetSpec {
     pub kind: String,
     #[serde(default)]

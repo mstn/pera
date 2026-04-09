@@ -14,6 +14,9 @@ pub struct RunArtifacts {
     pub manifest_path: PathBuf,
     pub result_path: PathBuf,
     pub trajectory_path: PathBuf,
+    pub optimization_suggestions_path: PathBuf,
+    pub optimization_suggestions_system_prompt_path: PathBuf,
+    pub optimization_suggestions_user_prompt_path: PathBuf,
     mode: String,
     spec_path: String,
     overrides: Vec<ManifestOverride>,
@@ -58,6 +61,11 @@ pub fn create_run_artifacts(
     let manifest_path = run_dir.join("run.json");
     let result_path = run_dir.join("result.json");
     let trajectory_path = run_dir.join("trajectory.jsonl");
+    let optimization_suggestions_path = run_dir.join("optimization_suggestions.yaml");
+    let optimization_suggestions_system_prompt_path =
+        run_dir.join("optimization_suggestions.system.md");
+    let optimization_suggestions_user_prompt_path =
+        run_dir.join("optimization_suggestions.user.md");
 
     let resolved_bytes = serde_yaml::to_string(&loaded.raw).map_err(|error| {
         CliError::UnexpectedStateOwned(format!("failed to serialize resolved eval spec: {error}"))
@@ -81,6 +89,9 @@ pub fn create_run_artifacts(
         manifest_path,
         result_path,
         trajectory_path,
+        optimization_suggestions_path,
+        optimization_suggestions_system_prompt_path,
+        optimization_suggestions_user_prompt_path,
         mode: mode.to_owned(),
         spec_path: spec_path.display().to_string(),
         overrides: manifest_overrides,

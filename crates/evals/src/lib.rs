@@ -15,8 +15,11 @@ pub use execution::{
 };
 pub use evaluator::{
     EvalActionAdapter, EvalJudge, EvalJudgeRequest, EvalJudgeResultPayload, SpecEvaluator,
-    build_llm_judge_requests, parse_judge_verdict, serialize_trajectory_events,
-    trajectory_trace_events,
+    build_llm_judge_requests, build_optimization_suggestion_request,
+    parse_judge_verdict, parse_optimization_suggestions, serialize_trajectory_events,
+    trajectory_trace_events, EvalOptimizationSuggestionRequest,
+    EvalOptimizationSuggestionsResponse, EvalOptimizationTargetSuggestion,
+    EvalOptimizationTargetSuggestionValue,
 };
 pub use error::EvalError;
 pub use overrides::OverrideSet;

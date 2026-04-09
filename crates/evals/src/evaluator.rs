@@ -13,6 +13,10 @@ use crate::spec::{EvalCriterionSpec, EvalExpectedActionSpec, EvalSpec};
 
 const JUDGE_SYSTEM_PROMPT: &str = include_str!("prompts/judge_system.md");
 const JUDGE_USER_PROMPT: &str = include_str!("prompts/judge_user.md");
+const OPTIMIZATION_SUGGESTIONS_SYSTEM_PROMPT: &str =
+    include_str!("prompts/optimization_suggestions_system.md");
+const OPTIMIZATION_SUGGESTIONS_USER_PROMPT: &str =
+    include_str!("prompts/optimization_suggestions_user.md");
 
 pub trait EvalActionAdapter<A, U>: Clone + Send + Sync + 'static {
     fn serialize_action(&self, action: &A) -> SerializedAction;
@@ -202,6 +206,37 @@ pub struct EvalJudgeRequest {
     pub user_message: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct EvalOptimizationSuggestionRequest {
+    pub system_prompt: String,
+    pub user_message: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EvalOptimizationSuggestionsResponse {
+    pub summary: String,
+    pub suggestions: Vec<EvalOptimizationTargetSuggestion>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EvalOptimizationTargetSuggestion {
+    pub action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<EvalOptimizationTargetSuggestionValue>,
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EvalOptimizationTargetSuggestionValue {
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skill: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+}
+
 #[async_trait]
 pub trait EvalJudge: Send + Sync {
     async fn evaluate(&self, requests: Vec<EvalJudgeRequest>) -> Vec<EvalJudgeResult>;
@@ -276,6 +311,58 @@ pub fn parse_judge_verdict(content: &str) -> Result<EvalJudgeResultPayload, serd
         serde_json::from_str(&trimmed[start..end])
     })?;
     Ok(verdict.into())
+}
+
+#[derive(Debug, Serialize)]
+struct OptimizationSuggestionPrompt<'a> {
+    spec_id: &'a str,
+    description: Option<&'a str>,
+    purpose: &'a str,
+    current_targets: &'a [crate::spec::EvalOptimizationTargetSpec],
+    evaluation_passed: bool,
+    evaluation_summary: Option<&'a String>,
+    final_agent_message: Option<&'a String>,
+    judge_results: &'a [EvalJudgeResult],
+    trace: &'a [EvalTraceEvent],
+}
+
+pub fn build_optimization_suggestion_request(
+    spec: &EvalSpec,
+    result: &crate::execution::EvalRunResult,
+) -> Result<EvalOptimizationSuggestionRequest, serde_json::Error> {
+    let current_targets = spec
+        .optimization
+        .as_ref()
+        .map(|optimization| optimization.targets.as_slice())
+        .unwrap_or(&[]);
+    let payload = OptimizationSuggestionPrompt {
+        spec_id: &spec.id,
+        description: spec.description.as_deref(),
+        purpose: &spec.scenario.purpose,
+        current_targets,
+        evaluation_passed: result.evaluation.passed,
+        evaluation_summary: result.evaluation.summary.as_ref(),
+        final_agent_message: result.final_agent_message.as_ref(),
+        judge_results: &result.judge_results,
+        trace: &result.trace,
+    };
+    let payload_json = serde_json::to_string_pretty(&payload)?;
+    Ok(EvalOptimizationSuggestionRequest {
+        system_prompt: OPTIMIZATION_SUGGESTIONS_SYSTEM_PROMPT.to_owned(),
+        user_message: OPTIMIZATION_SUGGESTIONS_USER_PROMPT
+            .replace("{{payload_json}}", &payload_json),
+    })
+}
+
+pub fn parse_optimization_suggestions(
+    content: &str,
+) -> Result<EvalOptimizationSuggestionsResponse, serde_json::Error> {
+    serde_json::from_str(content).or_else(|_| {
+        let trimmed = content.trim();
+        let start = trimmed.find('{').unwrap_or(0);
+        let end = trimmed.rfind('}').map(|idx| idx + 1).unwrap_or(trimmed.len());
+        serde_json::from_str(&trimmed[start..end])
+    })
 }
 
 #[derive(Debug, Clone)]

@@ -10,11 +10,14 @@ use pera_agents::{
 };
 use pera_evals::{
     EvalActionAdapter, EvalEngine, EvalJudge, EvalJudgeRequest, EvalJudgeResultPayload,
-    EvalMode as EngineEvalMode, EvalRequest, EvalRunner, EvalSpec, OverrideSet,
-    ScriptedUserParticipant, SerializedAction, SerializedOutcome, parse_judge_verdict,
+    EvalMode as EngineEvalMode, EvalOptimizationSuggestionsResponse, EvalRequest, EvalRunResult,
+    EvalRunner, EvalSpec, OverrideSet, ScriptedUserParticipant, SerializedAction,
+    SerializedOutcome, build_optimization_suggestion_request, parse_judge_verdict,
+    parse_optimization_suggestions,
 };
 use pera_orchestrator::Participant;
 use pera_runtime::{AgentWorkspace, WorkspaceAction, WorkspaceObservation, WorkspaceOutcome};
+use serde::Serialize;
 use serde_yaml::{Mapping, Value};
 
 use self::artifacts::{RunArtifacts, create_run_artifacts, write_run_failed, write_run_result};
@@ -155,6 +158,8 @@ struct EvalModeCommand {
     pub set_values: Vec<String>,
     #[arg(long = "set-json", value_name = "PATH=JSON")]
     pub set_json_values: Vec<String>,
+    #[arg(long)]
+    pub suggest_optimizations: bool,
 }
 
 impl EvalModeCommand {
@@ -261,6 +266,16 @@ impl EvalModeCommand {
                 CliError::from(error)
             })?;
         write_run_result(&artifacts, &result)?;
+        if self.suggest_optimizations {
+            write_optimization_suggestions(
+                &artifacts,
+                &session.loaded_spec.spec,
+                &result,
+                &openai_api_key,
+                &openai_model,
+            )
+            .await?;
+        }
 
         print_summary(mode, &artifacts);
         println!("passed: {}", result.passed);
@@ -307,6 +322,99 @@ impl From<EvalMode> for EngineEvalMode {
             EvalMode::Optimize => Self::Optimize,
         }
     }
+}
+
+#[derive(Debug, Serialize)]
+struct OptimizationSuggestionsArtifact {
+    status: String,
+    model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    suggestions: Option<EvalOptimizationSuggestionsResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    response: String,
+}
+
+async fn write_optimization_suggestions(
+    artifacts: &RunArtifacts,
+    spec: &EvalSpec,
+    result: &EvalRunResult,
+    api_key: &str,
+    model: &str,
+) -> Result<(), CliError> {
+    let provider = OpenAiProvider::new(OpenAiProviderConfig {
+        api_key: api_key.to_owned(),
+        model: model.to_owned(),
+    })
+    .map_err(|error| CliError::UnexpectedStateOwned(error.to_string()))?;
+
+    let prompt = build_optimization_suggestion_request(spec, result)
+        .map_err(|error| CliError::UnexpectedStateOwned(error.to_string()))?;
+    std::fs::write(
+        &artifacts.optimization_suggestions_system_prompt_path,
+        &prompt.system_prompt,
+    )
+    .map_err(|source| CliError::WriteFile {
+        path: artifacts.optimization_suggestions_system_prompt_path.clone(),
+        source,
+    })?;
+    std::fs::write(
+        &artifacts.optimization_suggestions_user_prompt_path,
+        &prompt.user_message,
+    )
+    .map_err(|source| CliError::WriteFile {
+        path: artifacts.optimization_suggestions_user_prompt_path.clone(),
+        source,
+    })?;
+    let request = LlmRequest {
+        system_prompt: prompt.system_prompt,
+        messages: vec![PromptMessage {
+            role: "user".to_owned(),
+            content: prompt.user_message,
+            metadata: None,
+        }],
+        tools: vec![],
+    };
+
+    let artifact = match provider.complete(request).await {
+        Ok(response) => {
+            let content = response.content.trim().to_owned();
+            match parse_optimization_suggestions(&content) {
+                Ok(suggestions) => OptimizationSuggestionsArtifact {
+                    status: "ok".to_owned(),
+                    model: model.to_owned(),
+                    suggestions: Some(suggestions),
+                    error: None,
+                    response: content,
+                },
+                Err(error) => OptimizationSuggestionsArtifact {
+                    status: "error".to_owned(),
+                    model: model.to_owned(),
+                    suggestions: None,
+                    error: Some(format!("invalid suggestions response: {error}")),
+                    response: content,
+                },
+            }
+        }
+        Err(error) => OptimizationSuggestionsArtifact {
+            status: "error".to_owned(),
+            model: model.to_owned(),
+            suggestions: None,
+            error: Some(error.to_string()),
+            response: String::new(),
+        },
+    };
+
+    let bytes = serde_yaml::to_string(&artifact)
+        .map_err(|error| CliError::UnexpectedStateOwned(error.to_string()))?;
+    std::fs::write(&artifacts.optimization_suggestions_path, bytes).map_err(|source| {
+        CliError::WriteFile {
+            path: artifacts.optimization_suggestions_path.clone(),
+            source,
+        }
+    })?;
+
+    Ok(())
 }
 
 fn print_summary(mode: EvalMode, artifacts: &RunArtifacts) {
