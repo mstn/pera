@@ -54,7 +54,11 @@ impl CodePromptBuilder for ProviderBackedPromptBuilder {
         &self,
         input: &ParticipantInput<WorkspaceObservation, WorkspaceAction, WorkspaceOutcome>,
     ) -> PromptContext {
-        let (transcript, mut history_state) = build_transcript(&input.trajectory.events);
+        let current_loop_start = current_agent_loop_start_index(&input.trajectory.events);
+        let current_loop_loaded_skills =
+            current_loop_loaded_skill_names(&input.trajectory.events[current_loop_start..]);
+        let (transcript, mut history_state) =
+            build_transcript(&input.trajectory.events, current_loop_start);
         let inbox = build_inbox(&input.inbox, &mut history_state);
 
         PromptContext {
@@ -83,6 +87,7 @@ impl CodePromptBuilder for ProviderBackedPromptBuilder {
                 .observation
                 .active_skills
                 .iter()
+                .filter(|skill| current_loop_loaded_skills.contains(&skill.skill_name))
                 .map(|skill| ActiveSkillPrompt {
                     skill_name: skill.skill_name.clone(),
                     instructions: skill.instructions.clone(),
@@ -227,11 +232,12 @@ impl PromptHistoryState {
 
 fn build_transcript(
     events: &[TrajectoryEvent<WorkspaceObservation, WorkspaceAction, WorkspaceOutcome>],
+    current_loop_start: usize,
 ) -> (Vec<PromptMessage>, PromptHistoryState) {
     let mut state = PromptHistoryState::default();
     let mut messages = Vec::new();
 
-    for event in events {
+    for (index, event) in events.iter().enumerate() {
         match event {
             TrajectoryEvent::ParticipantNotification {
                 participant,
@@ -253,6 +259,9 @@ fn build_transcript(
                 action,
                 ..
             } => {
+                if !should_include_action_in_transcript(action, index, current_loop_start) {
+                    continue;
+                }
                 let call_id = state.allocate_call_id();
                 let (name, arguments) = serialize_workspace_action(action);
                 messages.push(PromptMessage::tool_call(call_id, name, arguments));
@@ -265,16 +274,21 @@ fn build_transcript(
                 let _ = state.bind_action_id(action_id);
             }
             TrajectoryEvent::ActionCompleted {
+                participant: ParticipantId::Agent,
                 action_id,
                 outcome,
                 ..
             } => {
+                if !should_include_outcome_in_transcript(outcome, index, current_loop_start) {
+                    continue;
+                }
                 state.mark_seen_action_id(action_id);
                 let call_id = state.resolve_or_allocate_action_id(action_id);
                 let (name, output) = serialize_workspace_outcome(outcome);
                 messages.push(PromptMessage::tool_result(call_id, name, output));
             }
             TrajectoryEvent::ActionFailed {
+                participant: ParticipantId::Agent,
                 action_id,
                 error,
                 ..
@@ -292,6 +306,71 @@ fn build_transcript(
     }
 
     (messages, state)
+}
+
+fn current_agent_loop_start_index(
+    events: &[TrajectoryEvent<WorkspaceObservation, WorkspaceAction, WorkspaceOutcome>],
+) -> usize {
+    events
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, event)| match event {
+            TrajectoryEvent::ParticipantLoopCompleted {
+                participant: ParticipantId::Agent,
+            } => Some(index + 1),
+            _ => None,
+        })
+        .unwrap_or(0)
+}
+
+fn current_loop_loaded_skill_names(
+    events: &[TrajectoryEvent<WorkspaceObservation, WorkspaceAction, WorkspaceOutcome>],
+) -> BTreeSet<String> {
+    let mut loaded_skills = BTreeSet::new();
+    for event in events {
+        if let TrajectoryEvent::ActionCompleted {
+            participant: ParticipantId::Agent,
+            outcome,
+            ..
+        } = event
+        {
+            match outcome {
+                WorkspaceOutcome::SkillLoaded { skill_name } => {
+                    loaded_skills.insert(skill_name.clone());
+                }
+                WorkspaceOutcome::SkillUnloaded { skill_name } => {
+                    loaded_skills.remove(skill_name);
+                }
+                WorkspaceOutcome::CodeExecuted { .. } => {}
+            }
+        }
+    }
+    loaded_skills
+}
+
+fn should_include_action_in_transcript(
+    action: &WorkspaceAction,
+    event_index: usize,
+    current_loop_start: usize,
+) -> bool {
+    match action {
+        WorkspaceAction::LoadSkill { .. } => event_index >= current_loop_start,
+        WorkspaceAction::UnloadSkill { .. } => false,
+        WorkspaceAction::ExecuteCode { .. } => true,
+    }
+}
+
+fn should_include_outcome_in_transcript(
+    outcome: &WorkspaceOutcome,
+    event_index: usize,
+    current_loop_start: usize,
+) -> bool {
+    match outcome {
+        WorkspaceOutcome::SkillLoaded { .. } => event_index >= current_loop_start,
+        WorkspaceOutcome::SkillUnloaded { .. } => false,
+        WorkspaceOutcome::CodeExecuted { .. } => true,
+    }
 }
 
 fn build_inbox(

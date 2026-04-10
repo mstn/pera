@@ -10,9 +10,10 @@ pub use streaming::{NoopParticipantOutput, ParticipantOutput};
 pub use traits::{Environment, Evaluator, NoopEvaluator, Participant};
 pub use types::{
     ActionError, ActionErrorOrigin, ActionExecution, ActionRunStatus, EnvironmentEvent,
-    EvalResult, FinishReason, InitialInboxMessage, ParticipantDecision, ParticipantId,
-    ParticipantInboxEvent, ParticipantInput, RunLimits, RunRequest, RunResult, ScheduledAction,
-    TaskSpec, TerminationCondition, Trajectory, TrajectoryEvent, WorkItem,
+    EvalResult, FinishReason, InitialInboxMessage, LifecycleEvent, LifecycleEventType,
+    ParticipantDecision, ParticipantId, ParticipantInboxEvent, ParticipantInput, RunLimits,
+    RunRequest, RunResult, ScheduledAction, TaskSpec, TerminationCondition, Trajectory,
+    TrajectoryEvent, WorkItem,
 };
 
 #[cfg(test)]

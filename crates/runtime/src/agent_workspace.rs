@@ -11,7 +11,7 @@ use pera_canonical::CatalogSkill;
 use pera_canonical::render_python_stubs;
 use pera_orchestrator::{
     ActionError, ActionErrorOrigin, ActionRunStatus, Environment, EnvironmentError,
-    EnvironmentEvent, ParticipantId, ScheduledAction, TaskSpec,
+    EnvironmentEvent, LifecycleEvent, LifecycleEventType, ParticipantId, ScheduledAction, TaskSpec,
 };
 use pera_core::{
     ActionId, CodeArtifact, CodeArtifactId, CodeLanguage, ExecutionEvent, InputValues,
@@ -346,18 +346,17 @@ impl AgentWorkspace {
 
         for catalog_skill in runtime.catalog().skills() {
             let skill_name = catalog_skill.metadata.skill_name.clone();
+            let description = available_skill_description(runtime.root(), catalog_skill);
+            available_skills.push(AgentWorkspaceAvailableSkill {
+                skill_name: skill_name.clone(),
+                description,
+            });
             if self.active_skill_names.contains(&skill_name) {
                 let instructions = active_skill_instructions(runtime.root(), catalog_skill).await?;
                 active_skills.push(AgentWorkspaceActiveSkill {
                     skill_name,
                     instructions,
                     python_stub: render_python_stubs(&catalog_skill.world),
-                });
-            } else {
-                let description = available_skill_description(runtime.root(), catalog_skill);
-                available_skills.push(AgentWorkspaceAvailableSkill {
-                    skill_name,
-                    description,
                 });
             }
         }
@@ -718,6 +717,19 @@ impl Environment for AgentWorkspace {
             .into_iter()
             .map(agent_workspace_event_to_environment_event)
             .collect())
+    }
+
+    async fn on_lifecycle_event(
+        &mut self,
+        event: LifecycleEvent,
+    ) -> Result<(), EnvironmentError> {
+        if matches!(
+            (&event.participant, event.event_type),
+            (ParticipantId::Agent, LifecycleEventType::BecameIdle)
+        ) {
+            self.active_skill_names.clear();
+        }
+        Ok(())
     }
 
     async fn snapshot(&self) -> Result<Self::Snapshot, EnvironmentError> {

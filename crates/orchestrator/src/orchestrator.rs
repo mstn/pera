@@ -10,8 +10,9 @@ use crate::streaming::{NoopParticipantOutput, ParticipantOutput};
 use crate::traits::{Environment, Evaluator, NoopEvaluator, Participant};
 use crate::types::{
     ActionExecution, ActionRunStatus, EnvironmentEvent, FinishReason, InitialInboxMessage,
-    ParticipantDecision, ParticipantId, ParticipantInboxEvent, ParticipantInput, RunRequest,
-    RunResult, ScheduledAction, TerminationCondition, Trajectory, TrajectoryEvent, WorkItem,
+    LifecycleEvent, LifecycleEventType, ParticipantDecision, ParticipantId, ParticipantInboxEvent,
+    ParticipantInput, RunRequest, RunResult, ScheduledAction, TerminationCondition, Trajectory,
+    TrajectoryEvent, WorkItem,
 };
 
 type BoxedParticipant<O, A, U> = Box<dyn Participant<Observation = O, Action = A, Outcome = U>>;
@@ -896,6 +897,31 @@ where
         None
     }
 
+    async fn handle_participant_became_idle(
+        &mut self,
+        state: &mut RunState<E::Observation, E::Action, E::Outcome>,
+        participant_id: &ParticipantId,
+    ) -> Result<(), EvaluatorError> {
+        self.environment
+            .on_lifecycle_event(LifecycleEvent {
+                participant: participant_id.clone(),
+                event_type: LifecycleEventType::BecameIdle,
+            })
+            .await
+            .map_err(|error| {
+                EvaluatorError::new(format!(
+                    "failed to handle participant lifecycle event: {error}"
+                ))
+            })?;
+        let observation = self.environment.observe().await.map_err(|error| {
+            EvaluatorError::new(format!(
+                "failed to refresh observation after participant lifecycle event: {error}"
+            ))
+        })?;
+        state.record_observation(observation);
+        Ok(())
+    }
+
     async fn apply_decision(
         &mut self,
         request: &RunRequest,
@@ -938,6 +964,8 @@ where
                 state.trajectory.push(TrajectoryEvent::ParticipantLoopCompleted {
                     participant: participant_id.clone(),
                 });
+                self.handle_participant_became_idle(state, &participant_id)
+                    .await?;
                 if let Some(reason) = loop_termination_condition_met(
                     &request.termination_condition,
                     Some(&participant_id),
@@ -1090,6 +1118,8 @@ where
                 state.trajectory.push(TrajectoryEvent::ParticipantFinished {
                     participant: participant_id.clone(),
                 });
+                self.handle_participant_became_idle(state, &participant_id)
+                    .await?;
                 let finished_participants = state.finished_participants();
                 if let Some(reason) = termination_condition_met(
                     &request.termination_condition,

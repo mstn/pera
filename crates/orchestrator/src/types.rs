@@ -46,6 +46,17 @@ pub struct WorkItem {
     pub content: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LifecycleEvent {
+    pub participant: ParticipantId,
+    pub event_type: LifecycleEventType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LifecycleEventType {
+    BecameIdle,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunLimits {
     pub max_steps: usize,
