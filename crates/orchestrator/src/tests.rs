@@ -567,6 +567,169 @@ async fn orchestrator_blocks_participant_on_deferred_blocking_action() {
 }
 
 #[tokio::test]
+async fn orchestrator_resumes_blocked_participant_after_deferred_action_failure() {
+    let seen_inboxes = Arc::new(Mutex::new(Vec::new()));
+    let submitted_action_id = ActionId::parse_str("00000000-0000-0000-0000-000000000128").unwrap();
+    let agent = FakeParticipant {
+        id: ParticipantId::Agent,
+        decisions: VecDeque::from([
+            Ok(ParticipantDecision::Action {
+                message: None,
+                action: TestAction("blocking"),
+                execution: ActionExecution::DeferredBlocking,
+            }),
+            Ok(ParticipantDecision::Finish),
+        ]),
+        seen_inboxes: Arc::clone(&seen_inboxes),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
+    };
+    let user = FakeParticipant {
+        id: ParticipantId::User,
+        decisions: VecDeque::from([Ok(ParticipantDecision::Finish)]),
+        seen_inboxes: Arc::new(Mutex::new(Vec::new())),
+        seen_work_items: Arc::new(Mutex::new(Vec::new())),
+    };
+    let environment = FakeEnvironment {
+        observation: TestObservation("initial"),
+        terminal: None,
+        immediate_outcomes: VecDeque::new(),
+        submitted_events: VecDeque::from([
+            Vec::new(),
+            Vec::new(),
+            vec![EnvironmentEvent::ActionFailed {
+                participant: ParticipantId::Agent,
+                action_id: submitted_action_id,
+                error: ActionError {
+                    user_message: "The generated code could not be executed.".to_owned(),
+                    detail: "interpreter error".to_owned(),
+                    origin: crate::types::ActionErrorOrigin::Interpreter,
+                },
+            }],
+        ]),
+        submitted_ids: VecDeque::from([submitted_action_id]),
+    };
+    let participants = vec![
+        Box::new(user)
+            as Box<
+                dyn Participant<
+                        Observation = TestObservation,
+                        Action = TestAction,
+                        Outcome = TestOutcome,
+                    >,
+            >,
+        Box::new(agent)
+            as Box<
+                dyn Participant<
+                        Observation = TestObservation,
+                        Action = TestAction,
+                        Outcome = TestOutcome,
+                    >,
+            >,
+    ];
+    let mut orchestrator = Orchestrator::from_participants(participants, environment);
+    let mut request = test_request();
+    request.initial_messages.push(InitialInboxMessage {
+        to: ParticipantId::Agent,
+        from: ParticipantId::User,
+        content: "go".to_owned(),
+    });
+    request.initial_messages.push(InitialInboxMessage {
+        to: ParticipantId::User,
+        from: ParticipantId::Custom("system".to_owned()),
+        content: "done".to_owned(),
+    });
+
+    let result = orchestrator.run(request).await.unwrap();
+    let inboxes = seen_inboxes.lock().unwrap();
+
+    assert_eq!(result.finish_reason, FinishReason::ParticipantsFinished);
+    assert_eq!(inboxes.len(), 2);
+    assert!(inboxes[1].iter().any(|event| matches!(
+        event,
+        ParticipantInboxEvent::ActionFailed { action_id, error }
+            if *action_id == submitted_action_id
+                && error.user_message == "The generated code could not be executed."
+    )));
+}
+
+#[tokio::test]
+async fn orchestrator_starts_new_loop_from_idle_action_failure() {
+    let seen_inboxes = Arc::new(Mutex::new(Vec::new()));
+    let seen_work_items = Arc::new(Mutex::new(Vec::new()));
+    let submitted_action_id = ActionId::parse_str("00000000-0000-0000-0000-000000000129").unwrap();
+    let agent = FakeParticipant {
+        id: ParticipantId::Agent,
+        decisions: VecDeque::from([
+            Ok(ParticipantDecision::Action {
+                message: None,
+                action: TestAction("background"),
+                execution: ActionExecution::DeferredNonBlocking,
+            }),
+            Ok(ParticipantDecision::CompleteLoop {
+                content: "retrying after failure".to_owned(),
+            }),
+            Ok(ParticipantDecision::Finish),
+        ]),
+        seen_inboxes: Arc::clone(&seen_inboxes),
+        seen_work_items: Arc::clone(&seen_work_items),
+    };
+    let environment = FakeEnvironment {
+        observation: TestObservation("initial"),
+        terminal: None,
+        immediate_outcomes: VecDeque::new(),
+        submitted_events: VecDeque::from([
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![EnvironmentEvent::ActionFailed {
+                participant: ParticipantId::Agent,
+                action_id: submitted_action_id,
+                error: ActionError {
+                    user_message: "The generated code could not be executed.".to_owned(),
+                    detail: "interpreter error".to_owned(),
+                    origin: crate::types::ActionErrorOrigin::Interpreter,
+                },
+            }],
+        ]),
+        submitted_ids: VecDeque::from([submitted_action_id]),
+    };
+    let participants = vec![Box::new(agent)
+        as Box<
+            dyn Participant<
+                    Observation = TestObservation,
+                    Action = TestAction,
+                    Outcome = TestOutcome,
+                >,
+        >];
+    let mut orchestrator = Orchestrator::from_participants(participants, environment);
+    let mut request = test_request();
+    request.initial_messages.push(InitialInboxMessage {
+        to: ParticipantId::Agent,
+        from: ParticipantId::User,
+        content: "go".to_owned(),
+    });
+
+    let result = orchestrator.run(request).await.unwrap();
+    let inboxes = seen_inboxes.lock().unwrap();
+    let work_items = seen_work_items.lock().unwrap();
+
+    assert_eq!(result.finish_reason, FinishReason::ParticipantsFinished);
+    assert_eq!(inboxes.len(), 3);
+    assert!(matches!(work_items.as_slice(), [Some(_), Some(_), None]));
+    assert!(inboxes[2].iter().any(|event| matches!(
+        event,
+        ParticipantInboxEvent::ActionFailed { action_id, error }
+            if *action_id == submitted_action_id
+                && error.user_message == "The generated code could not be executed."
+    )));
+    assert!(result.trajectory.events.iter().any(|event| matches!(
+        event,
+        TrajectoryEvent::ParticipantMessage { participant, content }
+            if *participant == ParticipantId::Agent && content == "retrying after failure"
+    )));
+}
+
+#[tokio::test]
 async fn orchestrator_alternates_two_participants() {
     let seen_agent = Arc::new(Mutex::new(Vec::new()));
     let seen_user = Arc::new(Mutex::new(Vec::new()));

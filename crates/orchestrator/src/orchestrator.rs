@@ -36,12 +36,6 @@ impl RunCounters {
     }
 }
 
-#[derive(Debug, Clone)]
-struct InitialMessage {
-    from: ParticipantId,
-    content: String,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LoopExecutionState {
     ReadyForTurn,
@@ -75,16 +69,16 @@ where
     fn start(
         participant: BoxedParticipant<O, A, U>,
         inbox: Vec<ParticipantInboxEvent<A, U>>,
-        initial_message: InitialMessage,
+        work_item: Option<WorkItem>,
     ) -> Self {
         Self {
             participant,
             inbox,
-            work_item: WorkItem {
+            work_item: work_item.unwrap_or_else(|| WorkItem {
                 id: WorkItemId::generate(),
-                from: initial_message.from,
-                content: initial_message.content,
-            },
+                from: ParticipantId::Custom("system".to_owned()),
+                content: String::new(),
+            }),
             execution_state: LoopExecutionState::ReadyForTurn,
             step_count: 0,
         }
@@ -173,7 +167,13 @@ where
             agent_loop_id: self.work_item.id,
             agent_loop_iteration: self.step_count + 1,
             participant: self.participant.id(),
-            work_item: Some(self.work_item.clone()),
+            work_item: if self.work_item.content.is_empty()
+                && matches!(self.work_item.from, ParticipantId::Custom(ref from) if from == "system")
+            {
+                None
+            } else {
+                Some(self.work_item.clone())
+            },
             task: input.task,
             limits: input.limits,
             observation: input.observation,
@@ -217,8 +217,8 @@ where
         }
     }
 
-    fn has_startable_message(&self) -> bool {
-        startable_message(&self.pending_inbox).is_some()
+    fn has_startable_work(&self) -> bool {
+        has_startable_inbox_event(&self.pending_inbox)
     }
 
     fn deliver(&mut self, event: ParticipantInboxEvent<A, U>) {
@@ -235,18 +235,18 @@ where
         }
         match &self.active_loop {
             Some(active_loop) => active_loop.is_ready_for_turn(),
-            None => self.has_startable_message(),
+            None => self.has_startable_work(),
         }
     }
 
     fn start_next_loop(&mut self) -> Option<&mut ActiveLoop<O, A, U>> {
-        let initial_message = take_startable_message(&mut self.pending_inbox)?;
+        let work_item = take_startable_work_item(&mut self.pending_inbox)?;
         let participant = self
             .participant
             .take()
             .expect("idle participant must be available when starting loop");
         let inbox = std::mem::take(&mut self.pending_inbox);
-        self.active_loop = Some(ActiveLoop::start(participant, inbox, initial_message));
+        self.active_loop = Some(ActiveLoop::start(participant, inbox, work_item));
         self.active_loop.as_mut()
     }
 
@@ -1135,23 +1135,43 @@ fn format_action_run_status<A>(action: &A, status: &ActionRunStatus) -> String {
     }
 }
 
-fn startable_message<A, U>(inbox: &[ParticipantInboxEvent<A, U>]) -> Option<InitialMessage> {
-    inbox.iter().find_map(|event| match event {
-        ParticipantInboxEvent::Message { from, content } => Some(InitialMessage {
-            from: from.clone(),
-            content: content.clone(),
-        }),
-        _ => None,
+fn has_startable_inbox_event<A, U>(inbox: &[ParticipantInboxEvent<A, U>]) -> bool {
+    inbox.iter().any(|event| {
+        matches!(
+            event,
+            ParticipantInboxEvent::Message { .. }
+                | ParticipantInboxEvent::ActionCompleted { .. }
+                | ParticipantInboxEvent::ActionFailed { .. }
+                | ParticipantInboxEvent::Notification { .. }
+        )
     })
 }
 
-fn take_startable_message<A, U>(inbox: &mut Vec<ParticipantInboxEvent<A, U>>) -> Option<InitialMessage> {
-    let message_index = inbox.iter().position(|event| {
-        matches!(event, ParticipantInboxEvent::Message { .. })
+fn take_startable_work_item<A, U>(inbox: &mut Vec<ParticipantInboxEvent<A, U>>) -> Option<Option<WorkItem>> {
+    let startable_index = inbox.iter().position(|event| {
+        matches!(
+            event,
+            ParticipantInboxEvent::Message { .. }
+                | ParticipantInboxEvent::ActionCompleted { .. }
+                | ParticipantInboxEvent::ActionFailed { .. }
+                | ParticipantInboxEvent::Notification { .. }
+        )
     })?;
-    match inbox.remove(message_index) {
-        ParticipantInboxEvent::Message { from, content } => Some(InitialMessage { from, content }),
-        _ => unreachable!("message index must point to a startable message"),
+    match &inbox[startable_index] {
+        ParticipantInboxEvent::Message { .. } => match inbox.remove(startable_index) {
+            ParticipantInboxEvent::Message { from, content } => Some(Some(WorkItem {
+                id: WorkItemId::generate(),
+                from,
+                content,
+            })),
+            _ => unreachable!("message index must point to a startable message"),
+        },
+        ParticipantInboxEvent::ActionCompleted { .. }
+        | ParticipantInboxEvent::ActionFailed { .. }
+        | ParticipantInboxEvent::Notification { .. } => Some(None),
+        ParticipantInboxEvent::ActionScheduled { .. } => {
+            unreachable!("action-scheduled events are not startable")
+        }
     }
 }
 
