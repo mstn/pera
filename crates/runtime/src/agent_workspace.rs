@@ -319,6 +319,9 @@ impl AgentWorkspace {
             execution_runs_by_id: BTreeMap::new(),
             execution_engine,
             execution_events,
+            // Active skills are currently tracked for the single agent participant.
+            // If multiple skill-using participants are introduced, this state should
+            // become participant-scoped instead of one shared set.
             active_skill_names: BTreeSet::new(),
             repl_states_by_actor: BTreeMap::new(),
         })
