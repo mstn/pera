@@ -45,6 +45,7 @@ struct InitialMessage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LoopExecutionState {
     ReadyForTurn,
+    WaitingForInput,
     WaitingForActionCompletion { action_id: ActionId },
 }
 
@@ -100,7 +101,7 @@ where
     fn awaiting_action_completion(&self) -> Option<ActionId> {
         match self.execution_state {
             LoopExecutionState::WaitingForActionCompletion { action_id } => Some(action_id),
-            LoopExecutionState::ReadyForTurn => None,
+            LoopExecutionState::ReadyForTurn | LoopExecutionState::WaitingForInput => None,
         }
     }
 
@@ -108,11 +109,18 @@ where
         self.execution_state = LoopExecutionState::ReadyForTurn;
     }
 
+    fn transition_to_waiting_for_input_state(&mut self) {
+        self.execution_state = LoopExecutionState::WaitingForInput;
+    }
+
     fn transition_to_waiting_for_action_completion(&mut self, action_id: ActionId) {
         self.execution_state = LoopExecutionState::WaitingForActionCompletion { action_id };
     }
 
     fn handle_inbox_event(&mut self, event: &ParticipantInboxEvent<A, U>) {
+        if matches!(self.execution_state, LoopExecutionState::WaitingForInput) {
+            self.transition_to_ready_for_turn();
+        }
         let should_resume = matches!(
             (self.awaiting_action_completion(), event),
             (
@@ -133,6 +141,10 @@ where
 
     fn transition_to_blocked_on_action(&mut self, action_id: ActionId) {
         self.transition_to_waiting_for_action_completion(action_id);
+    }
+
+    fn transition_to_waiting_for_input(&mut self) {
+        self.transition_to_waiting_for_input_state();
     }
 
     fn step_count(&self) -> usize {
@@ -260,6 +272,13 @@ where
             .as_mut()
             .expect("active loop must exist before blocking")
             .transition_to_blocked_on_action(action_id);
+    }
+
+    fn transition_current_loop_to_waiting_for_input(&mut self) {
+        self.active_loop
+            .as_mut()
+            .expect("active loop must exist before waiting for input")
+            .transition_to_waiting_for_input();
     }
 
     fn complete_current_loop(&mut self) {
@@ -1042,6 +1061,7 @@ where
                 counters.step_count += 1;
                 if let Some(participant) = state.participant_mut(&participant_id) {
                     participant.apply_turn_progress();
+                    participant.transition_current_loop_to_waiting_for_input();
                 }
                 state.trajectory.push(TrajectoryEvent::ParticipantYielded {
                     participant: participant_id,
