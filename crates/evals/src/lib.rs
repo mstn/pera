@@ -33,5 +33,8 @@ pub use spec::{
     EvalSpec, EvalUserSpec, LoadedEvalSpec, load_eval_spec,
 };
 pub use scripted_user::ScriptedUserParticipant;
-pub use simulated_user::SimulatedUserParticipant;
+pub use simulated_user::{
+    NoopSimulatedUserDebugSink, SimulatedUserDebugMetadata, SimulatedUserDebugResponseRecord,
+    SimulatedUserDebugResponseStatus, SimulatedUserDebugSink, SimulatedUserParticipant,
+};
 pub use user::EvalUserParticipant;

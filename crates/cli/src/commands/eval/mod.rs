@@ -234,6 +234,10 @@ impl EvalModeCommand {
             api_key: openai_api_key.clone(),
             default_model: openai_model.clone(),
         };
+        let prompt_debug_sink = Arc::new(FilePromptDebugSink::new(
+            workspace_root.clone(),
+            Some(openai_model.clone()),
+        ));
         let agent = LlmAgentParticipant::with_debug_sink(
             OpenAiProvider::new(OpenAiProviderConfig {
                 api_key: openai_api_key.clone(),
@@ -241,23 +245,21 @@ impl EvalModeCommand {
             })
             .map_err(|error| CliError::UnexpectedStateOwned(error.to_string()))?,
             ProviderBackedPromptBuilder,
-            Arc::new(FilePromptDebugSink::new(
-                workspace_root.clone(),
-                Some(openai_model.clone()),
-            )),
+            prompt_debug_sink.clone(),
         );
         let user = EvalUserParticipant::<
             OpenAiProvider,
             WorkspaceObservation,
             WorkspaceAction,
             WorkspaceOutcome,
-        >::from_spec(
+        >::from_spec_with_debug_sink(
             OpenAiProvider::new(OpenAiProviderConfig {
                 api_key: openai_api_key.clone(),
                 model: openai_model.clone(),
             })
             .map_err(|error| CliError::UnexpectedStateOwned(error.to_string()))?,
             session.loaded_spec.spec.scenario.user.clone(),
+            prompt_debug_sink,
         );
         let participants: Vec<
             Box<dyn Participant<Observation = WorkspaceObservation, Action = WorkspaceAction, Outcome = WorkspaceOutcome>>,

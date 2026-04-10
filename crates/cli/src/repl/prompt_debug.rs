@@ -5,7 +5,11 @@ use std::sync::Mutex;
 use chrono::Local;
 use pera_agents::{PromptDebugMetadata, PromptDebugResponseRecord, PromptDebugSink};
 use pera_core::{RunId, WorkItemId};
+use pera_evals::{
+    SimulatedUserDebugMetadata, SimulatedUserDebugResponseRecord, SimulatedUserDebugSink,
+};
 use pera_llm::{LlmRequest, PromptMessageMetadata};
+use pera_orchestrator::ParticipantId;
 use pera_runtime::FileSystemLayout;
 use serde::Serialize;
 
@@ -15,7 +19,7 @@ pub struct FilePromptDebugSink {
     layout: FileSystemLayout,
     model: Option<String>,
     run_directories: Mutex<BTreeMap<RunId, PathBuf>>,
-    loop_directories: Mutex<BTreeMap<(RunId, WorkItemId), PathBuf>>,
+    loop_directories: Mutex<BTreeMap<(RunId, WorkItemId, String), PathBuf>>,
 }
 
 impl FilePromptDebugSink {
@@ -53,9 +57,12 @@ impl FilePromptDebugSink {
 
     fn resolve_loop_directory(
         &self,
-        metadata: &PromptDebugMetadata,
+        run_id: RunId,
+        loop_id: WorkItemId,
+        participant: &ParticipantId,
     ) -> Result<PathBuf, CliError> {
-        let key = (metadata.run_id, metadata.agent_loop_id);
+        let participant_suffix = participant_suffix(participant);
+        let key = (run_id, loop_id, participant_suffix.to_owned());
         let mut loop_directories = self
             .loop_directories
             .lock()
@@ -64,11 +71,12 @@ impl FilePromptDebugSink {
             return Ok(path.clone());
         }
 
-        let run_directory = self.resolve_run_directory(metadata.run_id)?;
+        let run_directory = self.resolve_run_directory(run_id)?;
         let path = run_directory.join(format!(
-            "{}-{}",
+            "{}-{}.{}",
             timestamp_prefix(),
-            metadata.agent_loop_id.as_hyphenated()
+            loop_id.as_hyphenated(),
+            participant_suffix
         ));
         std::fs::create_dir_all(&path).map_err(|source| CliError::CreateDir {
             path: path.clone(),
@@ -77,18 +85,19 @@ impl FilePromptDebugSink {
         loop_directories.insert(key, path.clone());
         Ok(path)
     }
-}
 
-impl PromptDebugSink for FilePromptDebugSink {
-    fn record_prompt(
+    fn record_prompt_file(
         &self,
-        metadata: &PromptDebugMetadata,
+        run_id: RunId,
+        loop_id: WorkItemId,
+        participant: &ParticipantId,
+        iteration: usize,
         request: &LlmRequest,
     ) -> Result<(), pera_orchestrator::ParticipantError> {
         let loop_directory = self
-            .resolve_loop_directory(metadata)
+            .resolve_loop_directory(run_id, loop_id, participant)
             .map_err(|error| pera_orchestrator::ParticipantError::new(error.to_string()))?;
-        let iteration_id = format!("{:04}", metadata.agent_loop_iteration);
+        let iteration_id = format!("{:04}", iteration);
         let request_yaml_path = loop_directory.join(format!("{iteration_id}.request.yaml"));
         let tools_path = loop_directory.join(format!("{iteration_id}.tools.json"));
 
@@ -128,15 +137,18 @@ impl PromptDebugSink for FilePromptDebugSink {
         Ok(())
     }
 
-    fn record_response(
+    fn record_response_file<T: Serialize>(
         &self,
-        metadata: &PromptDebugMetadata,
-        response: &PromptDebugResponseRecord,
+        run_id: RunId,
+        loop_id: WorkItemId,
+        participant: &ParticipantId,
+        iteration: usize,
+        response: &T,
     ) -> Result<(), pera_orchestrator::ParticipantError> {
         let loop_directory = self
-            .resolve_loop_directory(metadata)
+            .resolve_loop_directory(run_id, loop_id, participant)
             .map_err(|error| pera_orchestrator::ParticipantError::new(error.to_string()))?;
-        let iteration_id = format!("{:04}", metadata.agent_loop_iteration);
+        let iteration_id = format!("{:04}", iteration);
         let response_path = loop_directory.join(format!("{iteration_id}.response.yaml"));
         let response_yaml = serde_yaml::to_string(response).map_err(|error| {
             pera_orchestrator::ParticipantError::new(
@@ -154,6 +166,74 @@ impl PromptDebugSink for FilePromptDebugSink {
         })?;
 
         Ok(())
+    }
+}
+
+impl PromptDebugSink for FilePromptDebugSink {
+    fn record_prompt(
+        &self,
+        metadata: &PromptDebugMetadata,
+        request: &LlmRequest,
+    ) -> Result<(), pera_orchestrator::ParticipantError> {
+        self.record_prompt_file(
+            metadata.run_id,
+            metadata.agent_loop_id,
+            &metadata.participant,
+            metadata.agent_loop_iteration,
+            request,
+        )
+    }
+
+    fn record_response(
+        &self,
+        metadata: &PromptDebugMetadata,
+        response: &PromptDebugResponseRecord,
+    ) -> Result<(), pera_orchestrator::ParticipantError> {
+        self.record_response_file(
+            metadata.run_id,
+            metadata.agent_loop_id,
+            &metadata.participant,
+            metadata.agent_loop_iteration,
+            response,
+        )
+    }
+}
+
+impl SimulatedUserDebugSink for FilePromptDebugSink {
+    fn record_prompt(
+        &self,
+        metadata: &SimulatedUserDebugMetadata,
+        request: &LlmRequest,
+    ) -> Result<(), pera_orchestrator::ParticipantError> {
+        self.record_prompt_file(
+            metadata.run_id,
+            metadata.agent_loop_id,
+            &metadata.participant,
+            metadata.agent_loop_iteration,
+            request,
+        )
+    }
+
+    fn record_response(
+        &self,
+        metadata: &SimulatedUserDebugMetadata,
+        response: &SimulatedUserDebugResponseRecord,
+    ) -> Result<(), pera_orchestrator::ParticipantError> {
+        self.record_response_file(
+            metadata.run_id,
+            metadata.agent_loop_id,
+            &metadata.participant,
+            metadata.agent_loop_iteration,
+            response,
+        )
+    }
+}
+
+fn participant_suffix(participant: &ParticipantId) -> &str {
+    match participant {
+        ParticipantId::Agent => "agent",
+        ParticipantId::User => "user",
+        ParticipantId::Custom(name) => name.as_str(),
     }
 }
 

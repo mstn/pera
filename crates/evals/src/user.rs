@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use pera_llm::LlmProvider;
 use pera_orchestrator::{
@@ -6,7 +8,7 @@ use pera_orchestrator::{
 };
 
 use crate::scripted_user::ScriptedUserParticipant;
-use crate::simulated_user::SimulatedUserParticipant;
+use crate::simulated_user::{SimulatedUserDebugSink, SimulatedUserParticipant};
 use crate::spec::EvalUserSpec;
 
 pub enum EvalUserParticipant<P, O, A, U> {
@@ -16,12 +18,22 @@ pub enum EvalUserParticipant<P, O, A, U> {
 
 impl<P, O, A, U> EvalUserParticipant<P, O, A, U> {
     pub fn from_spec(provider: P, spec: EvalUserSpec) -> Self {
+        Self::from_spec_with_debug_sink(provider, spec, Arc::new(crate::simulated_user::NoopSimulatedUserDebugSink))
+    }
+
+    pub fn from_spec_with_debug_sink(
+        provider: P,
+        spec: EvalUserSpec,
+        debug_sink: Arc<dyn SimulatedUserDebugSink>,
+    ) -> Self {
         match spec {
             EvalUserSpec::Scripted { .. } => {
                 Self::Scripted(ScriptedUserParticipant::from_spec(&spec))
             }
             EvalUserSpec::Simulated { .. } => {
-                Self::Simulated(SimulatedUserParticipant::new(provider, spec))
+                Self::Simulated(SimulatedUserParticipant::with_debug_sink(
+                    provider, spec, debug_sink,
+                ))
             }
         }
     }

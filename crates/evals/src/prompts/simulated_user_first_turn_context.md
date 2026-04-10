@@ -4,4 +4,4 @@ Scenario:
 - known_info: {{known_info}}
 - unknown_info: {{unknown_info}}
 
-{{conversation_stage}}
+Write the first user message that starts the conversation.

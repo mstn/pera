@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 async-trait = "0.1"
+pera-core = { path = "../core" }
 pera-llm = { path = "../llm" }
 pera-orchestrator = { path = "../orchestrator" }
 pera-skills = { path = "../skills" }
