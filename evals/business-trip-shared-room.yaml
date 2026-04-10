@@ -22,8 +22,7 @@ runtime:
 scenario:
   purpose: |
     Evaluate whether the agent can compose schedule, transport, lodging, and policy data across multiple code turns and infer that sharing a double room is a valid alternative when no single rooms are available.
-  user:
-    mode: simulated
+  user_profile:
     task: |
       Plan a trip for Alice and Bruno to attend the Delta review in Berlin next week. Find a feasible option and explain any tradeoffs.
     reason: |
@@ -32,10 +31,14 @@ scenario:
       Both travelers must attend the Delta review in Berlin. The trip should follow company travel policy. The cost center is DELTA-EU. The relevant planning week starts on 2026-04-06.
     unknown_info: |
       The user does not know which transport and lodging options are available, whether room sharing is needed, or whether approval is required.
-    example_messages:
-      - Plan Berlin travel for Alice and Bruno for the Delta review next week.
-      - Find the best feasible option for both travelers and tell me if anything unusual is required.
-  agent:
+  interaction_modes:
+    scripted:
+      kind: scripted
+      initial_message: |
+        Plan Berlin travel for Alice and Bruno for the Delta review next week.
+    simulated:
+      kind: simulated
+  agent_profile:
     persona: Helpful operations assistant.
   history: []
 
@@ -64,9 +67,13 @@ evaluation:
       rubric: |
         Determine whether the agent actually solved the user's task.
 
-        Pass only if the evidence shows that the agent reached a supported recommendation and correctly recognized that a shared double room is an acceptable fallback when no single rooms are available and policy allows sharing.
+        Pass only if the evidence shows that the agent reached a supported recommendation for the trip and correctly recognized that a shared double room is an acceptable fallback when no single rooms are available and policy allows sharing.
 
-        Fail if the agent stops at partial progress, only proposes next steps, or misses the shared-room fallback.
+        A full pass should normally require a complete recommendation covering both transport and lodging for the trip, including return travel if return options exist in the system.
+
+        If the system evidence shows that no feasible return options are available, the agent may still pass only if it clearly states that limitation, presents the outbound-plus-lodging recommendation as the best feasible partial result, and still gets the shared-room fallback right.
+
+        Fail if the agent stops at partial progress, only proposes next steps, leaves the return leg unresolved without clearly establishing that the system lacks viable return options, or misses the shared-room fallback.
     - type: final_message_required
     - type: forbid_finish_reason
       finish_reason: failed_action_limit_exceeded

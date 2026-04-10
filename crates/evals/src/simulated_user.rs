@@ -149,11 +149,20 @@ fn build_simulated_user_messages<O, A, U>(
 }
 
 fn simulated_user_context(spec: &EvalUserSpec, user_already_spoke: bool) -> String {
+    let EvalUserSpec::Simulated {
+        task,
+        reason,
+        known_info,
+        unknown_info,
+    } = spec
+    else {
+        panic!("simulated user participant requires a simulated user spec");
+    };
     SIMULATED_USER_CONTEXT_PROMPT
-        .replace("{{task}}", spec.task.trim())
-        .replace("{{reason}}", spec.reason.trim())
-        .replace("{{known_info}}", normalize_empty(spec.known_info.trim()))
-        .replace("{{unknown_info}}", normalize_empty(spec.unknown_info.trim()))
+        .replace("{{task}}", task.trim())
+        .replace("{{reason}}", normalize_empty(reason.trim()))
+        .replace("{{known_info}}", normalize_empty(known_info.trim()))
+        .replace("{{unknown_info}}", normalize_empty(unknown_info.trim()))
         .replace(
             "{{conversation_stage}}",
             if user_already_spoke {
@@ -183,18 +192,16 @@ fn role_for_participant(participant: &ParticipantId) -> String {
 #[cfg(test)]
 mod tests {
     use super::simulated_user_context;
-    use crate::spec::{EvalUserMode, EvalUserSpec};
+    use crate::spec::EvalUserSpec;
 
     #[test]
-    fn simulated_user_context_uses_tau_style_fields() {
+    fn simulated_user_context_uses_all_simulated_fields() {
         let context = simulated_user_context(
-            &EvalUserSpec {
-                mode: EvalUserMode::Simulated,
+            &EvalUserSpec::Simulated {
                 task: "Book travel".to_owned(),
                 reason: "It must be booked today".to_owned(),
                 known_info: "Two travelers need to be in Berlin.".to_owned(),
                 unknown_info: "Available flights and hotel options.".to_owned(),
-                example_messages: Vec::new(),
             },
             false,
         );

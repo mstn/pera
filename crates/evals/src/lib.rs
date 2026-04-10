@@ -30,7 +30,7 @@ pub use spec::{
     EvalAgentSpec, EvalCatalogSkillSpec, EvalCriterionSpec, EvalEvaluationSpec,
     EvalExpectedActionSpec, EvalHistoryMessage, EvalOptimizationSpec,
     EvalOptimizationTargetSpec, EvalRuntimeSpec, EvalScenarioSpec, EvalSkillSourceSpec,
-    EvalSpec, EvalUserMode, EvalUserSpec, LoadedEvalSpec, load_eval_spec,
+    EvalSpec, EvalUserSpec, LoadedEvalSpec, load_eval_spec,
 };
 pub use scripted_user::ScriptedUserParticipant;
 pub use simulated_user::SimulatedUserParticipant;

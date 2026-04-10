@@ -7,7 +7,7 @@ use pera_orchestrator::{
 
 use crate::scripted_user::ScriptedUserParticipant;
 use crate::simulated_user::SimulatedUserParticipant;
-use crate::spec::{EvalUserMode, EvalUserSpec};
+use crate::spec::EvalUserSpec;
 
 pub enum EvalUserParticipant<P, O, A, U> {
     Scripted(ScriptedUserParticipant<O, A, U>),
@@ -16,9 +16,13 @@ pub enum EvalUserParticipant<P, O, A, U> {
 
 impl<P, O, A, U> EvalUserParticipant<P, O, A, U> {
     pub fn from_spec(provider: P, spec: EvalUserSpec) -> Self {
-        match spec.mode {
-            EvalUserMode::Scripted => Self::Scripted(ScriptedUserParticipant::from_spec(&spec)),
-            EvalUserMode::Simulated => Self::Simulated(SimulatedUserParticipant::new(provider, spec)),
+        match spec {
+            EvalUserSpec::Scripted { .. } => {
+                Self::Scripted(ScriptedUserParticipant::from_spec(&spec))
+            }
+            EvalUserSpec::Simulated { .. } => {
+                Self::Simulated(SimulatedUserParticipant::new(provider, spec))
+            }
         }
     }
 }

@@ -19,7 +19,7 @@ runtime:
 scenario:
   purpose: |
     Evaluate whether the agent activates relevant skills before using code to work through a multi-skill planning request.
-  user:
+  user_profile:
     task: |
       Figure out whether tomorrow is a safe day to proceed with planned field work in Berlin.
     reason: |
@@ -28,10 +28,12 @@ scenario:
       The operation is being planned for Berlin, the date of interest is 2026-04-05, and the user only cares about missions that are still planned rather than already assigned or resolved.
     unknown_info: |
       The user does not know the expected weather in Berlin for that date or whether there are any planned missions in Berlin that would be affected.
-    example_messages:
-      - Can you tell me if tomorrow looks safe for planned field work in Berlin?
-      - Before we proceed in Berlin on 2026-04-05, check the forecast and whether any missions there are still in planned status.
-  agent:
+  interaction_modes:
+    scripted:
+      kind: scripted
+      initial_message: |
+        Can you tell me if tomorrow looks safe for planned field work in Berlin?
+  agent_profile:
     persona: Helpful operations assistant.
   history: []
 

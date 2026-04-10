@@ -151,6 +151,8 @@ impl EvalMode {
 struct EvalModeCommand {
     pub spec: PathBuf,
     #[arg(long)]
+    pub user: Option<String>,
+    #[arg(long)]
     pub output_folder: Option<PathBuf>,
     #[arg(long)]
     pub name: Option<String>,
@@ -178,6 +180,7 @@ impl EvalModeCommand {
                     spec_path: self.spec.clone(),
                     output_folder: self.output_folder.clone(),
                     overrides: overrides.clone(),
+                    user: self.user.clone(),
                 },
             )
             .map_err(CliError::from)?;

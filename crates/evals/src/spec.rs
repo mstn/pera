@@ -78,28 +78,40 @@ pub struct EvalCatalogSkillSpec {
 pub struct EvalScenarioSpec {
     pub purpose: String,
     pub user: EvalUserSpec,
-    pub agent: EvalAgentSpec,
+    #[serde(alias = "agent")]
+    pub agent_profile: EvalAgentSpec,
     #[serde(default)]
     pub history: Vec<EvalHistoryMessage>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct EvalUserSpec {
-    #[serde(default)]
-    pub mode: EvalUserMode,
-    pub task: String,
-    pub reason: String,
-    pub known_info: String,
-    pub unknown_info: String,
-    pub example_messages: Vec<String>,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EvalUserSpec {
+    Scripted {
+        task: String,
+        known_info: String,
+        initial_message: String,
+    },
+    Simulated {
+        task: String,
+        reason: String,
+        known_info: String,
+        unknown_info: String,
+    },
 }
 
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum EvalUserMode {
-    #[default]
-    Scripted,
-    Simulated,
+impl EvalUserSpec {
+    pub fn task(&self) -> &str {
+        match self {
+            Self::Scripted { task, .. } | Self::Simulated { task, .. } => task,
+        }
+    }
+
+    pub fn known_info(&self) -> &str {
+        match self {
+            Self::Scripted { known_info, .. } | Self::Simulated { known_info, .. } => known_info,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -176,7 +188,11 @@ fn default_true() -> bool {
     true
 }
 
-pub fn load_eval_spec(path: &Path, overrides: &OverrideSet) -> Result<LoadedEvalSpec, EvalError> {
+pub fn load_eval_spec(
+    path: &Path,
+    overrides: &OverrideSet,
+    selected_user: Option<&str>,
+) -> Result<LoadedEvalSpec, EvalError> {
     let source = fs::read_to_string(path).map_err(|source| EvalError::ReadFile {
         path: path.to_path_buf(),
         source,
@@ -184,10 +200,154 @@ pub fn load_eval_spec(path: &Path, overrides: &OverrideSet) -> Result<LoadedEval
     let mut raw: Value = serde_yaml::from_str(&source)
         .map_err(|error| EvalError::InvalidSpec(format!("{}: {error}", path.display())))?;
     overrides.apply(&mut raw)?;
+    resolve_selected_user(&mut raw, selected_user)?;
     let spec: EvalSpec = serde_yaml::from_value(raw.clone())
         .map_err(|error| EvalError::InvalidSpec(format!("{}: {error}", path.display())))?;
     validate_eval_spec(&spec)?;
     Ok(LoadedEvalSpec { raw, spec })
+}
+
+fn resolve_selected_user(raw: &mut Value, selected_user: Option<&str>) -> Result<(), EvalError> {
+    let root = raw.as_mapping_mut().ok_or_else(|| {
+        EvalError::InvalidSpec("eval spec root must be a mapping".to_owned())
+    })?;
+    let Some(scenario) = root.get_mut(Value::String("scenario".to_owned())) else {
+        return Ok(());
+    };
+    let scenario = scenario.as_mapping_mut().ok_or_else(|| {
+        EvalError::InvalidSpec("scenario must be a mapping".to_owned())
+    })?;
+
+    let user_key = Value::String("user".to_owned());
+    if scenario.contains_key(&user_key) {
+        return Ok(());
+    }
+
+    let user_profile_key = Value::String("user_profile".to_owned());
+    let interaction_modes_key = Value::String("interaction_modes".to_owned());
+    if let Some(interaction_modes_value) = scenario.get(&interaction_modes_key) {
+        let interaction_modes = interaction_modes_value.as_mapping().ok_or_else(|| {
+            EvalError::InvalidSpec("scenario.interaction_modes must be a mapping".to_owned())
+        })?;
+        if interaction_modes.is_empty() {
+            return Err(EvalError::InvalidSpec(
+                "scenario.interaction_modes cannot be empty".to_owned(),
+            ));
+        }
+        let user_profile = scenario
+            .get(&user_profile_key)
+            .and_then(Value::as_mapping)
+            .ok_or_else(|| {
+                EvalError::InvalidSpec(
+                    "scenario.user_profile must be provided when using scenario.interaction_modes"
+                        .to_owned(),
+                )
+            })?;
+
+        let chosen_name = choose_named_variant(
+            interaction_modes,
+            selected_user,
+            "scenario.interaction_modes",
+        )?;
+        let selected_mode = interaction_modes
+            .get(Value::String(chosen_name.clone()))
+            .and_then(Value::as_mapping)
+            .ok_or_else(|| {
+                EvalError::InvalidSpec(format!(
+                    "scenario.interaction_modes.{} must be a mapping",
+                    chosen_name
+                ))
+            })?;
+
+        let mut merged = user_profile.clone();
+        for (key, value) in selected_mode {
+            merged.insert(key.clone(), value.clone());
+        }
+        scenario.insert(user_key, Value::Mapping(merged));
+        scenario.insert(
+            Value::String("selected_user".to_owned()),
+            Value::String(chosen_name),
+        );
+        return Ok(());
+    }
+
+    let users_key = Value::String("users".to_owned());
+    let Some(users_value) = scenario.get(&users_key) else {
+        return Ok(());
+    };
+    let users = users_value.as_mapping().ok_or_else(|| {
+        EvalError::InvalidSpec("scenario.users must be a mapping".to_owned())
+    })?;
+    if users.is_empty() {
+        return Err(EvalError::InvalidSpec(
+            "scenario.users cannot be empty".to_owned(),
+        ));
+    }
+
+    let chosen_name = choose_named_variant(users, selected_user, "scenario.users")?;
+
+    let chosen_value = users
+        .get(Value::String(chosen_name.clone()))
+        .cloned()
+        .ok_or_else(|| {
+            EvalError::InvalidSpec(format!(
+                "failed to resolve scenario.users.{}",
+                chosen_name
+            ))
+        })?;
+    scenario.insert(user_key, chosen_value);
+    scenario.insert(
+        Value::String("selected_user".to_owned()),
+        Value::String(chosen_name),
+    );
+
+    Ok(())
+}
+
+fn choose_named_variant(
+    values: &Mapping,
+    selected_user: Option<&str>,
+    field_name: &str,
+) -> Result<String, EvalError> {
+    if let Some(name) = selected_user {
+        let key = Value::String(name.to_owned());
+        if !values.contains_key(&key) {
+            let available = values
+                .keys()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(EvalError::InvalidSpec(format!(
+                "{} does not contain '{}' (available: {})",
+                field_name, name, available
+            )));
+        }
+        return Ok(name.to_owned());
+    }
+
+    if values.len() == 1 {
+        return values
+            .keys()
+            .next()
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| {
+                EvalError::InvalidSpec(format!(
+                    "{} keys must be strings",
+                    field_name
+                ))
+            });
+    }
+
+    let available = values
+        .keys()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(EvalError::InvalidSpec(format!(
+        "spec defines multiple {}; select one with --user (available: {})",
+        field_name, available
+    )))
 }
 
 fn validate_eval_spec(spec: &EvalSpec) -> Result<(), EvalError> {
@@ -205,10 +365,20 @@ fn validate_eval_spec(spec: &EvalSpec) -> Result<(), EvalError> {
             "scenario.purpose cannot be empty".to_owned(),
         ));
     }
-    if spec.scenario.user.task.trim().is_empty() {
+    if spec.scenario.user.task().trim().is_empty() {
         return Err(EvalError::InvalidSpec(
             "scenario.user.task cannot be empty".to_owned(),
         ));
+    }
+    if let EvalUserSpec::Scripted {
+        initial_message, ..
+    } = &spec.scenario.user
+    {
+        if initial_message.trim().is_empty() {
+            return Err(EvalError::InvalidSpec(
+                "scenario.user.initial_message cannot be empty".to_owned(),
+            ));
+        }
     }
     if spec.evaluation.criteria.is_empty() {
         return Err(EvalError::InvalidSpec(
@@ -314,4 +484,98 @@ fn validate_eval_spec(spec: &EvalSpec) -> Result<(), EvalError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::load_eval_spec;
+    use crate::overrides::OverrideSet;
+
+    #[test]
+    fn load_eval_spec_selects_requested_user_variant() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("eval.yaml");
+        fs::write(
+            &path,
+            r#"
+schema_version: 1
+id: demo
+runtime:
+  output_folder: .pera
+scenario:
+  purpose: demo
+  user_profile:
+    task: shared task
+    reason: because
+    known_info: known
+    unknown_info: unknown
+  interaction_modes:
+    scripted:
+      kind: scripted
+      initial_message: hi
+    simulated:
+      kind: simulated
+  agent: {}
+evaluation:
+  criteria:
+    - type: final_message_required
+"#,
+        )
+        .unwrap();
+
+        let loaded =
+            load_eval_spec(&path, &OverrideSet::default(), Some("simulated")).unwrap();
+        assert_eq!(loaded.spec.scenario.user.task(), "shared task");
+        assert_eq!(
+            loaded
+                .raw
+                .as_mapping()
+                .unwrap()
+                .get(serde_yaml::Value::String("scenario".to_owned()))
+                .and_then(|value| value.as_mapping())
+                .and_then(|mapping| mapping.get(serde_yaml::Value::String("selected_user".to_owned())))
+                .and_then(|value| value.as_str()),
+            Some("simulated")
+        );
+    }
+
+    #[test]
+    fn load_eval_spec_requires_user_selection_when_multiple_variants_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("eval.yaml");
+        fs::write(
+            &path,
+            r#"
+schema_version: 1
+id: demo
+runtime:
+  output_folder: .pera
+scenario:
+  purpose: demo
+  user_profile:
+    task: shared task
+    reason: because
+    known_info: known
+    unknown_info: unknown
+  interaction_modes:
+    scripted:
+      kind: scripted
+      initial_message: hi
+    simulated:
+      kind: simulated
+  agent: {}
+evaluation:
+  criteria:
+    - type: final_message_required
+"#,
+        )
+        .unwrap();
+
+        let error = load_eval_spec(&path, &OverrideSet::default(), None).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("select one with --user"));
+    }
 }

@@ -1,4 +1,5 @@
 use std::pin::Pin;
+use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_stream::try_stream;
@@ -113,6 +114,7 @@ impl OpenAiClient {
         let stream = try_stream! {
             let mut response_stream = response.bytes_stream();
             let mut buffer = String::new();
+            let mut function_call_names = BTreeMap::new();
 
             while let Some(chunk) = response_stream.next().await {
                 let chunk = chunk.context("failed to read streaming response chunk")?;
@@ -123,14 +125,14 @@ impl OpenAiClient {
                     let block = buffer[..block_end].to_owned();
                     buffer.drain(..block_end + 2);
 
-                    if let Some(event) = parse_sse_block(&block)? {
+                    if let Some(event) = parse_sse_block(&block, &mut function_call_names)? {
                         yield event;
                     }
                 }
             }
 
             if !buffer.trim().is_empty() {
-                if let Some(event) = parse_sse_block(buffer.trim())? {
+                if let Some(event) = parse_sse_block(buffer.trim(), &mut function_call_names)? {
                     yield event;
                 }
             }
@@ -395,7 +397,10 @@ struct OpenAiToolCall {
     arguments: Value,
 }
 
-fn parse_sse_block(block: &str) -> Result<Option<OpenAiResponseEvent>> {
+fn parse_sse_block(
+    block: &str,
+    function_call_names: &mut BTreeMap<String, String>,
+) -> Result<Option<OpenAiResponseEvent>> {
     let mut event_name = None;
     let mut data_lines = Vec::new();
 
@@ -436,8 +441,9 @@ fn parse_sse_block(block: &str) -> Result<Option<OpenAiResponseEvent>> {
             let name = payload
                 .get("name")
                 .and_then(Value::as_str)
-                .ok_or_else(|| anyhow!("missing name in function call delta event"))?
-                .to_owned();
+                .map(ToOwned::to_owned)
+                .or_else(|| function_call_names.get(&call_id).cloned())
+                .ok_or_else(|| anyhow!("missing name in function call delta event"))?;
             let arguments_delta = payload
                 .get("delta")
                 .and_then(Value::as_str)
@@ -466,6 +472,7 @@ fn parse_sse_block(block: &str) -> Result<Option<OpenAiResponseEvent>> {
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow!("missing function call name in output item added event"))?
                 .to_owned();
+            function_call_names.insert(call_id.clone(), name.clone());
             Ok(Some(OpenAiResponseEvent::ToolCallStart { call_id, name }))
         }
         "response.output_item.done" => {
@@ -475,17 +482,29 @@ fn parse_sse_block(block: &str) -> Result<Option<OpenAiResponseEvent>> {
             if item.get("type").and_then(Value::as_str) != Some("function_call") {
                 return Ok(None);
             }
+            let item_id = item
+                .get("id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
             let name = item
                 .get("name")
                 .and_then(Value::as_str)
-                .ok_or_else(|| anyhow!("missing function call name in output item done event"))?
-                .to_owned();
+                .map(ToOwned::to_owned)
+                .or_else(|| {
+                    item_id
+                        .as_ref()
+                        .and_then(|id| function_call_names.get(id).cloned())
+                })
+                .ok_or_else(|| anyhow!("missing function call name in output item done event"))?;
             let arguments = item
                 .get("arguments")
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow!("missing arguments in function call done event"))?;
             let arguments = serde_json::from_str(arguments)
                 .context("failed to parse function call arguments as JSON")?;
+            if let Some(item_id) = item_id {
+                function_call_names.remove(&item_id);
+            }
             Ok(Some(OpenAiResponseEvent::ToolCall(OpenAiToolCall {
                 call_id: item.get("call_id").and_then(Value::as_str).map(ToOwned::to_owned),
                 name,
@@ -493,5 +512,102 @@ fn parse_sse_block(block: &str) -> Result<Option<OpenAiResponseEvent>> {
             })))
         }
         _ => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use anyhow::Result;
+    use serde_json::json;
+
+    use super::{OpenAiResponseEvent, parse_sse_block};
+
+    fn parse(
+        block: &str,
+        function_call_names: &mut BTreeMap<String, String>,
+    ) -> Result<Option<OpenAiResponseEvent>> {
+        parse_sse_block(block.trim_end(), function_call_names)
+    }
+
+    #[test]
+    fn function_call_delta_can_reuse_name_from_output_item_added() {
+        let mut function_call_names = BTreeMap::new();
+
+        let added = r#"event: response.output_item.added
+data: {"item":{"type":"function_call","id":"fc_123","name":"load_skill"}}
+
+"#;
+        let delta = r#"event: response.function_call_arguments.delta
+data: {"item_id":"fc_123","delta":"{\"skill_name\":\"calendar-ops\"}"}
+
+"#;
+
+        let added_event = parse(added, &mut function_call_names).unwrap().unwrap();
+        assert!(matches!(
+            added_event,
+            OpenAiResponseEvent::ToolCallStart { ref call_id, ref name }
+                if call_id == "fc_123" && name == "load_skill"
+        ));
+
+        let delta_event = parse(delta, &mut function_call_names).unwrap().unwrap();
+        assert!(matches!(
+            delta_event,
+            OpenAiResponseEvent::ToolCallDelta { ref call_id, ref name, ref arguments_delta }
+                if call_id == "fc_123"
+                    && name == "load_skill"
+                    && arguments_delta == "{\"skill_name\":\"calendar-ops\"}"
+        ));
+    }
+
+    #[test]
+    fn function_call_done_can_reuse_name_from_output_item_added() {
+        let mut function_call_names = BTreeMap::new();
+
+        let added = r#"event: response.output_item.added
+data: {"item":{"type":"function_call","id":"fc_123","name":"load_skill"}}
+
+"#;
+        let done = r#"event: response.output_item.done
+data: {"item":{"type":"function_call","id":"fc_123","call_id":"call_123","arguments":"{\"skill_name\":\"calendar-ops\"}"}}
+
+"#;
+
+        let _ = parse(added, &mut function_call_names).unwrap().unwrap();
+        let done_event = parse(done, &mut function_call_names).unwrap().unwrap();
+
+        assert!(matches!(
+            done_event,
+            OpenAiResponseEvent::ToolCall(ref call)
+                if call.call_id.as_deref() == Some("call_123")
+                    && call.name == "load_skill"
+                    && call.arguments == json!({"skill_name":"calendar-ops"})
+        ));
+    }
+
+    #[test]
+    fn function_call_name_cache_is_cleared_after_done() {
+        let mut function_call_names = BTreeMap::new();
+
+        let added = r#"event: response.output_item.added
+data: {"item":{"type":"function_call","id":"fc_123","name":"load_skill"}}
+
+"#;
+        let done = r#"event: response.output_item.done
+data: {"item":{"type":"function_call","id":"fc_123","call_id":"call_123","arguments":"{\"skill_name\":\"calendar-ops\"}"}}
+
+"#;
+        let delta_after_done = r#"event: response.function_call_arguments.delta
+data: {"item_id":"fc_123","delta":"{\"skill_name\":\"travel-desk\"}"}
+
+"#;
+
+        let _ = parse(added, &mut function_call_names).unwrap().unwrap();
+        let _ = parse(done, &mut function_call_names).unwrap().unwrap();
+        let error = parse(delta_after_done, &mut function_call_names).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("missing name in function call delta event"));
     }
 }

@@ -16,17 +16,20 @@ pub struct ScriptedUserParticipant<O, A, U> {
 
 impl<O, A, U> ScriptedUserParticipant<O, A, U> {
     pub fn from_spec(spec: &EvalUserSpec) -> Self {
-        let base_message = spec
-            .example_messages
-            .first()
-            .cloned()
-            .unwrap_or_else(|| spec.task.clone());
-        let initial_message = if spec.known_info.trim().is_empty() {
-            base_message
+        let EvalUserSpec::Scripted {
+            known_info,
+            initial_message,
+            ..
+        } = spec
+        else {
+            panic!("scripted user participant requires a scripted user spec");
+        };
+        let initial_message = if known_info.trim().is_empty() {
+            initial_message.clone()
         } else {
             format!(
-                "{base_message}\n\nKnown information:\n{}",
-                spec.known_info.trim()
+                "{initial_message}\n\nKnown information:\n{}",
+                known_info.trim()
             )
         };
         Self {
@@ -87,19 +90,18 @@ where
 #[cfg(test)]
 mod tests {
     use super::ScriptedUserParticipant;
-    use crate::spec::{EvalUserMode, EvalUserSpec};
+    use crate::spec::EvalUserSpec;
 
     #[test]
     fn scripted_user_initial_message_includes_known_info() {
-        let participant = ScriptedUserParticipant::<(), (), ()>::from_spec(&EvalUserSpec {
-            mode: EvalUserMode::Scripted,
-            task: "Plan the trip".to_owned(),
-            reason: "Need bookings today".to_owned(),
-            known_info: "The cost center is DELTA-EU. The planning week starts on 2026-04-06."
-                .to_owned(),
-            unknown_info: "Availability and policy edge cases.".to_owned(),
-            example_messages: vec!["Plan Berlin travel for Alice and Bruno.".to_owned()],
-        });
+        let participant =
+            ScriptedUserParticipant::<(), (), ()>::from_spec(&EvalUserSpec::Scripted {
+                task: "Plan the trip".to_owned(),
+                known_info:
+                    "The cost center is DELTA-EU. The planning week starts on 2026-04-06."
+                        .to_owned(),
+                initial_message: "Plan Berlin travel for Alice and Bruno.".to_owned(),
+            });
 
         assert_eq!(
             participant.initial_message,

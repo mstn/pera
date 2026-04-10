@@ -286,8 +286,8 @@ fn build_judge_user_message(
 ) -> String {
     let payload = JudgePromptPayload {
         purpose: &spec.scenario.purpose,
-        user_task: &spec.scenario.user.task,
-        known_info: &spec.scenario.user.known_info,
+        user_task: spec.scenario.user.task(),
+        known_info: spec.scenario.user.known_info(),
         finish_reason: format!("{finish_reason:?}"),
         final_agent_message,
         trace,

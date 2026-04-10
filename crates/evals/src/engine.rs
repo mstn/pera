@@ -35,6 +35,7 @@ pub struct EvalRequest {
     pub spec_path: PathBuf,
     pub output_folder: Option<PathBuf>,
     pub overrides: OverrideSet,
+    pub user: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -54,7 +55,8 @@ impl EvalEngine {
             mode.as_str(),
             request.spec_path.display()
         );
-        let mut loaded_spec = load_eval_spec(&request.spec_path, &request.overrides)?;
+        let mut loaded_spec =
+            load_eval_spec(&request.spec_path, &request.overrides, request.user.as_deref())?;
         if let Some(path) = request.output_folder {
             eprintln!("[eval] overriding output folder to {}", path.display());
             loaded_spec.override_output_folder(path)?;
