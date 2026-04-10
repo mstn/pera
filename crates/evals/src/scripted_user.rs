@@ -81,7 +81,7 @@ where
             return Ok(ParticipantDecision::Finish);
         }
 
-        Ok(ParticipantDecision::CompleteLoop {
+        Ok(ParticipantDecision::FinalMessage {
             content: self.initial_message.clone(),
         })
     }

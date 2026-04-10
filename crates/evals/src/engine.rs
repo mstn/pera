@@ -13,7 +13,7 @@ use crate::evaluator::{
 use crate::execution::{EvalPreparation, EvalRunResult, EvalRunWorkspace};
 use crate::overrides::OverrideSet;
 use crate::runner::EvalRunner;
-use crate::spec::{LoadedEvalSpec, load_eval_spec};
+use crate::spec::{EvalUserSpec, LoadedEvalSpec, load_eval_spec};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvalMode {
@@ -113,6 +113,8 @@ impl EvalEngine {
         let evaluator = SpecEvaluator::new(session.loaded_spec.spec.clone(), action_adapter.clone());
         let mut orchestrator =
             Orchestrator::with_participants_and_evaluator(participants, environment, evaluator);
+        let termination_condition =
+            termination_condition_for_user(&session.loaded_spec.spec.scenario.user);
         let result = orchestrator
             .run_with_output(
                 RunRequest {
@@ -128,9 +130,7 @@ impl EvalEngine {
                         max_duration: Some(std::time::Duration::from_secs(90)),
                         ..RunLimits::default()
                     },
-                    termination_condition: TerminationCondition::AnyOfParticipantsCompletedLoop(
-                        vec![ParticipantId::Agent],
-                    ),
+                    termination_condition,
                     initial_messages: vec![pera_orchestrator::InitialInboxMessage {
                         to: ParticipantId::User,
                         from: ParticipantId::Custom("system".to_owned()),
@@ -248,5 +248,46 @@ impl EvalEngine {
                 run_dir,
             },
         })
+    }
+}
+
+fn termination_condition_for_user(user: &EvalUserSpec) -> TerminationCondition {
+    if user.is_multi_turn() {
+        TerminationCondition::AnyParticipantFinished
+    } else {
+        TerminationCondition::AnyOfParticipantsCompletedLoop(vec![ParticipantId::Agent])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::termination_condition_for_user;
+    use crate::spec::EvalUserSpec;
+    use pera_orchestrator::{ParticipantId, TerminationCondition};
+
+    #[test]
+    fn scripted_users_use_single_answer_termination() {
+        let condition = termination_condition_for_user(&EvalUserSpec::Scripted {
+            task: "task".to_owned(),
+            known_info: "known".to_owned(),
+            initial_message: "hello".to_owned(),
+        });
+
+        assert_eq!(
+            condition,
+            TerminationCondition::AnyOfParticipantsCompletedLoop(vec![ParticipantId::Agent])
+        );
+    }
+
+    #[test]
+    fn simulated_users_use_multi_turn_termination() {
+        let condition = termination_condition_for_user(&EvalUserSpec::Simulated {
+            task: "task".to_owned(),
+            reason: "reason".to_owned(),
+            known_info: "known".to_owned(),
+            unknown_info: "unknown".to_owned(),
+        });
+
+        assert_eq!(condition, TerminationCondition::AnyParticipantFinished);
     }
 }

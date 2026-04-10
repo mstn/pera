@@ -410,6 +410,13 @@ where
         }
     }
 
+    fn emit_participant_notification(&mut self, participant: &ParticipantId, content: &str) {
+        self.trajectory.push(TrajectoryEvent::ParticipantNotification {
+            participant: participant.clone(),
+            content: content.to_owned(),
+        });
+    }
+
     fn emit_participant_message(&mut self, participant: &ParticipantId, content: &str) {
         self.trajectory.push(TrajectoryEvent::ParticipantMessage {
             participant: participant.clone(),
@@ -899,6 +906,17 @@ where
         output: &mut dyn ParticipantOutput<E::Action, E::Outcome>,
     ) -> Result<Option<FinishReason>, EvaluatorError> {
         match decision {
+            ParticipantDecision::Notification { content } => {
+                counters.step_count += 1;
+                counters.message_count += 1;
+                if let Some(participant) = state.participant_mut(&participant_id) {
+                    participant.apply_turn_progress();
+                }
+                state.emit_participant_notification(&participant_id, &content);
+                if counters.message_count > request.limits.max_messages {
+                    return Ok(Some(FinishReason::MessageLimitExceeded));
+                }
+            }
             ParticipantDecision::Message { content } => {
                 counters.step_count += 1;
                 counters.message_count += 1;
@@ -910,7 +928,7 @@ where
                     return Ok(Some(FinishReason::MessageLimitExceeded));
                 }
             }
-            ParticipantDecision::CompleteLoop { content } => {
+            ParticipantDecision::FinalMessage { content } => {
                 counters.step_count += 1;
                 counters.message_count += 1;
                 if let Some(participant) = state.participant_mut(&participant_id) {
@@ -931,7 +949,7 @@ where
                 }
             }
             ParticipantDecision::Action {
-                message,
+                notification,
                 action,
                 execution,
             } => {
@@ -940,9 +958,9 @@ where
                 if let Some(participant) = state.participant_mut(&participant_id) {
                     participant.apply_turn_progress();
                 }
-                if let Some(message) = message {
+                if let Some(notification) = notification {
                     counters.message_count += 1;
-                    state.emit_participant_message(&participant_id, &message);
+                    state.emit_participant_notification(&participant_id, &notification);
                     if counters.message_count > request.limits.max_messages {
                         return Ok(Some(FinishReason::MessageLimitExceeded));
                     }

@@ -286,7 +286,7 @@ where
             return Ok(decision);
         }
 
-        Ok(ParticipantDecision::CompleteLoop { content })
+        Ok(ParticipantDecision::FinalMessage { content })
     }
 }
 
@@ -305,7 +305,7 @@ fn map_tool_call_to_decision(
         "load_skill" => {
             let skill_name = required_string_argument(&tool_call.arguments, "skill_name")?;
             Ok(ParticipantDecision::Action {
-                message: None,
+                notification: None,
                 action: WorkspaceAction::LoadSkill { skill_name },
                 execution: pera_orchestrator::ActionExecution::Immediate,
             })
@@ -313,7 +313,7 @@ fn map_tool_call_to_decision(
         "unload_skill" => {
             let skill_name = required_string_argument(&tool_call.arguments, "skill_name")?;
             Ok(ParticipantDecision::Action {
-                message: None,
+                notification: None,
                 action: WorkspaceAction::UnloadSkill { skill_name },
                 execution: pera_orchestrator::ActionExecution::Immediate,
             })
@@ -324,7 +324,7 @@ fn map_tool_call_to_decision(
             let handoff_user_message =
                 required_string_argument(&tool_call.arguments, "handoff_user_message")?;
             Ok(ParticipantDecision::Action {
-                message: Some(handoff_user_message),
+                notification: Some(handoff_user_message),
                 action: WorkspaceAction::ExecuteCode { language, source },
                 execution: pera_orchestrator::ActionExecution::DeferredBlocking,
             })
@@ -375,8 +375,9 @@ fn status_for_action_decision(decision: &ParticipantDecision<WorkspaceAction>) -
             action: WorkspaceAction::ExecuteCode { .. },
             ..
         } => "executing code".to_owned(),
-        ParticipantDecision::Message { .. }
-        | ParticipantDecision::CompleteLoop { .. }
+        ParticipantDecision::Notification { .. }
+        | ParticipantDecision::Message { .. }
+        | ParticipantDecision::FinalMessage { .. }
         | ParticipantDecision::Yield
         | ParticipantDecision::Finish => "updating".to_owned(),
     }
@@ -415,7 +416,7 @@ mod tests {
                 action: WorkspaceAction::LoadSkill {
                     skill_name: "secret-service".to_owned(),
                 },
-                message: None,
+                notification: None,
                 execution: pera_orchestrator::ActionExecution::Immediate,
             }
         );
@@ -436,7 +437,7 @@ mod tests {
                 action: WorkspaceAction::UnloadSkill {
                     skill_name: "secret-service".to_owned(),
                 },
-                message: None,
+                notification: None,
                 execution: pera_orchestrator::ActionExecution::Immediate,
             }
         );
@@ -458,7 +459,7 @@ mod tests {
         assert_eq!(
             decision,
             ParticipantDecision::Action {
-                message: Some("Running a quick check.".to_owned()),
+                notification: Some("Running a quick check.".to_owned()),
                 action: WorkspaceAction::ExecuteCode {
                     language: "python".to_owned(),
                     source: "print(1)".to_owned(),

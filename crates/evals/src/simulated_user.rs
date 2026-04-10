@@ -72,7 +72,7 @@ where
             return Ok(ParticipantDecision::Finish);
         }
 
-        Ok(ParticipantDecision::CompleteLoop {
+        Ok(ParticipantDecision::FinalMessage {
             content: content.to_owned(),
         })
     }

@@ -504,6 +504,13 @@ where
                     detail: error.detail.clone(),
                     origin: format!("{:?}", error.origin),
                 },
+                TrajectoryEvent::ParticipantNotification {
+                    participant,
+                    content,
+                } => EvalTrajectoryPayload::ParticipantNotification {
+                    participant: serialize_participant_id(participant),
+                    content: content.clone(),
+                },
                 TrajectoryEvent::ParticipantYielded { participant } => {
                     EvalTrajectoryPayload::ParticipantYielded {
                         participant: serialize_participant_id(participant),

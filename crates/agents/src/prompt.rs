@@ -233,6 +233,17 @@ fn build_transcript(
 
     for event in events {
         match event {
+            TrajectoryEvent::ParticipantNotification {
+                participant,
+                content,
+            } => messages.push(PromptMessage::text(
+                "system",
+                format!(
+                    "Notification from {}: {}",
+                    role_for_participant(participant),
+                    content
+                ),
+            )),
             TrajectoryEvent::ParticipantMessage {
                 participant,
                 content,

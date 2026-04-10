@@ -112,6 +112,10 @@ impl EvalUserSpec {
             Self::Scripted { known_info, .. } | Self::Simulated { known_info, .. } => known_info,
         }
     }
+
+    pub fn is_multi_turn(&self) -> bool {
+        matches!(self, Self::Simulated { .. })
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

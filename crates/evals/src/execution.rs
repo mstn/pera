@@ -118,6 +118,10 @@ pub enum EvalTrajectoryPayload {
         detail: String,
         origin: String,
     },
+    ParticipantNotification {
+        participant: String,
+        content: String,
+    },
     ParticipantYielded {
         participant: String,
     },

@@ -231,6 +231,10 @@ pub enum EnvironmentEvent<A, U> {
 pub enum TrajectoryEvent<O, A, U> {
     SessionStarted { task: TaskSpec },
     ObservationRecorded { observation: O },
+    ParticipantNotification {
+        participant: ParticipantId,
+        content: String,
+    },
     ParticipantMessage {
         participant: ParticipantId,
         content: String,
@@ -306,13 +310,15 @@ pub struct ParticipantInput<O, A, U> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParticipantDecision<A> {
+    /// Emit a local notification while keeping the current loop open.
+    Notification { content: String },
     /// Emit a non-terminal message while keeping the current loop open.
     Message { content: String },
     /// Emit the terminal message for the current loop and return the participant to idle.
-    CompleteLoop { content: String },
+    FinalMessage { content: String },
     Action {
         /// Optional assistant handoff text to persist before the action request.
-        message: Option<String>,
+        notification: Option<String>,
         action: A,
         execution: ActionExecution,
     },

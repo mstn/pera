@@ -169,7 +169,7 @@ async fn orchestrator_handles_single_participant_immediate_action() {
         id: ParticipantId::Agent,
         decisions: VecDeque::from([
             Ok(ParticipantDecision::Action {
-                message: None,
+                notification: None,
                 action: TestAction("run"),
                 execution: ActionExecution::Immediate,
             }),
@@ -238,7 +238,7 @@ async fn orchestrator_delivers_immediate_completion_via_inbox() {
         id: ParticipantId::Agent,
         decisions: VecDeque::from([
             Ok(ParticipantDecision::Action {
-                message: None,
+                notification: None,
                 action: TestAction("run"),
                 execution: ActionExecution::Immediate,
             }),
@@ -313,7 +313,7 @@ async fn orchestrator_delivers_deferred_completion_via_inbox() {
         id: ParticipantId::Agent,
         decisions: VecDeque::from([
             Ok(ParticipantDecision::Action {
-                message: None,
+                notification: None,
                 action: TestAction("background"),
                 execution: ActionExecution::DeferredNonBlocking,
             }),
@@ -399,10 +399,10 @@ async fn orchestrator_starts_a_new_agent_loop_for_a_second_user_message() {
     let agent = FakeParticipant {
         id: ParticipantId::Agent,
         decisions: VecDeque::from([
-            Ok(ParticipantDecision::CompleteLoop {
+            Ok(ParticipantDecision::FinalMessage {
                 content: "reply 1".to_owned(),
             }),
-            Ok(ParticipantDecision::CompleteLoop {
+            Ok(ParticipantDecision::FinalMessage {
                 content: "reply 2".to_owned(),
             }),
             Ok(ParticipantDecision::Finish),
@@ -413,10 +413,10 @@ async fn orchestrator_starts_a_new_agent_loop_for_a_second_user_message() {
     let user = FakeParticipant {
         id: ParticipantId::User,
         decisions: VecDeque::from([
-            Ok(ParticipantDecision::CompleteLoop {
+            Ok(ParticipantDecision::FinalMessage {
                 content: "request 1".to_owned(),
             }),
-            Ok(ParticipantDecision::CompleteLoop {
+            Ok(ParticipantDecision::FinalMessage {
                 content: "request 2".to_owned(),
             }),
             Ok(ParticipantDecision::Finish),
@@ -493,7 +493,7 @@ async fn orchestrator_blocks_participant_on_deferred_blocking_action() {
         id: ParticipantId::Agent,
         decisions: VecDeque::from([
             Ok(ParticipantDecision::Action {
-                message: None,
+                notification: None,
                 action: TestAction("blocking"),
                 execution: ActionExecution::DeferredBlocking,
             }),
@@ -574,7 +574,7 @@ async fn orchestrator_resumes_blocked_participant_after_deferred_action_failure(
         id: ParticipantId::Agent,
         decisions: VecDeque::from([
             Ok(ParticipantDecision::Action {
-                message: None,
+                notification: None,
                 action: TestAction("blocking"),
                 execution: ActionExecution::DeferredBlocking,
             }),
@@ -661,11 +661,11 @@ async fn orchestrator_starts_new_loop_from_idle_action_failure() {
         id: ParticipantId::Agent,
         decisions: VecDeque::from([
             Ok(ParticipantDecision::Action {
-                message: None,
+                notification: None,
                 action: TestAction("background"),
                 execution: ActionExecution::DeferredNonBlocking,
             }),
-            Ok(ParticipantDecision::CompleteLoop {
+            Ok(ParticipantDecision::FinalMessage {
                 content: "retrying after failure".to_owned(),
             }),
             Ok(ParticipantDecision::Finish),
@@ -900,7 +900,7 @@ async fn orchestrator_can_terminate_when_a_specific_participant_finishes() {
 async fn orchestrator_can_terminate_when_a_specific_participant_completes_a_loop() {
     let agent = FakeParticipant {
         id: ParticipantId::Agent,
-        decisions: VecDeque::from([Ok(ParticipantDecision::CompleteLoop {
+        decisions: VecDeque::from([Ok(ParticipantDecision::FinalMessage {
             content: "done".to_owned(),
         })]),
         seen_inboxes: Arc::new(Mutex::new(Vec::new())),
@@ -1041,7 +1041,7 @@ async fn orchestrator_persists_action_handoff_message_before_requesting_action()
         id: ParticipantId::Agent,
         decisions: VecDeque::from([
             Ok(ParticipantDecision::Action {
-                message: Some("Running a quick check.".to_owned()),
+                notification: Some("Running a quick check.".to_owned()),
                 action: TestAction("run"),
                 execution: ActionExecution::Immediate,
             }),
@@ -1102,7 +1102,7 @@ async fn orchestrator_persists_action_handoff_message_before_requesting_action()
         .iter()
         .position(|event| matches!(
             event,
-            TrajectoryEvent::ParticipantMessage { participant, content }
+            TrajectoryEvent::ParticipantNotification { participant, content }
                 if *participant == ParticipantId::Agent && content == "Running a quick check."
         ))
         .expect("handoff message should be persisted");
@@ -1126,7 +1126,7 @@ async fn orchestrator_times_out_when_blocked_action_never_completes() {
     let agent = FakeParticipant {
         id: ParticipantId::Agent,
         decisions: VecDeque::from([Ok(ParticipantDecision::Action {
-            message: None,
+            notification: None,
             action: TestAction("blocking"),
             execution: ActionExecution::DeferredBlocking,
         })]),
@@ -1190,7 +1190,7 @@ async fn completed_user_loop_does_not_restart_while_agent_is_blocked() {
     let agent = FakeParticipant {
         id: ParticipantId::Agent,
         decisions: VecDeque::from([Ok(ParticipantDecision::Action {
-            message: None,
+            notification: None,
             action: TestAction("blocking"),
             execution: ActionExecution::DeferredBlocking,
         })]),
@@ -1200,7 +1200,7 @@ async fn completed_user_loop_does_not_restart_while_agent_is_blocked() {
     let user = FakeParticipant {
         id: ParticipantId::User,
         decisions: VecDeque::from([
-            Ok(ParticipantDecision::CompleteLoop {
+            Ok(ParticipantDecision::FinalMessage {
                 content: "start planning".to_owned(),
             }),
             Ok(ParticipantDecision::Yield),
@@ -1265,7 +1265,7 @@ async fn yielded_user_waits_for_new_input_instead_of_spinning() {
     let user = FakeParticipant {
         id: ParticipantId::User,
         decisions: VecDeque::from([
-            Ok(ParticipantDecision::CompleteLoop {
+            Ok(ParticipantDecision::FinalMessage {
                 content: "start planning".to_owned(),
             }),
             Ok(ParticipantDecision::Yield),
@@ -1280,7 +1280,7 @@ async fn yielded_user_waits_for_new_input_instead_of_spinning() {
                 content: "Working on it.".to_owned(),
             }),
             Ok(ParticipantDecision::Action {
-                message: None,
+                notification: None,
                 action: TestAction("blocking"),
                 execution: ActionExecution::DeferredBlocking,
             }),
