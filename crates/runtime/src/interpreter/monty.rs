@@ -8,7 +8,7 @@ use monty::{
 use pera_core::{
     ActionName, CodeArtifact, CodeLanguage, CompiledProgram, ExecutionOutput, ExecutionSnapshot,
     ExternalCall, InputValues, Interpreter, InterpreterError, InterpreterKind, InterpreterStep,
-    Suspension, Value,
+    MapEntry, Suspension, Value,
 };
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -276,10 +276,10 @@ fn value_to_monty_object(value: &Value) -> Result<MontyObject, InterpreterError>
             .map(MontyObject::Tuple),
         Value::Map(entries) => entries
             .iter()
-            .map(|(key, value)| {
+            .map(|entry| {
                 Ok((
-                    MontyObject::String(key.clone()),
-                    value_to_monty_object(value)?,
+                    value_to_monty_object(&entry.key)?,
+                    value_to_monty_object(&entry.value)?,
                 ))
             })
             .collect::<Result<Vec<_>, _>>()
@@ -343,22 +343,17 @@ fn monty_object_to_value(value: MontyObject) -> Result<Value, InterpreterError> 
             })
         }
         MontyObject::Dict(entries) => {
-            let mut map = BTreeMap::new();
+            let entries = entries
+                .into_iter()
+                .map(|(key, value)| {
+                    Ok(MapEntry {
+                        key: monty_object_to_value(key)?,
+                        value: monty_object_to_value(value)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
 
-            for (key, value) in entries {
-                let key = match key {
-                    MontyObject::String(value) => value,
-                    _ => {
-                        return Err(InterpreterError::new(
-                            "Monty dictionaries must use string keys",
-                        ));
-                    }
-                };
-
-                map.insert(key, monty_object_to_value(value)?);
-            }
-
-            Ok(Value::Map(map))
+            Ok(Value::Map(entries))
         }
         MontyObject::Dataclass { name, attrs, .. } => {
             let mut map = BTreeMap::new();
@@ -393,7 +388,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use pera_core::{CodeArtifactId, ScriptName, Value};
+    use pera_core::{CodeArtifactId, MapEntry, ScriptName, Value};
 
     fn run_python(source: &str) -> Result<InterpreterStep, InterpreterError> {
         let interpreter = MontyInterpreter::new();
@@ -703,5 +698,76 @@ trip
                 fields: expected_fields,
             }
         );
+    }
+
+    #[test]
+    fn normalizes_dict_with_non_string_keys() {
+        let value = monty_object_to_value(MontyObject::dict(vec![
+            (
+                MontyObject::Tuple(vec![
+                    MontyObject::String("alice".to_owned()),
+                    MontyObject::String("out_0408".to_owned()),
+                ]),
+                MontyObject::Int(2),
+            ),
+            (MontyObject::Int(7), MontyObject::String("days".to_owned())),
+        ]))
+        .expect("dict should normalize");
+
+        assert_eq!(
+            value,
+            Value::Map(vec![
+                MapEntry {
+                    key: Value::Tuple(vec![
+                        Value::String("alice".to_owned()),
+                        Value::String("out_0408".to_owned()),
+                    ]),
+                    value: Value::Int(2),
+                },
+                MapEntry {
+                    key: Value::Int(7),
+                    value: Value::String("days".to_owned()),
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn executes_python_dict_with_tuple_keys() {
+        let step = run_python(
+            r#"
+{
+    ("alice", "out_0408"): 2,
+    ("bruno", "out_0408"): 2,
+}
+"#,
+        )
+        .expect("dict with tuple keys should execute successfully");
+
+        match step {
+            InterpreterStep::Completed(output) => {
+                assert_eq!(
+                    output.value,
+                    Some(Value::Map(vec![
+                        MapEntry {
+                            key: Value::Tuple(vec![
+                                Value::String("alice".to_owned()),
+                                Value::String("out_0408".to_owned()),
+                            ]),
+                            value: Value::Int(2),
+                        },
+                        MapEntry {
+                            key: Value::Tuple(vec![
+                                Value::String("bruno".to_owned()),
+                                Value::String("out_0408".to_owned()),
+                            ]),
+                            value: Value::Int(2),
+                        },
+                    ]))
+                );
+                assert!(output.repl_state.is_some());
+            }
+            other => panic!("unexpected interpreter step: {other:?}"),
+        }
     }
 }

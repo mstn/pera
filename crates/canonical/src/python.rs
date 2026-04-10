@@ -169,7 +169,11 @@ pub fn render_python_value(value: &Value) -> String {
             "{{{}}}",
             entries
                 .iter()
-                .map(|(key, value)| format!("{key:?}: {}", render_python_value(value)))
+                .map(|entry| format!(
+                    "{}: {}",
+                    render_python_value(&entry.key),
+                    render_python_value(&entry.value)
+                ))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -439,7 +443,7 @@ fn split_doc_lines(docs: &str) -> Vec<String> {
 mod tests {
     use std::collections::BTreeMap;
 
-    use pera_core::Value;
+    use pera_core::{MapEntry, Value};
 
     use crate::load_canonical_world_from_wit;
 
@@ -483,5 +487,18 @@ mod tests {
             rendered,
             "([\"meeting\"], [], TripPolicy(shared_room_allowed=True))"
         );
+    }
+
+    #[test]
+    fn render_python_value_preserves_non_string_dict_keys() {
+        let rendered = super::render_python_value(&Value::Map(vec![MapEntry {
+            key: Value::Tuple(vec![
+                Value::String("alice".to_owned()),
+                Value::String("out_0408".to_owned()),
+            ]),
+            value: Value::Int(2),
+        }]));
+
+        assert_eq!(rendered, "{(\"alice\", \"out_0408\"): 2}");
     }
 }

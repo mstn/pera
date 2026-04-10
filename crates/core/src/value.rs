@@ -1,6 +1,12 @@
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MapEntry {
+    pub key: Value,
+    pub value: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Value {
     Null,
     Bool(bool),
@@ -8,7 +14,7 @@ pub enum Value {
     String(String),
     List(Vec<Value>),
     Tuple(Vec<Value>),
-    Map(BTreeMap<String, Value>),
+    Map(Vec<MapEntry>),
     Record {
         name: String,
         fields: BTreeMap<String, Value>,

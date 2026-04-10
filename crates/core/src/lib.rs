@@ -27,4 +27,4 @@ pub use skill::{
     SkillProfileManifest, SkillRuntimeArtifactSpec, SkillRuntimeKind, SkillRuntimeManifest,
     SkillVersion, WasmSkillBuildSpec, WasmSkillInterfaceSpec, WasmSkillRuntimeSpec,
 };
-pub use value::{CanonicalValue, Value};
+pub use value::{CanonicalValue, MapEntry, Value};
