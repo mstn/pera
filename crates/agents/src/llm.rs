@@ -1,10 +1,11 @@
-use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use futures_util::stream::Stream;
 use pera_core::{RunId, WorkItemId};
+use pera_llm::{
+    LlmProvider, LlmRequest, LlmStreamEvent, LlmToolCall, UnconfiguredLlmProvider,
+};
 use pera_orchestrator::{
     Participant, ParticipantDecision,
     ParticipantError, ParticipantId, ParticipantInput, ParticipantOutput,
@@ -13,34 +14,8 @@ use pera_runtime::{WorkspaceAction, WorkspaceObservation, WorkspaceOutcome};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::prompt::{CodePromptBuilder, PromptContext, PromptMessage, ProviderBackedPromptBuilder};
-
-#[derive(Debug, Clone)]
-pub struct LlmRequest {
-    pub system_prompt: String,
-    pub messages: Vec<PromptMessage>,
-    pub tools: Vec<LlmToolDefinition>,
-}
-
-#[derive(Debug, Clone)]
-pub struct LlmResponse {
-    pub content: String,
-    pub tool_call: Option<LlmToolCall>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LlmToolDefinition {
-    pub name: String,
-    pub description: String,
-    pub input_schema: Value,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct LlmToolCall {
-    pub call_id: Option<String>,
-    pub name: String,
-    pub arguments: Value,
-}
+use crate::prompt::{CodePromptBuilder, PromptContext, ProviderBackedPromptBuilder};
+use pera_llm::PromptMessage;
 
 #[derive(Debug, Clone)]
 pub struct PromptDebugMetadata {
@@ -109,59 +84,6 @@ impl PromptDebugSink for NoopPromptDebugSink {
         _request: &LlmRequest,
     ) -> Result<(), ParticipantError> {
         Ok(())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum LlmStreamEvent {
-    Text(String),
-    ToolCallStart {
-        call_id: String,
-        name: String,
-    },
-    ToolCallDelta {
-        call_id: String,
-        name: String,
-        arguments_delta: String,
-    },
-    ToolCall(LlmToolCall),
-}
-
-pub type LlmStream = Pin<Box<dyn Stream<Item = Result<LlmStreamEvent, ParticipantError>> + Send>>;
-
-#[async_trait]
-pub trait LlmProvider: Send + Sync {
-    async fn stream(&self, request: LlmRequest) -> Result<LlmStream, ParticipantError>;
-
-    async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, ParticipantError> {
-        let mut stream = self.stream(request).await?;
-        let mut content = String::new();
-        let mut tool_call = None;
-        while let Some(chunk) = stream.next().await {
-            match chunk? {
-                LlmStreamEvent::Text(text) => content.push_str(&text),
-                LlmStreamEvent::ToolCallStart { .. } | LlmStreamEvent::ToolCallDelta { .. } => {}
-                LlmStreamEvent::ToolCall(call) => {
-                    if tool_call.is_none() {
-                        tool_call = Some(call);
-                    }
-                }
-            }
-        }
-        Ok(LlmResponse { content, tool_call })
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct UnconfiguredLlmProvider;
-
-#[async_trait]
-impl LlmProvider for UnconfiguredLlmProvider {
-    async fn stream(&self, _request: LlmRequest) -> Result<LlmStream, ParticipantError> {
-        let chunk = "LLM provider is not configured yet.".to_owned();
-        Ok(Box::pin(futures_util::stream::once(async move {
-            Ok(LlmStreamEvent::Text(chunk))
-        })))
     }
 }
 
@@ -255,7 +177,7 @@ where
                         }),
                     },
                 )?;
-                return Err(error);
+                return Err(ParticipantError::new(error.to_string()));
             }
         };
         let mut content = String::new();
@@ -279,7 +201,7 @@ where
                             }),
                         },
                     )?;
-                    return Err(error);
+                    return Err(ParticipantError::new(error.to_string()));
                 }
                 Ok(chunk) => match chunk {
                 LlmStreamEvent::Text(chunk) => {

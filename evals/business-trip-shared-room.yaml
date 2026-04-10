@@ -23,6 +23,7 @@ scenario:
   purpose: |
     Evaluate whether the agent can compose schedule, transport, lodging, and policy data across multiple code turns and infer that sharing a double room is a valid alternative when no single rooms are available.
   user:
+    mode: simulated
     task: |
       Plan a trip for Alice and Bruno to attend the Delta review in Berlin next week. Find a feasible option and explain any tradeoffs.
     reason: |

@@ -1850,15 +1850,13 @@ dependencies = [
 name = "pera-agents"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "async-stream",
  "async-trait",
  "futures-util",
  "pera-canonical",
  "pera-core",
+ "pera-llm",
  "pera-orchestrator",
  "pera-runtime",
- "reqwest",
  "serde",
  "serde_json",
 ]
@@ -1885,6 +1883,7 @@ dependencies = [
  "pera-canonical",
  "pera-core",
  "pera-evals",
+ "pera-llm",
  "pera-orchestrator",
  "pera-runtime",
  "pera-skills",
@@ -1909,11 +1908,25 @@ name = "pera-evals"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "pera-llm",
  "pera-orchestrator",
  "pera-skills",
  "serde",
  "serde_json",
  "serde_yaml",
+]
+
+[[package]]
+name = "pera-llm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "async-trait",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

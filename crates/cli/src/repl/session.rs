@@ -2,10 +2,8 @@ use std::sync::Arc;
 use std::io::{self, BufRead, Write};
 
 use async_trait::async_trait;
-use pera_agents::{
-    LlmAgentParticipant, OpenAiConfig as OpenAiProviderConfig, OpenAiProvider,
-    ProviderBackedPromptBuilder,
-};
+use pera_agents::{LlmAgentParticipant, ProviderBackedPromptBuilder};
+use pera_llm::{OpenAiConfig as OpenAiProviderConfig, OpenAiProvider};
 use pera_orchestrator::{
     ActionError, InitialInboxMessage, ParticipantError, ParticipantId, ParticipantOutput,
     RunLimits, RunRequest, TaskSpec, TerminationCondition,

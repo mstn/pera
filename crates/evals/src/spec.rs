@@ -85,12 +85,21 @@ pub struct EvalScenarioSpec {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct EvalUserSpec {
+    #[serde(default)]
+    pub mode: EvalUserMode,
     pub task: String,
     pub reason: String,
     pub known_info: String,
     pub unknown_info: String,
-    #[serde(default)]
     pub example_messages: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EvalUserMode {
+    #[default]
+    Scripted,
+    Simulated,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

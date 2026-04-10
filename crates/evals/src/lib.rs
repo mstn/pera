@@ -4,6 +4,8 @@ mod evaluator;
 mod error;
 mod overrides;
 mod runner;
+mod scripted_user;
+mod simulated_user;
 mod spec;
 mod user;
 
@@ -28,6 +30,8 @@ pub use spec::{
     EvalAgentSpec, EvalCatalogSkillSpec, EvalCriterionSpec, EvalEvaluationSpec,
     EvalExpectedActionSpec, EvalHistoryMessage, EvalOptimizationSpec,
     EvalOptimizationTargetSpec, EvalRuntimeSpec, EvalScenarioSpec, EvalSkillSourceSpec,
-    EvalSpec, EvalUserSpec, LoadedEvalSpec, load_eval_spec,
+    EvalSpec, EvalUserMode, EvalUserSpec, LoadedEvalSpec, load_eval_spec,
 };
-pub use user::ScriptedUserParticipant;
+pub use scripted_user::ScriptedUserParticipant;
+pub use simulated_user::SimulatedUserParticipant;
+pub use user::EvalUserParticipant;

@@ -12,6 +12,7 @@ pera-agents = { path = "../agents" }
 pera-canonical = { path = "../canonical" }
 pera-core = { path = "../core" }
 pera-evals = { path = "../evals" }
+pera-llm = { path = "../llm" }
 pera-orchestrator = { path = "../orchestrator" }
 pera-runtime = { path = "../runtime" }
 pera-skills = { path = "../skills" }

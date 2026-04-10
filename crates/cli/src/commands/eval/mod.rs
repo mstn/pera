@@ -4,16 +4,16 @@ use std::{env, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use clap::{Args, Subcommand};
-use pera_agents::{
-    LlmAgentParticipant, LlmProvider, LlmRequest, OpenAiConfig as OpenAiProviderConfig,
-    OpenAiProvider, PromptMessage, ProviderBackedPromptBuilder,
-};
+use pera_agents::{LlmAgentParticipant, ProviderBackedPromptBuilder};
 use pera_evals::{
     EvalActionAdapter, EvalEngine, EvalJudge, EvalJudgeRequest, EvalJudgeResultPayload,
     EvalMode as EngineEvalMode, EvalOptimizationSuggestionsResponse, EvalRequest, EvalRunResult,
-    EvalRunner, EvalSpec, OverrideSet, ScriptedUserParticipant, SerializedAction,
+    EvalRunner, EvalSpec, EvalUserParticipant, OverrideSet, SerializedAction,
     SerializedOutcome, build_optimization_suggestion_request, parse_judge_verdict,
     parse_optimization_suggestions,
+};
+use pera_llm::{
+    LlmProvider, LlmRequest, OpenAiConfig as OpenAiProviderConfig, OpenAiProvider, PromptMessage,
 };
 use pera_orchestrator::Participant;
 use pera_runtime::{AgentWorkspace, WorkspaceAction, WorkspaceObservation, WorkspaceOutcome};
@@ -243,11 +243,19 @@ impl EvalModeCommand {
                 Some(openai_model.clone()),
             )),
         );
-        let user = ScriptedUserParticipant::<
+        let user = EvalUserParticipant::<
+            OpenAiProvider,
             WorkspaceObservation,
             WorkspaceAction,
             WorkspaceOutcome,
-        >::from_spec(&session.loaded_spec.spec.scenario.user);
+        >::from_spec(
+            OpenAiProvider::new(OpenAiProviderConfig {
+                api_key: openai_api_key.clone(),
+                model: openai_model.clone(),
+            })
+            .map_err(|error| CliError::UnexpectedStateOwned(error.to_string()))?,
+            session.loaded_spec.spec.scenario.user.clone(),
+        );
         let participants: Vec<
             Box<dyn Participant<Observation = WorkspaceObservation, Action = WorkspaceAction, Outcome = WorkspaceOutcome>>,
         > = vec![Box::new(user), Box::new(agent)];

@@ -2,78 +2,14 @@ use pera_orchestrator::{
     ActionError, ParticipantId, ParticipantInboxEvent, ParticipantInput, TrajectoryEvent,
 };
 use pera_canonical::render_python_value;
+use pera_llm::{LlmToolDefinition, PromptMessage};
 use pera_runtime::{WorkspaceAction, WorkspaceObservation, WorkspaceOutcome};
 use serde_json::json;
 use std::collections::{BTreeSet, VecDeque};
 
-use crate::llm::LlmToolDefinition;
-
 const BASE_SYSTEM_PROMPT: &str = include_str!("prompts/base_system.md");
 const SKILLS_SYSTEM_PROMPT: &str = include_str!("prompts/skills_system.md");
 const CODE_GENERATION_SYSTEM_PROMPT: &str = include_str!("prompts/code_generation_system.md");
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct PromptMessage {
-    pub role: String,
-    pub content: String,
-    pub metadata: Option<PromptMessageMetadata>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum PromptMessageMetadata {
-    ToolCall {
-        call_id: String,
-        name: String,
-        arguments: serde_json::Value,
-    },
-    ToolResult {
-        call_id: String,
-        name: String,
-        output: serde_json::Value,
-    },
-}
-
-impl PromptMessage {
-    fn text(role: impl Into<String>, content: impl Into<String>) -> Self {
-        Self {
-            role: role.into(),
-            content: content.into(),
-            metadata: None,
-        }
-    }
-
-    fn tool_call(
-        call_id: impl Into<String>,
-        name: impl Into<String>,
-        arguments: serde_json::Value,
-    ) -> Self {
-        Self {
-            role: "assistant".to_owned(),
-            content: String::new(),
-            metadata: Some(PromptMessageMetadata::ToolCall {
-                call_id: call_id.into(),
-                name: name.into(),
-                arguments,
-            }),
-        }
-    }
-
-    fn tool_result(
-        call_id: impl Into<String>,
-        name: impl Into<String>,
-        output: serde_json::Value,
-    ) -> Self {
-        Self {
-            role: "tool".to_owned(),
-            content: String::new(),
-            metadata: Some(PromptMessageMetadata::ToolResult {
-                call_id: call_id.into(),
-                name: name.into(),
-                output,
-            }),
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct PromptContext {
@@ -456,9 +392,10 @@ mod tests {
         AgentWorkspaceTool, WorkspaceAction, WorkspaceActiveSkill, WorkspaceAvailableSkill,
         WorkspaceObservation, WorkspaceOutcome,
     };
+    use pera_llm::PromptMessageMetadata;
     use serde_json::json;
 
-    use super::{CodePromptBuilder, PromptMessageMetadata, ProviderBackedPromptBuilder};
+    use super::{CodePromptBuilder, ProviderBackedPromptBuilder};
 
     #[test]
     fn prompt_builder_includes_available_and_active_skills() {

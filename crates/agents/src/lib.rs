@@ -1,17 +1,15 @@
-mod adapters;
 mod llm;
 mod prompt;
-pub mod providers;
 
-pub use adapters::openai::OpenAiProvider;
 pub use llm::{
-    LlmAgentParticipant, LlmProvider, LlmRequest, LlmResponse, LlmToolDefinition,
-    NoopPromptDebugSink, PromptDebugErrorRecord, PromptDebugMetadata,
+    LlmAgentParticipant, NoopPromptDebugSink, PromptDebugErrorRecord, PromptDebugMetadata,
     PromptDebugResponseRecord, PromptDebugResponseStatus, PromptDebugSink,
-    PromptDebugToolCall, UnconfiguredLlmProvider,
+    PromptDebugToolCall,
+};
+pub use pera_llm::{
+    LlmProvider, LlmRequest, LlmResponse, LlmToolDefinition, OpenAiConfig,
+    OpenAiProvider, PromptMessage, PromptMessageMetadata, UnconfiguredLlmProvider,
 };
 pub use prompt::{
-    CodePromptBuilder, PromptContext, PromptMessage, PromptMessageMetadata,
-    ProviderBackedPromptBuilder,
+    CodePromptBuilder, PromptContext, ProviderBackedPromptBuilder,
 };
-pub use providers::openai::OpenAiConfig;
