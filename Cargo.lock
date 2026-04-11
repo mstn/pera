@@ -1974,6 +1974,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pera-ui"
+version = "0.1.0"
+dependencies = [
+ "pera-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
