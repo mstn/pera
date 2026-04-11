@@ -10,6 +10,7 @@ members = [
     "crates/agents",
     "crates/evals",
     "crates/cli",
+    "examples/ui_demo",
 ]
 resolver = "3"
 

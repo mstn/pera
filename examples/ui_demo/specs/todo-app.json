@@ -1,0 +1,175 @@
+{
+  "id": "todo-demo",
+  "version": "1",
+  "title": "Todo UI Demo",
+  "root": "root",
+  "nodes": [
+    {
+      "id": "root",
+      "component": "column",
+      "props": {},
+      "children": [
+        "title",
+        "draft_input",
+        "add_button",
+        "selected_input",
+        "toggle_button",
+        "delete_button"
+      ],
+      "events": []
+    },
+    {
+      "id": "title",
+      "component": "text",
+      "props": {
+        "text": {
+          "kind": "string",
+          "value": "Todo UI Demo"
+        }
+      },
+      "children": [],
+      "events": []
+    },
+    {
+      "id": "draft_input",
+      "component": "text_field",
+      "props": {
+        "label": {
+          "kind": "string",
+          "value": "Draft todo"
+        },
+        "value": {
+          "kind": "binding",
+          "binding": {
+            "path": "/draft"
+          }
+        }
+      },
+      "children": [],
+      "events": []
+    },
+    {
+      "id": "add_button",
+      "component": "button",
+      "props": {
+        "label": {
+          "kind": "string",
+          "value": "Add"
+        }
+      },
+      "children": [],
+      "events": [
+        {
+          "event": "click",
+          "action": {
+            "name": "add_todo",
+            "args": {
+              "text": {
+                "kind": "binding",
+                "binding": {
+                  "path": "/draft"
+                }
+              }
+            }
+          },
+          "result": {
+            "path": "/todos"
+          }
+        }
+      ]
+    },
+    {
+      "id": "selected_input",
+      "component": "text_field",
+      "props": {
+        "label": {
+          "kind": "string",
+          "value": "Selected todo id"
+        },
+        "value": {
+          "kind": "binding",
+          "binding": {
+            "path": "/selected_id"
+          }
+        }
+      },
+      "children": [],
+      "events": []
+    },
+    {
+      "id": "toggle_button",
+      "component": "button",
+      "props": {
+        "label": {
+          "kind": "string",
+          "value": "Toggle selected"
+        }
+      },
+      "children": [],
+      "events": [
+        {
+          "event": "click",
+          "action": {
+            "name": "toggle_todo",
+            "args": {
+              "id": {
+                "kind": "binding",
+                "binding": {
+                  "path": "/selected_id"
+                }
+              }
+            }
+          },
+          "result": {
+            "path": "/todos"
+          }
+        }
+      ]
+    },
+    {
+      "id": "delete_button",
+      "component": "button",
+      "props": {
+        "label": {
+          "kind": "string",
+          "value": "Delete selected"
+        }
+      },
+      "children": [],
+      "events": [
+        {
+          "event": "click",
+          "action": {
+            "name": "delete_todo",
+            "args": {
+              "id": {
+                "kind": "binding",
+                "binding": {
+                  "path": "/selected_id"
+                }
+              }
+            }
+          },
+          "result": {
+            "path": "/todos"
+          }
+        }
+      ]
+    }
+  ],
+  "data_schema": {
+    "type": "object",
+    "properties": {
+      "draft": { "type": "string" },
+      "selected_id": { "type": "string" },
+      "todos": {
+        "type": "array"
+      }
+    }
+  },
+  "initial_data": {
+    "draft": "",
+    "selected_id": "",
+    "todos": []
+  }
+}
