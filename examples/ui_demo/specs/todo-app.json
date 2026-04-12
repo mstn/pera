@@ -12,6 +12,7 @@
         "title",
         "draft_input",
         "add_button",
+        "todo_list",
         "selected_input",
         "toggle_button",
         "delete_button"
@@ -77,6 +78,24 @@
           }
         }
       ]
+    },
+    {
+      "id": "todo_list",
+      "component": "list",
+      "props": {
+        "label": {
+          "kind": "string",
+          "value": "Todos"
+        },
+        "items": {
+          "kind": "binding",
+          "binding": {
+            "path": "/todos"
+          }
+        }
+      },
+      "children": [],
+      "events": []
     },
     {
       "id": "selected_input",

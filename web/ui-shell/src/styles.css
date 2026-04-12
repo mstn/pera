@@ -206,6 +206,46 @@ input {
   border-radius: 0.75rem;
 }
 
+.ui-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid rgba(27, 26, 23, 0.1);
+  border-radius: 0.9rem;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.ui-list__title {
+  font-size: 0.92rem;
+  color: #625a4f;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.ui-list__items {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.ui-list__item {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.35rem 0;
+}
+
+.ui-list__item input {
+  inline-size: 1rem;
+  block-size: 1rem;
+}
+
+.ui-list__empty {
+  color: #625a4f;
+  font-size: 0.92rem;
+}
+
 @media (max-width: 980px) {
   .shell {
     grid-template-columns: 1fr;

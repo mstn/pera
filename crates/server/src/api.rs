@@ -11,6 +11,7 @@ use axum::Router;
 use futures_util::stream::{self, StreamExt};
 use serde_json::json;
 use tokio_stream::wrappers::BroadcastStream;
+use tower_http::cors::{Any, CorsLayer};
 
 use crate::state::{
     CreateSessionRequest, ServerState, UiEventRequest, UiServerEvent, UiSessionSnapshot,
@@ -23,6 +24,12 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .route("/ui/sessions/{session_id}", get(get_session))
         .route("/ui/sessions/{session_id}/events", post(post_event))
         .route("/ui/sessions/{session_id}/stream", get(stream_session))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
         .with_state(state)
 }
 

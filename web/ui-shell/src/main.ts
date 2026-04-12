@@ -297,6 +297,84 @@ function renderNode(nodeId: string): HTMLElement {
       });
       return element;
     }
+    case "list": {
+      const wrapper = document.createElement("section");
+      wrapper.className = "ui-list";
+
+      const title = document.createElement("div");
+      title.className = "ui-list__title";
+      title.textContent = readStringProp(node, "label");
+      wrapper.append(title);
+
+      const items = resolvePropValue(
+        node.props.items,
+        state.snapshot?.state ?? null,
+      );
+
+      if (!Array.isArray(items) || items.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "ui-list__empty";
+        empty.textContent = "No items";
+        wrapper.append(empty);
+        return wrapper;
+      }
+
+      const list = document.createElement("div");
+      list.className = "ui-list__items";
+
+      for (const item of items) {
+        if (!isJsonObject(item)) {
+          continue;
+        }
+        const row = document.createElement("label");
+        row.className = "ui-list__item";
+
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = item.completed === true;
+        checkbox.addEventListener("change", async () => {
+          if (!state.sessionId) {
+            setStatus("No active session.");
+            return;
+          }
+          if (!(typeof item.id === "number" || typeof item.id === "string")) {
+            setStatus("List item is missing an id.");
+            return;
+          }
+
+          const itemId = String(item.id);
+          let snapshot = await postUiEvent(state.serverBaseUrl, state.sessionId, {
+            event_type: "set_value",
+            payload: {
+              node_id: "selected_input",
+              value: itemId,
+            },
+          });
+          attachSnapshot(snapshot);
+
+          snapshot = await postUiEvent(state.serverBaseUrl, state.sessionId, {
+            event_type: "trigger_event",
+            payload: {
+              node_id: "toggle_button",
+              event: "click",
+            },
+          });
+          attachSnapshot(snapshot);
+          setStatus(`Toggled todo ${itemId}`);
+        });
+
+        const text = document.createElement("span");
+        const id = typeof item.id === "number" || typeof item.id === "string" ? String(item.id) : "?";
+        const value = typeof item.text === "string" ? item.text : JSON.stringify(item);
+        text.textContent = `${id}: ${value}`;
+
+        row.append(checkbox, text);
+        list.append(row);
+      }
+
+      wrapper.append(list);
+      return wrapper;
+    }
     default: {
       const element = document.createElement("section");
       element.className = "ui-unknown";
