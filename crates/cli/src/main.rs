@@ -32,6 +32,7 @@ async fn run() -> Result<(), error::CliError> {
         Command::Eval(command) => command.execute().await,
         Command::Repl(command) => command.execute().await,
         Command::Run(command) => command.execute().await,
+        Command::Serve(command) => command.execute().await,
         Command::Skill(command) => command.execute().await,
     }
 }

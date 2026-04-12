@@ -1,0 +1,17 @@
+[package]
+name = "pera-server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+axum = "0.8"
+futures-util = "0.3"
+pera-ui = { path = "../ui" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.48.0", features = ["net", "sync", "rt-multi-thread"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+uuid = { version = "1.18.1", features = ["v4", "serde"] }
+
+[lib]
+path = "src/lib.rs"

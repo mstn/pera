@@ -2,6 +2,7 @@
 members = [
     "crates/core",
     "crates/ui",
+    "crates/server",
     "crates/canonical",
     "crates/llm",
     "crates/skills",

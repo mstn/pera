@@ -4,6 +4,7 @@ use crate::commands::bindings::BindingsCommand;
 use crate::commands::eval::EvalCommand;
 use crate::commands::repl::ReplCommand;
 use crate::commands::run::RunCommand;
+use crate::commands::serve::ServeCommand;
 use crate::commands::skill::SkillCommand;
 
 #[derive(Debug, Parser)]
@@ -23,5 +24,6 @@ pub enum Command {
     Eval(EvalCommand),
     Repl(ReplCommand),
     Run(RunCommand),
+    Serve(ServeCommand),
     Skill(SkillCommand),
 }
