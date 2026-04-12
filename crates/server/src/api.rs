@@ -34,8 +34,10 @@ async fn create_session(
     State(state): State<Arc<ServerState>>,
     Json(request): Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
-    let snapshot = state.create_session(request).await;
-    (StatusCode::CREATED, Json(snapshot))
+    match state.create_session(request).await {
+        Ok(snapshot) => (StatusCode::CREATED, Json(snapshot)).into_response(),
+        Err(message) => internal_error(message),
+    }
 }
 
 async fn get_session(
@@ -54,8 +56,9 @@ async fn post_event(
     Json(event): Json<UiEventRequest>,
 ) -> impl IntoResponse {
     match state.post_event(&session_id, event).await {
-        Some(snapshot) => (StatusCode::ACCEPTED, Json(snapshot)).into_response(),
-        None => not_found("ui session was not found"),
+        Ok(Some(snapshot)) => (StatusCode::ACCEPTED, Json(snapshot)).into_response(),
+        Ok(None) => not_found("ui session was not found"),
+        Err(message) => internal_error(message),
     }
 }
 
@@ -98,6 +101,16 @@ fn server_event(event: UiServerEvent) -> Event {
 fn not_found(message: &'static str) -> axum::response::Response {
     (
         StatusCode::NOT_FOUND,
+        Json(json!({
+            "error": message,
+        })),
+    )
+        .into_response()
+}
+
+fn internal_error(message: String) -> axum::response::Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
         Json(json!({
             "error": message,
         })),

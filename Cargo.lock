@@ -2038,8 +2038,11 @@ dependencies = [
 name = "pera-server"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "futures-util",
+ "pera-core",
+ "pera-orchestrator",
  "pera-ui",
  "serde",
  "serde_json",
