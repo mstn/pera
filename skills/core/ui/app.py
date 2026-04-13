@@ -127,7 +127,7 @@ class UiExports(exports.UiExports):
             events=[_event(action_name, result_path, _action_args(action_args))],
         )
 
-    def list(self, label, items_bind_path):
+    def list_view(self, label, items_bind_path):
         props = [
             _prop("items", {"kind": "binding", "binding": {"path": items_bind_path}}),
         ]
@@ -172,7 +172,7 @@ class UiExports(exports.UiExports):
             props.append(_prop("title", {"kind": "string", "value": title}))
         return _node("table", props=props)
 
-    def map(self, title, features):
+    def map_view(self, title, features):
         props = [
             _prop(
                 "features",

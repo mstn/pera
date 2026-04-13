@@ -2,28 +2,28 @@ package miniclaw:ui@0.1.0;
 
 /// Host-supplied UI builder primitives used internally by the implementation.
 interface ui-builder {
-  type prop = string;
-  type handler = string;
-  type element = string;
+  type prop-fragment = string;
+  type handler-fragment = string;
+  type element-fragment = string;
   type ui-spec = string;
 
-  prop: func(name: string, encoded-value: string) -> prop;
+  prop: func(name: string, encoded-value: string) -> prop-fragment;
 
   handler: func(
     event: string,
     action-name: string,
     encoded-action-args: string,
     result-path: option<string>,
-  ) -> handler;
+  ) -> handler-fragment;
 
   element: func(
     component: string,
-    props: list<prop>,
-    children: list<element>,
-    handlers: list<handler>,
-  ) -> element;
+    props: list<prop-fragment>,
+    children: list<element-fragment>,
+    handlers: list<handler-fragment>,
+  ) -> element-fragment;
 
-  screen: func(id: string, title: option<string>, root: element) -> ui-spec;
+  screen: func(id: string, title: option<string>, root: element-fragment) -> ui-spec;
 }
 
 interface ui-types {
@@ -42,14 +42,6 @@ interface ui-types {
     success,
     warning,
     error,
-  }
-
-  enum scalar-kind {
-    string,
-    integer,
-    float,
-    boolean,
-    null,
   }
 
   variant value {
@@ -119,7 +111,7 @@ interface ui-exports {
     result-path: option<string>,
   ) -> element;
 
-  list: func(label: option<string>, items-bind-path: string) -> element;
+  list-view: func(label: option<string>, items-bind-path: string) -> element;
 
   table: func(
     title: option<string>,
@@ -127,7 +119,7 @@ interface ui-exports {
     rows: list<table-row>,
   ) -> element;
 
-  map: func(
+  map-view: func(
     title: option<string>,
     features: list<map-feature>,
   ) -> element;

@@ -16,9 +16,9 @@ Use:
 - `notice(kind, title, body)` for alerts, warnings, errors, and success messages.
 - `text_input(label, bind_path)` for editable text fields bound to UI state.
 - `button(label, action_name, action_args, result_path)` for actions that call the environment.
-- `list(label, items_bind_path)` for repeated collections.
+- `list_view(label, items_bind_path)` for repeated collections.
 - `table(title, columns, rows)` for structured tabular data.
-- `map(title, features)` for maps with feature overlays.
+- `map_view(title, features)` for maps with feature overlays.
 
 Compose the UI from component-returning functions and finish with `screen(id, title, root)`.
 
