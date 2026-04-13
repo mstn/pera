@@ -1,0 +1,141 @@
+package miniclaw:ui@0.1.0;
+
+/// Host-supplied UI builder primitives used internally by the implementation.
+interface ui-builder {
+  type prop = string;
+  type handler = string;
+  type element = string;
+  type ui-spec = string;
+
+  prop: func(name: string, encoded-value: string) -> prop;
+
+  handler: func(
+    event: string,
+    action-name: string,
+    encoded-action-args: string,
+    result-path: option<string>,
+  ) -> handler;
+
+  element: func(
+    component: string,
+    props: list<prop>,
+    children: list<element>,
+    handlers: list<handler>,
+  ) -> element;
+
+  screen: func(id: string, title: option<string>, root: element) -> ui-spec;
+}
+
+interface ui-types {
+  type element = string;
+  type ui-spec = string;
+
+  enum text-style {
+    label,
+    heading,
+    caption,
+    narrative,
+  }
+
+  enum notice-kind {
+    info,
+    success,
+    warning,
+    error,
+  }
+
+  enum scalar-kind {
+    string,
+    integer,
+    float,
+    boolean,
+    null,
+  }
+
+  variant value {
+    text(string),
+    integer(s64),
+    float(f64),
+    boolean(bool),
+    empty,
+    bind(string),
+  }
+
+  record action-arg {
+    name: string,
+    value: value,
+  }
+
+  record table-column {
+    key: string,
+    label: string,
+  }
+
+  record table-cell {
+    column-key: string,
+    value: string,
+  }
+
+  record table-row {
+    cells: list<table-cell>,
+  }
+
+  record map-feature {
+    latitude: f64,
+    longitude: f64,
+    label: option<string>,
+    details: option<string>,
+  }
+}
+
+interface ui-exports {
+  use ui-types.{
+    action-arg,
+    element,
+    map-feature,
+    notice-kind,
+    table-column,
+    table-row,
+    text-style,
+    ui-spec,
+  };
+
+  stack: func(children: list<element>) -> element;
+
+  text: func(value: string, style: text-style) -> element;
+
+  markdown: func(value: string) -> element;
+
+  code: func(source: string, language: option<string>) -> element;
+
+  notice: func(kind: notice-kind, title: option<string>, body: string) -> element;
+
+  text-input: func(label: string, bind-path: string) -> element;
+
+  button: func(
+    label: string,
+    action-name: string,
+    action-args: list<action-arg>,
+    result-path: option<string>,
+  ) -> element;
+
+  list: func(label: option<string>, items-bind-path: string) -> element;
+
+  table: func(
+    title: option<string>,
+    columns: list<table-column>,
+    rows: list<table-row>,
+  ) -> element;
+
+  map: func(
+    title: option<string>,
+    features: list<map-feature>,
+  ) -> element;
+
+  screen: func(id: string, title: option<string>, root: element) -> ui-spec;
+}
+
+world ui-default {
+  import ui-builder;
+  export ui-exports;
+}

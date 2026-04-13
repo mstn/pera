@@ -4,12 +4,15 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 mod sqlite;
+mod ui;
 
 pub use sqlite::SqliteCapabilityProvider;
+pub use ui::UiCapabilityProvider;
 pub(crate) use sqlite::{
     build_provider as build_sqlite_provider, matches_import as matches_sqlite_import,
     resolve_database_path as resolve_sqlite_database_path,
 };
+pub(crate) use ui::matches_import as matches_ui_import;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityProviderError {
@@ -51,18 +54,28 @@ pub trait CapabilityProvider: Send + Sync + 'static {
 #[derive(Debug, Clone)]
 pub enum CapabilityProviderHandle {
     Sqlite(Arc<SqliteCapabilityProvider>),
+    Ui(Arc<UiCapabilityProvider>),
 }
 
 impl CapabilityProviderHandle {
     pub fn capability_name(&self) -> &'static str {
         match self {
             Self::Sqlite(provider) => provider.capability_name(),
+            Self::Ui(provider) => provider.capability_name(),
         }
     }
 
     pub fn sqlite(&self) -> Option<Arc<SqliteCapabilityProvider>> {
         match self {
             Self::Sqlite(provider) => Some(Arc::clone(provider)),
+            Self::Ui(_) => None,
+        }
+    }
+
+    pub fn ui(&self) -> Option<Arc<UiCapabilityProvider>> {
+        match self {
+            Self::Ui(provider) => Some(Arc::clone(provider)),
+            Self::Sqlite(_) => None,
         }
     }
 }
@@ -83,6 +96,12 @@ impl CapabilityProviderRegistry {
         registry
     }
 
+    pub fn with_ui(provider: UiCapabilityProvider) -> Self {
+        let mut registry = Self::new();
+        registry.insert(CapabilityProviderHandle::Ui(Arc::new(provider)));
+        registry
+    }
+
     pub fn insert(&mut self, provider: CapabilityProviderHandle) {
         self.providers
             .insert(provider.capability_name().to_owned(), provider);
@@ -94,5 +113,9 @@ impl CapabilityProviderRegistry {
 
     pub fn sqlite(&self) -> Option<Arc<SqliteCapabilityProvider>> {
         self.get("sqlite").and_then(CapabilityProviderHandle::sqlite)
+    }
+
+    pub fn ui(&self) -> Option<Arc<UiCapabilityProvider>> {
+        self.get("ui").and_then(CapabilityProviderHandle::ui)
     }
 }

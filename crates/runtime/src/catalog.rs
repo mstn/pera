@@ -15,9 +15,9 @@ use pera_canonical::{CatalogSkill, SkillCatalog, SkillMetadata, load_canonical_w
 use pera_core::{ActionId, ActionSkillRef, RunId, StoreError};
 
 use crate::capabilities::{
-    build_sqlite_provider, matches_sqlite_import, resolve_sqlite_database_path,
+    build_sqlite_provider, matches_sqlite_import, matches_ui_import, resolve_sqlite_database_path,
     CapabilityProviderHandle, CapabilityProviderRegistry,
-    SqliteCapabilityProvider,
+    SqliteCapabilityProvider, UiCapabilityProvider,
 };
 
 #[derive(Clone)]
@@ -536,6 +536,11 @@ impl SkillRuntime {
                     );
                     providers.insert(CapabilityProviderHandle::Sqlite(Arc::new(provider)));
                 }
+                "ui" => {
+                    providers.insert(CapabilityProviderHandle::Ui(Arc::new(
+                        UiCapabilityProvider::new(),
+                    )));
+                }
                 other => {
                     return Err(StoreError::new(format!(
                         "skill '{}' declares unsupported capability '{}'",
@@ -822,6 +827,17 @@ fn link_imports(
                 ))
             })?;
             sqlite.link_import(linker, import)?;
+            continue;
+        }
+
+        if matches_ui_import(import) {
+            let ui = capability_providers.ui().ok_or_else(|| {
+                StoreError::new(format!(
+                    "skill '{}' imports ui-low-level but does not declare the ui capability",
+                    skill.metadata.skill_name
+                ))
+            })?;
+            ui.link_import(linker, import)?;
             continue;
         }
 
