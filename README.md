@@ -7,7 +7,7 @@
 
 ---
 
-**Experimental** — This project is a very early preview release published for feedback and experimentation. It is not production-ready.
+**Experimental** — This project is a very early preview release published for feedback, experimentation, and research only. It is not production-ready. LLM-generated code is executed using the [Monty](https://github.com/pydantic/monty/) interpreter, which is also experimental and under active development. Because this involves executing generated code, **the project should not be considered secure**. Do not expose it to arbitrary users, external content, sensitive data, credentials, or production systems.
 
 `pera` is a lightweight, embeddable execution core for agentic systems. It provides an environment where AI agents can run, with a focus on supporting `code mode` execution. It is designed to complement safe interpreters like [Monty](https://github.com/pydantic/monty), but it can also work with traditional tool calling and MCP (coming soon).
 
